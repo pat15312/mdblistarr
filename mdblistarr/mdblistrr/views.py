@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 
 SYNC_HOUR_CHOICES = [(str(h), f"{h:02d}:00 UTC") for h in range(24)]
+SYNC_INSTANCE_SCOPE_CHOICES = [
+    ('first', 'First configured instance only'),
+    ('all', 'All configured instances'),
+]
 
 
 class MDBListForm(forms.Form):
@@ -32,6 +36,12 @@ class MDBListForm(forms.Form):
         required=False,
         widget=forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         help_text='Update your MDBList collection based on what is downloaded in Radarr/Sonarr.'
+    )
+    sync_instance_scope = forms.ChoiceField(
+        label='Library Sync Scope',
+        choices=SYNC_INSTANCE_SCOPE_CHOICES,
+        widget=forms.Select(attrs={'class': 'form-select'}),
+        help_text='Choose whether library status sync uses only the first configured Radarr/Sonarr instance or all configured instances.',
     )
     sync_hour = forms.ChoiceField(
         label='Sync Hour (UTC)',
@@ -143,6 +153,7 @@ class SonarrInstanceForm(forms.ModelForm):
 def home_view(request):
     mdblistarr = get_mdblistarr()
     sync_library_pref = Preferences.objects.filter(name='sync_library_status').first()
+    sync_instance_scope_pref = Preferences.objects.filter(name='sync_instance_scope').first()
     sync_hour_pref = Preferences.objects.filter(name='sync_hour').first()
     if not sync_hour_pref:
         random_hour = str(random.randint(0, 23))
@@ -152,6 +163,7 @@ def home_view(request):
     mdblist_form = MDBListForm(initial={
         'mdblist_apikey': mdblistarr.mdblist_apikey,
         'sync_library_status': sync_library_pref and sync_library_pref.value == '1',
+        'sync_instance_scope': sync_instance_scope_pref.value if sync_instance_scope_pref else 'first',
         'sync_hour': sync_hour_pref.value,
     })
     
@@ -209,6 +221,10 @@ def home_view(request):
                 Preferences.objects.update_or_create(
                     name='sync_library_status',
                     defaults={'value': '1' if mdblist_form.cleaned_data.get('sync_library_status') else '0'}
+                )
+                Preferences.objects.update_or_create(
+                    name='sync_instance_scope',
+                    defaults={'value': mdblist_form.cleaned_data.get('sync_instance_scope', 'first')}
                 )
                 Preferences.objects.update_or_create(
                     name='sync_hour',

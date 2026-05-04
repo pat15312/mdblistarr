@@ -19,6 +19,36 @@ def save_log(provider, status, text):
     log.text = text
     log.save()
 
+def get_sync_instance_scope():
+    pref = Preferences.objects.filter(name='sync_instance_scope').first()
+    return pref.value if pref and pref.value == 'all' else 'first'
+
+def get_radarr_sync_instances():
+    instances = RadarrInstance.objects.order_by('id')
+    if get_sync_instance_scope() == 'all':
+        return list(instances)
+    first_instance = instances.first()
+    return [first_instance] if first_instance else []
+
+def get_sonarr_sync_instances():
+    instances = SonarrInstance.objects.order_by('id')
+    if get_sync_instance_scope() == 'all':
+        return list(instances)
+    first_instance = instances.first()
+    return [first_instance] if first_instance else []
+
+def merge_arr_record(records, key_name, item_id, exists=None, date_added=None, excluded=False):
+    rec = records.get(item_id, {key_name: item_id})
+    if excluded:
+        rec['excluded'] = True
+    if exists is True:
+        rec['exists'] = True
+        if date_added and not rec.get('date_added'):
+            rec['date_added'] = date_added
+    elif exists is False and rec.get('exists') is not True:
+        rec['exists'] = False
+    records[item_id] = rec
+
 def post_radarr_payload():
     provider = 1  # Radarr JSON POST
     try:
@@ -34,77 +64,78 @@ def post_radarr_payload():
         if mdblistarr.mdblist is None:
             save_log(provider, 2, "MDBList API key not configured")
             return {"response": "Missing API key"}
-        radarr_api = RadarrAPI()
-        movies = radarr_api.get_movies()
-        exclusions = radarr_api.get_exclusions()
-
-        # Avoid sending an "empty" sync when Radarr is unreachable (can accidentally wipe state server-side).
-        if isinstance(movies, dict) and movies.get('error'):
-            save_log(provider, 2, f"{radarr_api.name}: Radarr /movie request failed: {movies}")
-            return {"response": "RadarrError"}
-        if isinstance(movies, list) and len(movies) == 1 and isinstance(movies[0], dict) and movies[0].get('result'):
-            save_log(provider, 2, f"{radarr_api.name}: Radarr /movie request failed: {movies[0].get('result')}")
-            return {"response": "RadarrError"}
-        if not isinstance(movies, list):
-            save_log(provider, 2, f"{radarr_api.name}: Radarr /movie unexpected response type={type(movies)} payload={str(movies)[:500]}")
-            return {"response": "RadarrError"}
-
+        radarr_instances = get_radarr_sync_instances()
+        if not radarr_instances:
+            save_log(provider, 2, "No Radarr instances configured")
+            return {"response": "No Radarr instances configured"}
         records_by_tmdb = {}
 
-        # Library state (downloaded/missing).
-        for movie in movies if isinstance(movies, list) else []:
-            if not isinstance(movie, dict):
-                continue
-            tmdb_id = movie.get('tmdbId')
-            if not tmdb_id:
-                continue
+        for instance in radarr_instances:
+            radarr_api = RadarrAPI(instance_id=instance.id)
+            movies = radarr_api.get_movies()
+            exclusions = radarr_api.get_exclusions()
 
-            has_file = movie.get('hasFile')
-            date_added = None
-            if isinstance(movie.get('movieFile'), dict):
-                date_added = movie['movieFile'].get('dateAdded')
-            if not date_added:
-                date_added = movie.get('added')
-            if has_file is True:
-                records_by_tmdb[tmdb_id] = {'tmdb': tmdb_id, 'exists': True, 'date_added': date_added}
-            elif has_file is False:
-                records_by_tmdb[tmdb_id] = {'tmdb': tmdb_id, 'exists': False}
-            else:
-                # Fallback: older/odd responses. Treat presence in Radarr as "exists".
-                records_by_tmdb[tmdb_id] = {'tmdb': tmdb_id, 'exists': True, 'date_added': date_added}
+            # Avoid sending a partial sync when Radarr is unreachable (can accidentally wipe state server-side).
+            if isinstance(movies, dict) and movies.get('error'):
+                save_log(provider, 2, f"{radarr_api.name}: Radarr /movie request failed: {movies}")
+                return {"response": "RadarrError"}
+            if isinstance(movies, list) and len(movies) == 1 and isinstance(movies[0], dict) and movies[0].get('result'):
+                save_log(provider, 2, f"{radarr_api.name}: Radarr /movie request failed: {movies[0].get('result')}")
+                return {"response": "RadarrError"}
+            if not isinstance(movies, list):
+                save_log(provider, 2, f"{radarr_api.name}: Radarr /movie unexpected response type={type(movies)} payload={str(movies)[:500]}")
+                return {"response": "RadarrError"}
 
-        # Import List Exclusions -> mark excluded. Include excluded even if not in library.
-        excluded_count = 0
-        if isinstance(exclusions, dict) and exclusions.get('error'):
-            save_log(provider, 2, f"{radarr_api.name}: Radarr /exclusions request failed: {exclusions}")
-            exclusions = []
-        elif isinstance(exclusions, list) and len(exclusions) == 1 and isinstance(exclusions[0], dict) and exclusions[0].get('result'):
-            save_log(provider, 2, f"{radarr_api.name}: Radarr /exclusions request failed: {exclusions[0].get('result')}")
-            exclusions = []
-        elif not isinstance(exclusions, list):
-            save_log(provider, 2, f"{radarr_api.name}: Radarr /exclusions unexpected response type={type(exclusions)} payload={str(exclusions)[:500]}")
-            exclusions = []
+            # Library state (downloaded/missing).
+            for movie in movies:
+                if not isinstance(movie, dict):
+                    continue
+                tmdb_id = movie.get('tmdbId')
+                if not tmdb_id:
+                    continue
 
-        for ex in exclusions if isinstance(exclusions, list) else []:
-            if not isinstance(ex, dict):
-                continue
-            tmdb_id = ex.get('tmdbId') or ex.get('tmdbid')
-            if not tmdb_id:
-                continue
-            rec = records_by_tmdb.get(tmdb_id, {'tmdb': tmdb_id})
-            if not rec.get('excluded'):
-                excluded_count += 1
-            rec['excluded'] = True
-            records_by_tmdb[tmdb_id] = rec
+                has_file = movie.get('hasFile')
+                date_added = None
+                if isinstance(movie.get('movieFile'), dict):
+                    date_added = movie['movieFile'].get('dateAdded')
+                if not date_added:
+                    date_added = movie.get('added')
+                if has_file is True:
+                    merge_arr_record(records_by_tmdb, 'tmdb', tmdb_id, exists=True, date_added=date_added)
+                elif has_file is False:
+                    merge_arr_record(records_by_tmdb, 'tmdb', tmdb_id, exists=False)
+                else:
+                    # Fallback: older/odd responses. Treat presence in Radarr as "exists".
+                    merge_arr_record(records_by_tmdb, 'tmdb', tmdb_id, exists=True, date_added=date_added)
+
+            # Import List Exclusions -> mark excluded. Include excluded even if not in library.
+            if isinstance(exclusions, dict) and exclusions.get('error'):
+                save_log(provider, 2, f"{radarr_api.name}: Radarr /exclusions request failed: {exclusions}")
+                exclusions = []
+            elif isinstance(exclusions, list) and len(exclusions) == 1 and isinstance(exclusions[0], dict) and exclusions[0].get('result'):
+                save_log(provider, 2, f"{radarr_api.name}: Radarr /exclusions request failed: {exclusions[0].get('result')}")
+                exclusions = []
+            elif not isinstance(exclusions, list):
+                save_log(provider, 2, f"{radarr_api.name}: Radarr /exclusions unexpected response type={type(exclusions)} payload={str(exclusions)[:500]}")
+                exclusions = []
+
+            for ex in exclusions if isinstance(exclusions, list) else []:
+                if not isinstance(ex, dict):
+                    continue
+                tmdb_id = ex.get('tmdbId') or ex.get('tmdbid')
+                if not tmdb_id:
+                    continue
+                merge_arr_record(records_by_tmdb, 'tmdb', tmdb_id, excluded=True)
 
         records = list(records_by_tmdb.values())
         total_records = len(records)
+        excluded_count = sum(1 for rec in records if rec.get('excluded'))
         json_payload = {'radarr': records}
 
         res = mdblistarr.mdblist.post_arr_payload(json_payload)
 
         if res.get('response') == 'Ok':
-            save_log(provider, 1, f'{radarr_api.name}: Uploaded {total_records} records to MDBList.com (excluded={excluded_count})')
+            save_log(provider, 1, f'Radarr: Uploaded {total_records} records from {len(radarr_instances)} instance(s) to MDBList.com (excluded={excluded_count})')
         else:
             save_log(provider, 2, f'Upload records to MDBList.com Failed: {res}')
             return res
@@ -123,22 +154,22 @@ def post_radarr_payload():
                 chunk = collection_add[i:i + chunk_size]
                 add_res = mdblistarr.mdblist.post_collection({'movies': chunk})
                 if isinstance(add_res, dict) and add_res.get('error'):
-                    save_log(provider, 2, f'{radarr_api.name}: Collection add failed: {add_res}')
+                    save_log(provider, 2, f'Radarr: Collection add failed: {add_res}')
                     break
                 total_added += add_res.get('updated', {}).get('movies', 0) if isinstance(add_res, dict) else 0
             if total_added:
-                save_log(provider, 1, f'{radarr_api.name}: Synced {total_added} movies to MDBList collection')
+                save_log(provider, 1, f'Radarr: Synced {total_added} movies to MDBList collection')
 
             total_removed = 0
             for i in range(0, len(collection_remove), chunk_size):
                 chunk = collection_remove[i:i + chunk_size]
                 rm_res = mdblistarr.mdblist.post_collection_remove({'movies': chunk})
                 if isinstance(rm_res, dict) and rm_res.get('error'):
-                    save_log(provider, 2, f'{radarr_api.name}: Collection remove failed: {rm_res}')
+                    save_log(provider, 2, f'Radarr: Collection remove failed: {rm_res}')
                     break
                 total_removed += rm_res.get('removed', {}).get('movies', 0) if isinstance(rm_res, dict) else 0
             if total_removed:
-                save_log(provider, 1, f'{radarr_api.name}: Removed {total_removed} movies from MDBList collection')
+                save_log(provider, 1, f'Radarr: Removed {total_removed} movies from MDBList collection')
 
         return res
     except:
@@ -165,151 +196,163 @@ def post_sonarr_payload():
         if mdblistarr.mdblist is None:
             save_log(provider, 2, "MDBList API key not configured")
             return {"response": "Missing API key"}
-        sonarr_api = SonarrAPI()
-        series = sonarr_api.get_series()
-        exclusions = sonarr_api.get_import_list_exclusions()
-
-        # Avoid sending an "empty" sync when Sonarr is unreachable (can accidentally wipe state server-side).
-        if isinstance(series, dict) and series.get('error'):
-            save_log(provider, 2, f"{sonarr_api.name}: Sonarr /series request failed: {series}")
-            return {"response": "SonarrError"}
-        if isinstance(series, list) and len(series) == 1 and isinstance(series[0], dict) and series[0].get('result'):
-            save_log(provider, 2, f"{sonarr_api.name}: Sonarr /series request failed: {series[0].get('result')}")
-            return {"response": "SonarrError"}
-        if not isinstance(series, list):
-            save_log(provider, 2, f"{sonarr_api.name}: Sonarr /series unexpected response type={type(series)} payload={str(series)[:500]}")
-            return {"response": "SonarrError"}
-
+        sonarr_instances = get_sonarr_sync_instances()
+        if not sonarr_instances:
+            save_log(provider, 2, "No Sonarr instances configured")
+            return {"response": "No Sonarr instances configured"}
         records_by_tvdb = {}
+        series_by_api = []
 
-        # Library state (downloaded/missing).
-        for show in series if isinstance(series, list) else []:
-            if not isinstance(show, dict):
-                continue
-            tvdb_id = show.get('tvdbId')
-            if not tvdb_id:
-                continue
+        for instance in sonarr_instances:
+            sonarr_api = SonarrAPI(instance_id=instance.id)
+            series = sonarr_api.get_series()
+            exclusions = sonarr_api.get_import_list_exclusions()
 
-            # Prefer series-level statistics when present.
-            # We consider "downloaded" if there is at least 1 episode file.
-            episode_file_count = None
-            stats = show.get('statistics') if isinstance(show.get('statistics'), dict) else None
-            if stats is not None and isinstance(stats.get('episodeFileCount'), int):
-                episode_file_count = stats.get('episodeFileCount')
+            # Avoid sending a partial sync when Sonarr is unreachable (can accidentally wipe state server-side).
+            if isinstance(series, dict) and series.get('error'):
+                save_log(provider, 2, f"{sonarr_api.name}: Sonarr /series request failed: {series}")
+                return {"response": "SonarrError"}
+            if isinstance(series, list) and len(series) == 1 and isinstance(series[0], dict) and series[0].get('result'):
+                save_log(provider, 2, f"{sonarr_api.name}: Sonarr /series request failed: {series[0].get('result')}")
+                return {"response": "SonarrError"}
+            if not isinstance(series, list):
+                save_log(provider, 2, f"{sonarr_api.name}: Sonarr /series unexpected response type={type(series)} payload={str(series)[:500]}")
+                return {"response": "SonarrError"}
 
-            # Fallback: sum season statistics.
-            if episode_file_count is None and isinstance(show.get('seasons'), list):
-                total = 0
-                found_any = False
-                for season in show['seasons']:
-                    if not isinstance(season, dict):
-                        continue
-                    s = season.get('statistics') if isinstance(season.get('statistics'), dict) else None
-                    if s is None:
-                        continue
-                    if isinstance(s.get('episodeFileCount'), int):
-                        total += s.get('episodeFileCount')
-                        found_any = True
-                if found_any:
-                    episode_file_count = total
+            series_by_api.append((sonarr_api, series))
 
-            if episode_file_count is None:
-                # Can't infer reliably; treat presence in Sonarr as "exists".
-                records_by_tvdb[tvdb_id] = {'tvdb': tvdb_id, 'exists': True}
-            elif episode_file_count > 0:
-                records_by_tvdb[tvdb_id] = {'tvdb': tvdb_id, 'exists': True}
-            else:
-                records_by_tvdb[tvdb_id] = {'tvdb': tvdb_id, 'exists': False}
-
-        # Import List Exclusions -> mark excluded. Include excluded even if not in library.
-        excluded_count = 0
-        if isinstance(exclusions, dict) and exclusions.get('error'):
-            save_log(provider, 2, f"{sonarr_api.name}: Sonarr /importlistexclusion request failed: {exclusions}")
-            exclusions = []
-        elif isinstance(exclusions, list) and len(exclusions) == 1 and isinstance(exclusions[0], dict) and exclusions[0].get('result'):
-            save_log(provider, 2, f"{sonarr_api.name}: Sonarr /importlistexclusion request failed: {exclusions[0].get('result')}")
-            exclusions = []
-        elif not isinstance(exclusions, list):
-            save_log(provider, 2, f"{sonarr_api.name}: Sonarr /importlistexclusion unexpected response type={type(exclusions)} payload={str(exclusions)[:500]}")
-            exclusions = []
-
-        for ex in exclusions if isinstance(exclusions, list) else []:
-            if not isinstance(ex, dict):
-                continue
-            tvdb_id = ex.get('tvdbId') or ex.get('tvdbid')
-            if not tvdb_id:
-                continue
-            rec = records_by_tvdb.get(tvdb_id, {'tvdb': tvdb_id})
-            if not rec.get('excluded'):
-                excluded_count += 1
-            rec['excluded'] = True
-            records_by_tvdb[tvdb_id] = rec
-
-        records = list(records_by_tvdb.values())
-        total_records = len(records)
-        json_payload = {'sonarr': records}
-
-        res = mdblistarr.mdblist.post_arr_payload(json_payload)
-        if res.get('response') == 'Ok':
-            save_log(provider, 1, f'{sonarr_api.name}: Uploaded {total_records} records to MDBList.com (excluded={excluded_count})')
-        else:
-            save_log(provider, 2, f'Upload records to MDBList.com Failed: {res}')
-            return res
-
-        sync_library_pref = Preferences.objects.filter(name='sync_library_status').first()
-        if sync_library_pref and sync_library_pref.value == '1':
-            # Build season-level collection payloads from already-fetched series data.
-            # Each show in Sonarr includes per-season statistics, so no extra API calls needed.
-            collection_add = []
-            collection_remove = []
-
-            for show in series if isinstance(series, list) else []:
+            # Library state (downloaded/missing).
+            for show in series:
                 if not isinstance(show, dict):
                     continue
                 tvdb_id = show.get('tvdbId')
                 if not tvdb_id:
                     continue
 
-                seasons_with_files = []
-                sonarr_id = show.get('id')
-                if not sonarr_id:
+                # Prefer series-level statistics when present.
+                # We consider "downloaded" if there is at least 1 episode file.
+                episode_file_count = None
+                stats = show.get('statistics') if isinstance(show.get('statistics'), dict) else None
+                if stats is not None and isinstance(stats.get('episodeFileCount'), int):
+                    episode_file_count = stats.get('episodeFileCount')
+
+                # Fallback: sum season statistics.
+                if episode_file_count is None and isinstance(show.get('seasons'), list):
+                    total = 0
+                    found_any = False
+                    for season in show['seasons']:
+                        if not isinstance(season, dict):
+                            continue
+                        s = season.get('statistics') if isinstance(season.get('statistics'), dict) else None
+                        if s is None:
+                            continue
+                        if isinstance(s.get('episodeFileCount'), int):
+                            total += s.get('episodeFileCount')
+                            found_any = True
+                    if found_any:
+                        episode_file_count = total
+
+                if episode_file_count is None:
+                    # Can't infer reliably; treat presence in Sonarr as "exists".
+                    merge_arr_record(records_by_tvdb, 'tvdb', tvdb_id, exists=True)
+                elif episode_file_count > 0:
+                    merge_arr_record(records_by_tvdb, 'tvdb', tvdb_id, exists=True)
+                else:
+                    merge_arr_record(records_by_tvdb, 'tvdb', tvdb_id, exists=False)
+
+            # Import List Exclusions -> mark excluded. Include excluded even if not in library.
+            if isinstance(exclusions, dict) and exclusions.get('error'):
+                save_log(provider, 2, f"{sonarr_api.name}: Sonarr /importlistexclusion request failed: {exclusions}")
+                exclusions = []
+            elif isinstance(exclusions, list) and len(exclusions) == 1 and isinstance(exclusions[0], dict) and exclusions[0].get('result'):
+                save_log(provider, 2, f"{sonarr_api.name}: Sonarr /importlistexclusion request failed: {exclusions[0].get('result')}")
+                exclusions = []
+            elif not isinstance(exclusions, list):
+                save_log(provider, 2, f"{sonarr_api.name}: Sonarr /importlistexclusion unexpected response type={type(exclusions)} payload={str(exclusions)[:500]}")
+                exclusions = []
+
+            for ex in exclusions if isinstance(exclusions, list) else []:
+                if not isinstance(ex, dict):
                     continue
+                tvdb_id = ex.get('tvdbId') or ex.get('tvdbid')
+                if not tvdb_id:
+                    continue
+                merge_arr_record(records_by_tvdb, 'tvdb', tvdb_id, excluded=True)
 
-                # Build episodeFileId -> dateAdded map.
-                ef_list = sonarr_api.get_episode_files(sonarr_id)
-                file_date_map = {}
-                if isinstance(ef_list, list):
-                    for ef in ef_list:
-                        if isinstance(ef, dict) and ef.get('id') and ef.get('dateAdded'):
-                            file_date_map[ef['id']] = ef['dateAdded']
+        records = list(records_by_tvdb.values())
+        total_records = len(records)
+        excluded_count = sum(1 for rec in records if rec.get('excluded'))
+        json_payload = {'sonarr': records}
 
-                seasons_map = {}
-                if file_date_map:
-                    # Build per-episode seasons structure with individual collected_at.
+        res = mdblistarr.mdblist.post_arr_payload(json_payload)
+        if res.get('response') == 'Ok':
+            save_log(provider, 1, f'Sonarr: Uploaded {total_records} records from {len(sonarr_instances)} instance(s) to MDBList.com (excluded={excluded_count})')
+        else:
+            save_log(provider, 2, f'Upload records to MDBList.com Failed: {res}')
+            return res
+
+        sync_library_pref = Preferences.objects.filter(name='sync_library_status').first()
+        if sync_library_pref and sync_library_pref.value == '1':
+            collection_add_by_tvdb = {}
+
+            for sonarr_api, series in series_by_api:
+                for show in series:
+                    if not isinstance(show, dict):
+                        continue
+                    tvdb_id = show.get('tvdbId')
+                    if not tvdb_id:
+                        continue
+
+                    sonarr_id = show.get('id')
+                    if not sonarr_id:
+                        continue
+
+                    # Build episodeFileId -> dateAdded map.
+                    ef_list = sonarr_api.get_episode_files(sonarr_id)
+                    file_date_map = {}
+                    if isinstance(ef_list, list):
+                        for ef in ef_list:
+                            if isinstance(ef, dict) and ef.get('id') and ef.get('dateAdded'):
+                                file_date_map[ef['id']] = ef['dateAdded']
+
+                    if not file_date_map:
+                        continue
+
                     episodes = sonarr_api.get_episodes(sonarr_id)
-                    if isinstance(episodes, list):
-                        for ep in episodes:
-                            if not isinstance(ep, dict) or not ep.get('hasFile'):
-                                continue
-                            season_num = ep.get('seasonNumber')
-                            ep_num = ep.get('episodeNumber')
-                            ef_id = ep.get('episodeFileId')
-                            if season_num is None or ep_num is None:
-                                continue
-                            ep_entry = {'number': ep_num}
-                            date = file_date_map.get(ef_id)
-                            if date:
-                                ep_entry['collected_at'] = date
-                            seasons_map.setdefault(season_num, []).append(ep_entry)
+                    if not isinstance(episodes, list):
+                        continue
 
-                if seasons_map:
-                    seasons_with_files = [
-                        {'number': s_num, 'episodes': eps}
-                        for s_num, eps in sorted(seasons_map.items())
-                    ]
-                    collection_add.append({'ids': {'tvdb': tvdb_id}, 'seasons': seasons_with_files})
-                elif records_by_tvdb.get(tvdb_id, {}).get('exists') is False:
-                    collection_remove.append({'ids': {'tvdb': tvdb_id}})
+                    seasons_map = collection_add_by_tvdb.setdefault(tvdb_id, {})
+                    for ep in episodes:
+                        if not isinstance(ep, dict) or not ep.get('hasFile'):
+                            continue
+                        season_num = ep.get('seasonNumber')
+                        ep_num = ep.get('episodeNumber')
+                        ef_id = ep.get('episodeFileId')
+                        if season_num is None or ep_num is None:
+                            continue
+                        ep_entry = {'number': ep_num}
+                        date = file_date_map.get(ef_id)
+                        if date:
+                            ep_entry['collected_at'] = date
+                        seasons_map.setdefault(season_num, {})[ep_num] = ep_entry
+
+            collection_add = []
+            for tvdb_id, seasons_map in collection_add_by_tvdb.items():
+                seasons = []
+                for season_num, episodes_map in sorted(seasons_map.items()):
+                    seasons.append({
+                        'number': season_num,
+                        'episodes': [episodes_map[ep_num] for ep_num in sorted(episodes_map)]
+                    })
+                if seasons:
+                    collection_add.append({'ids': {'tvdb': tvdb_id}, 'seasons': seasons})
+
+            collection_remove = [
+                {'ids': {'tvdb': rec['tvdb']}}
+                for rec in records
+                if rec.get('exists') is False and rec['tvdb'] not in collection_add_by_tvdb
+            ]
 
             chunk_size = 250
             total_shows, total_seasons = 0, 0
@@ -317,24 +360,24 @@ def post_sonarr_payload():
                 chunk = collection_add[i:i + chunk_size]
                 add_res = mdblistarr.mdblist.post_collection({'shows': chunk})
                 if isinstance(add_res, dict) and add_res.get('error'):
-                    save_log(provider, 2, f'{sonarr_api.name}: Collection add failed: {add_res}')
+                    save_log(provider, 2, f'Sonarr: Collection add failed: {add_res}')
                     break
                 updated = add_res.get('updated', {}) if isinstance(add_res, dict) else {}
                 total_shows += updated.get('shows', 0)
                 total_seasons += updated.get('seasons', 0)
             if total_shows or total_seasons:
-                save_log(provider, 1, f'{sonarr_api.name}: Synced collection (shows={total_shows} seasons={total_seasons} episodes={sum(len(s["episodes"]) for e in collection_add for s in e.get("seasons", []))})')
+                save_log(provider, 1, f'Sonarr: Synced collection (shows={total_shows} seasons={total_seasons} episodes={sum(len(s["episodes"]) for e in collection_add for s in e.get("seasons", []))})')
 
             total_removed = 0
             for i in range(0, len(collection_remove), chunk_size):
                 chunk = collection_remove[i:i + chunk_size]
                 rm_res = mdblistarr.mdblist.post_collection_remove({'shows': chunk})
                 if isinstance(rm_res, dict) and rm_res.get('error'):
-                    save_log(provider, 2, f'{sonarr_api.name}: Collection remove failed: {rm_res}')
+                    save_log(provider, 2, f'Sonarr: Collection remove failed: {rm_res}')
                     break
                 total_removed += rm_res.get('removed', {}).get('shows', 0) if isinstance(rm_res, dict) else 0
             if total_removed:
-                save_log(provider, 1, f'{sonarr_api.name}: Removed {total_removed} shows from MDBList collection')
+                save_log(provider, 1, f'Sonarr: Removed {total_removed} shows from MDBList collection')
 
         return res
     except:
