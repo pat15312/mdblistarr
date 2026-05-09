@@ -285,23 +285,29 @@ class MdblistAPI():
 
     def test_api(self, apikey=None):
         try:
+            if self.access_token:
+                data = self.connect.get_json(
+                    "https://api.mdblist.com/user",
+                    headers={**DEFAULT_HEADERS, 'Authorization': f'Bearer {self.access_token}'},
+                )
+                return bool(data.get('user_id'))
             key = apikey if apikey else self.apikey
-            data = self.connect.get_json(f"{self.url}/api", params={"apikey": key, 'i': 'tt0073195'})
-            return bool(data.get('title'))
+            data = self.connect.get_json("https://api.mdblist.com/user", params={"apikey": key})
+            return bool(data.get('user_id'))
         except:
             return False
 
     def post_arr_payload(self, payload):
         try:
             self._ensure_valid_token()
-            return self.connect.post_json(f"{self.url}/service/mdblist/arr", json=payload, **self._auth())
+            return self.connect.post_json("https://api.mdblist.com/arr/upload", json=payload, **self._auth())
         except:
             return {'response': f'{traceback.format_exc()}'}
 
     def get_mdblist_queue(self):
         try:
             self._ensure_valid_token()
-            return self.connect.get_json(f"{self.url}/service/mdblist/queue", **self._auth())
+            return self.connect.get_json("https://api.mdblist.com/arr/queue", **self._auth())
         except:
             return {'response': f'{traceback.format_exc()}'}
 
@@ -322,6 +328,6 @@ class MdblistAPI():
     def post_arr_changes(self, payload):
         try:
             self._ensure_valid_token()
-            return self.connect.post_json(f"{self.url}/service/mdblist/config", json=payload, **self._auth())
+            return self.connect.post_json("https://api.mdblist.com/arr/config", json=payload, **self._auth())
         except:
             return {'response': 'Exception', 'error': f'{traceback.format_exc()}'}

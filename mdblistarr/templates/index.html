@@ -32,9 +32,14 @@
             <!-- OAuth status (separate form to avoid nesting) -->
             {% if oauth_connected %}
             <div class="d-flex align-items-center justify-content-between p-3 border rounded mb-3">
-                <div>
-                    <span class="badge bg-success me-2">Connected</span>
-                    <span class="text-muted small">Authenticated via MDBList OAuth</span>
+                <div class="d-flex align-items-center gap-3">
+                    <span class="badge bg-success">Connected</span>
+                    <div>
+                        {% if oauth_name or oauth_username %}
+                        <div class="fw-semibold">{{ oauth_name }}{% if oauth_name and oauth_username %} <span class="text-muted fw-normal">(@{{ oauth_username }})</span>{% elif oauth_username %}@{{ oauth_username }}{% endif %}</div>
+                        {% endif %}
+                        <div class="text-muted small">MDBList OAuth{% if oauth_plan %} &middot; {{ oauth_plan }}{% endif %}</div>
+                    </div>
                 </div>
                 <form action="{% url 'oauth_disconnect' %}" method="post" class="m-0">
                     {% csrf_token %}

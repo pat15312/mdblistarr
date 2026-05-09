@@ -7,7 +7,7 @@ import json
 import random
 import traceback
 from .models import Log, InstanceChangeLog, RadarrInstance, SonarrInstance, Preferences
-from .services import get_mdblistarr
+from .services import get_mdblistarr, reset_mdblistarr
 from .arr import SonarrAPI
 from .arr import RadarrAPI
 
@@ -60,6 +60,7 @@ def post_radarr_payload():
         if timezone.now().hour != sync_hour:
             return {"response": "Not scheduled hour"}
         time.sleep(random.uniform(0.0, 3600.0))
+        reset_mdblistarr()
         mdblistarr = get_mdblistarr()
         if mdblistarr.mdblist is None:
             save_log(provider, 2, "MDBList API key not configured")
@@ -192,6 +193,7 @@ def post_sonarr_payload():
         if timezone.now().hour != sync_hour:
             return {"response": "Not scheduled hour"}
         time.sleep(random.uniform(0.0, 3600.0))
+        reset_mdblistarr()
         mdblistarr = get_mdblistarr()
         if mdblistarr.mdblist is None:
             save_log(provider, 2, "MDBList API key not configured")
@@ -393,6 +395,7 @@ def get_mdblist_queue_to_arr():
     provider = 0  # Queue Sync
     try:
         time.sleep(random.uniform(0.0, 36.0))
+        reset_mdblistarr()
         mdblistarr = get_mdblistarr()
         if mdblistarr.mdblist is None:
             save_log(provider, 2, "MDBList API key not configured")
@@ -577,6 +580,7 @@ def process_instance_changes():
             logs.update(processed=True)
             return {"response": "No instances to sync"}
             
+        reset_mdblistarr()
         mdblistarr = get_mdblistarr()
         if mdblistarr.mdblist is None:
             save_log(provider, 2, "MDBList API key not configured")

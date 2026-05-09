@@ -164,6 +164,9 @@ def home_view(request):
     oauth_connected = bool(
         Preferences.objects.filter(name='mdblist_access_token').exclude(value='').first()
     )
+    oauth_username = Preferences.objects.filter(name='mdblist_username').values_list('value', flat=True).first() or ''
+    oauth_name = Preferences.objects.filter(name='mdblist_name').values_list('value', flat=True).first() or ''
+    oauth_plan = Preferences.objects.filter(name='mdblist_plan').values_list('value', flat=True).first() or ''
 
     sync_library_pref = Preferences.objects.filter(name='sync_library_status').first()
     sync_instance_scope_pref = Preferences.objects.filter(name='sync_instance_scope').first()
@@ -359,6 +362,9 @@ def home_view(request):
         'active_sonarr_id': active_sonarr_id,
         'active_tab': request.session.get('active_tab', 'mdblist'),
         'oauth_connected': oauth_connected,
+        'oauth_username': oauth_username,
+        'oauth_name': oauth_name,
+        'oauth_plan': oauth_plan,
     }
 
     return render(request, "index.html", context)
@@ -409,12 +415,27 @@ def oauth_device_poll(request):
 
     if data.get('access_token'):
         expires_at = int(time.time() + data.get('expires_in', 2592000))
-        Preferences.objects.update_or_create(name='mdblist_access_token', defaults={'value': data['access_token']})
+        access_token = data['access_token']
+        Preferences.objects.update_or_create(name='mdblist_access_token', defaults={'value': access_token})
         Preferences.objects.update_or_create(name='mdblist_refresh_token', defaults={'value': data.get('refresh_token', '')})
         Preferences.objects.update_or_create(name='mdblist_token_expires_at', defaults={'value': str(expires_at)})
         Preferences.objects.filter(name='mdblist_apikey').update(value='')
         request.session.pop('oauth_device_code', None)
         request.session.pop('oauth_device_client_id', None)
+
+        try:
+            user_resp = _requests.get(
+                'https://api.mdblist.com/user',
+                headers={'Authorization': f'Bearer {access_token}'},
+                timeout=5,
+            )
+            user_data = user_resp.json()
+            Preferences.objects.update_or_create(name='mdblist_username', defaults={'value': user_data.get('username') or ''})
+            Preferences.objects.update_or_create(name='mdblist_name', defaults={'value': user_data.get('name') or ''})
+            Preferences.objects.update_or_create(name='mdblist_plan', defaults={'value': user_data.get('plan') or ''})
+        except Exception:
+            pass
+
         reset_mdblistarr()
         return JsonResponse({'status': 'complete'})
 
@@ -445,6 +466,9 @@ def oauth_disconnect(request):
     Preferences.objects.filter(name='mdblist_access_token').update(value='')
     Preferences.objects.filter(name='mdblist_refresh_token').update(value='')
     Preferences.objects.filter(name='mdblist_token_expires_at').update(value='')
+    Preferences.objects.filter(name='mdblist_username').update(value='')
+    Preferences.objects.filter(name='mdblist_name').update(value='')
+    Preferences.objects.filter(name='mdblist_plan').update(value='')
     reset_mdblistarr()
     messages.success(request, "Disconnected from MDBList OAuth.")
     return redirect('home_view')
