@@ -412,7 +412,12 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function pollDeviceCode() {
-        fetch('/oauth/device/poll')
+        const csrfToken = document.querySelector('input[name="csrfmiddlewaretoken"]').value;
+        fetch('/oauth/device/poll', {
+            method: 'POST',
+            headers: {'X-CSRFToken': csrfToken, 'Content-Type': 'application/json'},
+            body: '{}',
+        })
         .then(r => r.json())
         .then(data => {
             if (data.status === 'complete') {
@@ -423,11 +428,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 devicePollInterval = Math.min(devicePollInterval + 5000, 30000);
                 schedulePoll();
             } else if (data.status === 'expired') {
-                showStatus('<span class="text-danger">Session expired. Close this and try again.</span>');
+                showStatus('Session expired. Close this and try again.');
             } else if (data.status === 'denied') {
-                showStatus('<span class="text-danger">Authorization denied.</span>');
+                showStatus('Authorization denied.');
             } else if (data.status === 'error') {
-                showStatus(`<span class="text-danger">Error: ${data.message}</span>`);
+                showStatus('Error: ' + (data.message || 'Unknown error'));
             } else {
                 schedulePoll(); // 'pending' — keep polling
             }
@@ -450,8 +455,10 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('deviceCodeContent').style.display = 'block';
     }
 
-    function showStatus(html) {
-        document.getElementById('deviceCodeStatus').innerHTML = html;
+    function showStatus(msg) {
+        const el = document.getElementById('deviceCodeStatus');
+        el.textContent = msg;
+        el.className = 'text-center mt-4 text-danger small';
     }
 
     function showError(msg) {

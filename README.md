@@ -16,10 +16,15 @@ Companion app for [mdblist.com](https://mdblist.com) for better Radarr and Sonar
 
 ### Basic workflow
 
-1. Configure your MDBList API key in MDBListarr.
+1. Connect your MDBList account via OAuth (or enter an API key manually).
 2. Add your Radarr and Sonarr instances.
 3. Set quality profile and root folder mappings per instance.
 4. Let scheduled sync keep MDBList and your ARR apps in sync.
+
+## New in v2.3.0
+
+- MDBList OAuth authentication: connect your account via the new "Connect with MDBList" button instead of copying an API key. Uses the OAuth 2.0 device authorization flow.
+- API key auth still works until you connect via OAuth — once OAuth is connected, the API key is cleared and OAuth takes over.
 
 ## New in v2.2.4
 

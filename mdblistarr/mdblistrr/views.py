@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 MDBLIST_TOKEN_URL = "https://api.mdblist.com/oauth/token/"
 MDBLIST_DEVICE_AUTH_URL = "https://api.mdblist.com/oauth/device-authorization/"
 MDBLIST_DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+MDBLIST_REVOKE_URL = "https://api.mdblist.com/oauth/revoke_token/"
 
 
 SYNC_HOUR_CHOICES = [(str(h), f"{h:02d}:00 UTC") for h in range(24)]
@@ -388,6 +389,7 @@ def oauth_device_start(request):
     })
 
 
+@require_POST
 def oauth_device_poll(request):
     device_code = request.session.get('oauth_device_code')
     client_id = request.session.get('oauth_device_client_id')
@@ -430,6 +432,16 @@ def oauth_device_poll(request):
 
 @require_POST
 def oauth_disconnect(request):
+    token_pref = Preferences.objects.filter(name='mdblist_access_token').first()
+    client_id_pref = Preferences.objects.filter(name='mdblist_client_id').first()
+    if token_pref and token_pref.value:
+        try:
+            _requests.post(MDBLIST_REVOKE_URL, data={
+                'token': token_pref.value,
+                'client_id': (client_id_pref.value if client_id_pref else '') or MDBLIST_DEFAULT_CLIENT_ID,
+            }, timeout=5)
+        except Exception:
+            pass
     Preferences.objects.filter(name='mdblist_access_token').update(value='')
     Preferences.objects.filter(name='mdblist_refresh_token').update(value='')
     Preferences.objects.filter(name='mdblist_token_expires_at').update(value='')
