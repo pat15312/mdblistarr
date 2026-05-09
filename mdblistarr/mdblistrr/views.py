@@ -1,22 +1,28 @@
-from django.shortcuts import render, redirect, get_object_or_404
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_POST
-from django.http import JsonResponse, HttpResponseRedirect
-from django import forms
-from django.urls import reverse
-from .models import Preferences, RadarrInstance, SonarrInstance
-from .connect import Connect
-from .arr import SonarrAPI
-from .arr import RadarrAPI
-from .arr import MdblistAPI
-from .services import get_mdblistarr, reset_mdblistarr
+import logging
 import random
+import time
 import traceback
 import json
-import logging
+import requests as _requests
+
+from django import forms
 from django.contrib import messages
-# Set up logging
+from django.http import JsonResponse, HttpResponseRedirect
+from django.shortcuts import render, redirect, get_object_or_404
+from django.urls import reverse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
+
+from .arr import MdblistAPI, RadarrAPI, SonarrAPI, MDBLIST_DEFAULT_CLIENT_ID
+from .connect import Connect
+from .models import Preferences, RadarrInstance, SonarrInstance
+from .services import get_mdblistarr, reset_mdblistarr
+
 logger = logging.getLogger(__name__)
+
+MDBLIST_TOKEN_URL = "https://api.mdblist.com/oauth/token/"
+MDBLIST_DEVICE_AUTH_URL = "https://api.mdblist.com/oauth/device-authorization/"
+MDBLIST_DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 
 
 SYNC_HOUR_CHOICES = [(str(h), f"{h:02d}:00 UTC") for h in range(24)]
@@ -29,7 +35,8 @@ SYNC_INSTANCE_SCOPE_CHOICES = [
 class MDBListForm(forms.Form):
     mdblist_apikey = forms.CharField(
         label='MDBList API Key',
-        widget=forms.TextInput(attrs={'placeholder': 'Enter your mdblist.com API key', 'class': 'form-control'})
+        required=False,
+        widget=forms.TextInput(attrs={'placeholder': 'Enter your mdblist.com API key', 'class': 'form-control'}),
     )
     sync_library_status = forms.BooleanField(
         label='Sync Library Status',
@@ -50,22 +57,23 @@ class MDBListForm(forms.Form):
         help_text='Hour of day (UTC) when Radarr and Sonarr sync runs. Actual sync happens within that hour at a random minute.',
     )
 
+    def __init__(self, *args, oauth_connected=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.oauth_connected = oauth_connected
+
     def clean(self):
         cleaned_data = super().clean()
         mdblist_apikey = cleaned_data.get('mdblist_apikey')
-        
-        if mdblist_apikey:
+
+        if mdblist_apikey and not self.oauth_connected:
             mdblistarr = get_mdblistarr()
-            if mdblistarr.mdblist is None:
-                mdblistarr.mdblist = MdblistAPI(mdblist_apikey)
-            if not mdblistarr.mdblist.test_api(mdblist_apikey):
+            test_instance = mdblistarr.mdblist if mdblistarr.mdblist else MdblistAPI(apikey=mdblist_apikey)
+            if not test_instance.test_api(mdblist_apikey):
                 self._errors['mdblist_apikey'] = self.error_class(['API key is invalid, unable to connect'])
                 self.fields['mdblist_apikey'].widget.attrs.update({'class': 'form-control is-invalid'})
-                # self.add_error(None, "API key is invalid. Unable to save changes.")
-
             else:
                 self.fields['mdblist_apikey'].widget.attrs.update({'class': 'form-control is-valid'})
-        
+
         return cleaned_data
 
 class ServerSelectionForm(forms.Form):
@@ -152,6 +160,10 @@ class SonarrInstanceForm(forms.ModelForm):
 
 def home_view(request):
     mdblistarr = get_mdblistarr()
+    oauth_connected = bool(
+        Preferences.objects.filter(name='mdblist_access_token').exclude(value='').first()
+    )
+
     sync_library_pref = Preferences.objects.filter(name='sync_library_status').first()
     sync_instance_scope_pref = Preferences.objects.filter(name='sync_instance_scope').first()
     sync_hour_pref = Preferences.objects.filter(name='sync_hour').first()
@@ -160,12 +172,15 @@ def home_view(request):
         sync_hour_pref, _ = Preferences.objects.update_or_create(
             name='sync_hour', defaults={'value': random_hour}
         )
-    mdblist_form = MDBListForm(initial={
-        'mdblist_apikey': mdblistarr.mdblist_apikey,
-        'sync_library_status': sync_library_pref and sync_library_pref.value == '1',
-        'sync_instance_scope': sync_instance_scope_pref.value if sync_instance_scope_pref else 'first',
-        'sync_hour': sync_hour_pref.value,
-    })
+    mdblist_form = MDBListForm(
+        oauth_connected=oauth_connected,
+        initial={
+            'mdblist_apikey': mdblistarr.mdblist_apikey if not oauth_connected else '',
+            'sync_library_status': sync_library_pref and sync_library_pref.value == '1',
+            'sync_instance_scope': sync_instance_scope_pref.value if sync_instance_scope_pref else 'first',
+            'sync_hour': sync_hour_pref.value,
+        },
+    )
     
     radarr_instances = RadarrInstance.objects.all()
     sonarr_instances = SonarrInstance.objects.all()
@@ -212,12 +227,11 @@ def home_view(request):
             request.session['active_tab'] = 'sonarr'
         
         if form_type == 'mdblist':
-            mdblist_form = MDBListForm(request.POST)
+            mdblist_form = MDBListForm(request.POST, oauth_connected=oauth_connected)
             if mdblist_form.is_valid():
-                Preferences.objects.update_or_create(
-                    name='mdblist_apikey',
-                    defaults={'value': mdblist_form.cleaned_data['mdblist_apikey']}
-                )
+                apikey = mdblist_form.cleaned_data.get('mdblist_apikey', '').strip()
+                if apikey and not oauth_connected:
+                    Preferences.objects.update_or_create(name='mdblist_apikey', defaults={'value': apikey})
                 Preferences.objects.update_or_create(
                     name='sync_library_status',
                     defaults={'value': '1' if mdblist_form.cleaned_data.get('sync_library_status') else '0'}
@@ -231,9 +245,6 @@ def home_view(request):
                     defaults={'value': mdblist_form.cleaned_data.get('sync_hour', '10')}
                 )
                 reset_mdblistarr()
-                mdblistarr = get_mdblistarr()
-                mdblistarr.mdblist_apikey = mdblist_form.cleaned_data["mdblist_apikey"]
-                mdblistarr.mdblist = MdblistAPI(mdblistarr.mdblist_apikey)
                 messages.success(request, "MDBList configuration saved successfully!")
                 return HttpResponseRedirect(reverse('home_view'))
         
@@ -346,9 +357,85 @@ def home_view(request):
         'active_radarr_id': active_radarr_id,
         'active_sonarr_id': active_sonarr_id,
         'active_tab': request.session.get('active_tab', 'mdblist'),
+        'oauth_connected': oauth_connected,
     }
-    
+
     return render(request, "index.html", context)
+
+
+@require_POST
+def oauth_device_start(request):
+    client_id_pref = Preferences.objects.filter(name='mdblist_client_id').first()
+    client_id = (client_id_pref.value if client_id_pref else '') or MDBLIST_DEFAULT_CLIENT_ID
+
+    try:
+        r = _requests.post(MDBLIST_DEVICE_AUTH_URL, data={'client_id': client_id, 'scope': 'write'})
+        data = r.json()
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+    if not data.get('device_code'):
+        return JsonResponse({'error': data.get('error_description') or data.get('error', 'Unknown error')}, status=400)
+
+    request.session['oauth_device_code'] = data['device_code']
+    request.session['oauth_device_client_id'] = client_id
+
+    return JsonResponse({
+        'user_code': data['user_code'],
+        'verification_uri': data['verification_uri'],
+        'expires_in': data.get('expires_in', 300),
+        'interval': data.get('interval', 5),
+    })
+
+
+def oauth_device_poll(request):
+    device_code = request.session.get('oauth_device_code')
+    client_id = request.session.get('oauth_device_client_id')
+
+    if not device_code or not client_id:
+        return JsonResponse({'status': 'error', 'message': 'Session expired, please start over.'})
+
+    try:
+        r = _requests.post(MDBLIST_TOKEN_URL, data={
+            'grant_type': MDBLIST_DEVICE_GRANT_TYPE,
+            'device_code': device_code,
+            'client_id': client_id,
+        })
+        data = r.json()
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': str(e)})
+
+    if data.get('access_token'):
+        expires_at = int(time.time() + data.get('expires_in', 2592000))
+        Preferences.objects.update_or_create(name='mdblist_access_token', defaults={'value': data['access_token']})
+        Preferences.objects.update_or_create(name='mdblist_refresh_token', defaults={'value': data.get('refresh_token', '')})
+        Preferences.objects.update_or_create(name='mdblist_token_expires_at', defaults={'value': str(expires_at)})
+        Preferences.objects.filter(name='mdblist_apikey').update(value='')
+        request.session.pop('oauth_device_code', None)
+        request.session.pop('oauth_device_client_id', None)
+        reset_mdblistarr()
+        return JsonResponse({'status': 'complete'})
+
+    error = data.get('error', '')
+    if error == 'authorization_pending':
+        return JsonResponse({'status': 'pending'})
+    if error == 'slow_down':
+        return JsonResponse({'status': 'slow_down'})
+    if error == 'expired_token':
+        return JsonResponse({'status': 'expired'})
+    if error == 'access_denied':
+        return JsonResponse({'status': 'denied'})
+    return JsonResponse({'status': 'error', 'message': data.get('error_description') or error or 'Unknown error'})
+
+
+@require_POST
+def oauth_disconnect(request):
+    Preferences.objects.filter(name='mdblist_access_token').update(value='')
+    Preferences.objects.filter(name='mdblist_refresh_token').update(value='')
+    Preferences.objects.filter(name='mdblist_token_expires_at').update(value='')
+    reset_mdblistarr()
+    messages.success(request, "Disconnected from MDBList OAuth.")
+    return redirect('home_view')
 
 @csrf_exempt
 def test_radarr_connection(request):

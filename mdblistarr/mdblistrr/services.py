@@ -13,13 +13,24 @@ class MDBListarr:
         self.mdblist = None
         self._get_config()
 
-        if self.mdblist_apikey:
-            self.mdblist = MdblistAPI(self.mdblist_apikey)
-
     def _get_config(self):
-        pref = Preferences.objects.filter(name="mdblist_apikey").first()
-        if pref is not None:
-            self.mdblist_apikey = pref.value
+        apikey_pref = Preferences.objects.filter(name="mdblist_apikey").first()
+        if apikey_pref:
+            self.mdblist_apikey = apikey_pref.value
+
+        access_token_pref = Preferences.objects.filter(name="mdblist_access_token").first()
+        if access_token_pref and access_token_pref.value:
+            refresh_pref = Preferences.objects.filter(name="mdblist_refresh_token").first()
+            expires_pref = Preferences.objects.filter(name="mdblist_token_expires_at").first()
+            client_id_pref = Preferences.objects.filter(name="mdblist_client_id").first()
+            self.mdblist = MdblistAPI(
+                access_token=access_token_pref.value,
+                refresh_token=refresh_pref.value if refresh_pref else None,
+                token_expires_at=float(expires_pref.value) if expires_pref and expires_pref.value else None,
+                client_id=client_id_pref.value if client_id_pref else None,
+            )
+        elif self.mdblist_apikey:
+            self.mdblist = MdblistAPI(apikey=self.mdblist_apikey)
 
     def get_radarr_quality_profile_choices(self, url, apikey):
         choices_list = [("0", "Select Quality Profile")]

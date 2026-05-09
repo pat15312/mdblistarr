@@ -1,7 +1,11 @@
 import logging, time, json, re, traceback
+import requests as _requests
 from urllib.parse import urlsplit
-from .connect import Connect
+from .connect import Connect, DEFAULT_HEADERS
 from .models import RadarrInstance, SonarrInstance
+
+MDBLIST_TOKEN_URL = "https://api.mdblist.com/oauth/token/"
+MDBLIST_DEFAULT_CLIENT_ID = "EUk8hb6sCGab70Z08k9EKMv1kahOh311Xxk4fDrj"
 
 class SonarrAPI():
     def __init__(self, url=None, apikey=None, instance_id=None):
@@ -233,47 +237,91 @@ class RadarrAPI():
         )
 
 class MdblistAPI():
-    def __init__(self, apikey):
+    def __init__(self, apikey=None, access_token=None, refresh_token=None, token_expires_at=None, client_id=None):
         self.connect = Connect()
         self.url = "https://mdblist.com"
         self.apikey = apikey
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+        self.token_expires_at = token_expires_at  # float unix timestamp
+        self.client_id = client_id
 
-    def test_api(self, apikey):
+    @property
+    def is_oauth(self):
+        return bool(self.access_token)
+
+    def _auth(self):
+        if self.access_token:
+            return {
+                'headers': {**DEFAULT_HEADERS, 'Authorization': f'Bearer {self.access_token}'},
+                'params': None,
+            }
+        return {'headers': None, 'params': {'apikey': self.apikey}}
+
+    def _ensure_valid_token(self):
+        if not self.access_token or not self.token_expires_at:
+            return
+        if time.time() > self.token_expires_at - 300:
+            self._refresh_token()
+
+    def _refresh_token(self):
         try:
-            json = self.connect.get_json(f"{self.url}/api", params={"apikey": apikey if apikey else self.apikey, 'i': 'tt0073195'})
-            if json.get('title'):
-                return True
-            else:
-                return False
+            r = _requests.post(MDBLIST_TOKEN_URL, data={
+                'grant_type': 'refresh_token',
+                'refresh_token': self.refresh_token,
+                'client_id': self.client_id or MDBLIST_DEFAULT_CLIENT_ID,
+            })
+            data = r.json()
+            if data.get('access_token'):
+                self.access_token = data['access_token']
+                self.refresh_token = data.get('refresh_token', self.refresh_token)
+                self.token_expires_at = time.time() + data.get('expires_in', 2592000)
+                from .models import Preferences
+                Preferences.objects.update_or_create(name='mdblist_access_token', defaults={'value': self.access_token})
+                Preferences.objects.update_or_create(name='mdblist_refresh_token', defaults={'value': self.refresh_token or ''})
+                Preferences.objects.update_or_create(name='mdblist_token_expires_at', defaults={'value': str(int(self.token_expires_at))})
+        except Exception:
+            pass
+
+    def test_api(self, apikey=None):
+        try:
+            key = apikey if apikey else self.apikey
+            data = self.connect.get_json(f"{self.url}/api", params={"apikey": key, 'i': 'tt0073195'})
+            return bool(data.get('title'))
         except:
             return False
 
     def post_arr_payload(self, payload):
         try:
-            return(self.connect.post_json(f"{self.url}/service/mdblist/arr", json=payload, params={"apikey": self.apikey}))
+            self._ensure_valid_token()
+            return self.connect.post_json(f"{self.url}/service/mdblist/arr", json=payload, **self._auth())
         except:
             return {'response': f'{traceback.format_exc()}'}
 
     def get_mdblist_queue(self):
         try:
-            return(self.connect.get_json(f"{self.url}/service/mdblist/queue", params={"apikey": self.apikey}))
+            self._ensure_valid_token()
+            return self.connect.get_json(f"{self.url}/service/mdblist/queue", **self._auth())
         except:
             return {'response': f'{traceback.format_exc()}'}
 
     def post_collection(self, payload):
         try:
-            return self.connect.post_json("https://api.mdblist.com/sync/collection", json=payload, params={"apikey": self.apikey})
+            self._ensure_valid_token()
+            return self.connect.post_json("https://api.mdblist.com/sync/collection", json=payload, **self._auth())
         except:
             return {'error': f'{traceback.format_exc()}'}
 
     def post_collection_remove(self, payload):
         try:
-            return self.connect.post_json("https://api.mdblist.com/sync/collection/remove", json=payload, params={"apikey": self.apikey})
+            self._ensure_valid_token()
+            return self.connect.post_json("https://api.mdblist.com/sync/collection/remove", json=payload, **self._auth())
         except:
             return {'error': f'{traceback.format_exc()}'}
 
     def post_arr_changes(self, payload):
         try:
-            return(self.connect.post_json(f"{self.url}/service/mdblist/config", json=payload, params={"apikey": self.apikey}))
+            self._ensure_valid_token()
+            return self.connect.post_json(f"{self.url}/service/mdblist/config", json=payload, **self._auth())
         except:
             return {'response': 'Exception', 'error': f'{traceback.format_exc()}'}
