@@ -92,7 +92,7 @@ class SecurityTests(TestCase):
 
     def test_oauth_disconnect_sends_plaintext_token_not_ciphertext(self):
         Preferences.set_secret('mdblist_access_token', 'disconnect-token')
-        User = get_user_model(); User.objects.create_user('staff', password='pw', is_staff=True)
+        User = get_user_model(); User.objects.create_user('staff', password='pw', is_staff=True, is_superuser=True)
         self.client.login(username='staff', password='pw')
         with patch('mdblistrr.views._requests.post') as post:
             self.client.post('/oauth/disconnect')
@@ -166,8 +166,7 @@ class SecurityTests(TestCase):
 
     def test_admin_bootstrap_restart_legacy_and_password_file(self):
         User = get_user_model()
-        with self.assertRaises(CommandError):
-            call_command('secure_startup')
+        call_command('secure_startup')
         with tempfile.NamedTemporaryFile('w', delete=False) as f:
             f.write('safe-password\n')
             path = f.name
@@ -194,22 +193,22 @@ class SecurityTests(TestCase):
     def test_auth_exact_statuses_and_no_nonstaff_loop(self):
         response = self.client.get('/', follow=True)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.resolver_match.url_name, 'login')
+        self.assertEqual(response.resolver_match.url_name, 'setup')
         response = self.client.post('/set_active_tab/', data='{}', content_type='application/json')
-        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.status_code, 503)
         User = get_user_model()
         User.objects.create_user('user', password='pw')
         self.client.login(username='user', password='pw')
         response = self.client.get('/', follow=True)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.resolver_match.url_name, 'login')
+        self.assertEqual(response.resolver_match.url_name, 'setup')
         self.client.logout()
-        User.objects.create_user('staff', password='pw', is_staff=True)
+        User.objects.create_user('staff', password='pw', is_staff=True, is_superuser=True)
         self.assertTrue(self.client.login(username='staff', password='pw'))
         self.assertEqual(self.client.get('/').status_code, 200)
 
     def test_login_success_failure_logout(self):
-        get_user_model().objects.create_user('staff', password='pw', is_staff=True)
+        get_user_model().objects.create_user('staff', password='pw', is_staff=True, is_superuser=True)
         self.assertEqual(self.client.post('/accounts/login/', {'username': 'staff', 'password': 'bad'}).status_code, 200)
         response = self.client.post('/accounts/login/', {'username': 'staff', 'password': 'pw'}, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -218,7 +217,7 @@ class SecurityTests(TestCase):
         self.assertEqual(self.client.get('/').status_code, 302)
 
     def test_csrf_state_changing_endpoints(self):
-        get_user_model().objects.create_user('staff', password='pw', is_staff=True)
+        get_user_model().objects.create_user('staff', password='pw', is_staff=True, is_superuser=True)
         c = Client(enforce_csrf_checks=True)
         c.login(username='staff', password='pw')
         for path in ['/set_active_tab/', '/oauth/device/start', '/oauth/device/poll', '/oauth/disconnect', '/test_radarr_connection/', '/test_sonarr_connection/']:
@@ -228,7 +227,7 @@ class SecurityTests(TestCase):
     def test_arr_blank_edit_preserves_saved_key_and_html_masks_keys(self):
         r = RadarrInstance.objects.create(name='r', url='http://r', apikey='saved-radarr', quality_profile='1', root_folder='/m')
         s = SonarrInstance.objects.create(name='s', url='http://s', apikey='saved-sonarr', quality_profile='1', root_folder='/t')
-        get_user_model().objects.create_user('staff', password='pw', is_staff=True)
+        get_user_model().objects.create_user('staff', password='pw', is_staff=True, is_superuser=True)
         self.client.login(username='staff', password='pw')
         with patch('mdblistrr.services.MDBListarr.test_radarr_connection', return_value={'status': True, 'version': 'ok'}):
             self.client.post('/', {'form_type':'radarr_save','instance_id':str(r.id),'name':'r','url':'http://r','apikey':'','quality_profile':'1','root_folder':'/m'})
@@ -245,7 +244,7 @@ class SecurityTests(TestCase):
         with patch('mdblistrr.views.MdblistAPI.test_api', return_value=True):
             form = __import__('mdblistrr.views', fromlist=['MDBListForm']).MDBListForm({'mdblist_apikey':'good','sync_instance_scope':'first','sync_hour':'1'}, oauth_connected=False)
             self.assertTrue(form.is_valid())
-        get_user_model().objects.create_user('staff', password='pw', is_staff=True)
+        get_user_model().objects.create_user('staff', password='pw', is_staff=True, is_superuser=True)
         self.client.login(username='staff', password='pw')
         self.client.post('/', {'form_type':'mdblist','mdblist_apikey':'','sync_instance_scope':'first','sync_hour':'1'})
         self.assertEqual(Preferences.get_secret('mdblist_apikey'), 'existing-valid')
@@ -266,3 +265,59 @@ class SecurityTests(TestCase):
     def test_background_code_uses_decrypted_credentials(self):
         r = RadarrInstance.objects.create(name='r', url='http://r', apikey='radarr-background', quality_profile='1', root_folder='/m')
         self.assertEqual(RadarrAPI(instance_id=r.id).apikey, 'radarr-background')
+
+class RuntimeSecretBootstrapTests(TestCase):
+    def test_bootstrap_generates_persistent_secrets_idempotently_and_silently(self):
+        from mdblistrr.runtime_secrets import bootstrap_runtime_secrets
+        with tempfile.TemporaryDirectory() as d:
+            secret_dir = os.path.join(d, 'secrets')
+            with env(MDBLISTARR_SECRET_DIR=secret_dir, DJANGO_SECRET_KEY=None, DJANGO_SECRET_KEY_FILE=None, MDBLISTARR_ENCRYPTION_KEY=None, MDBLISTARR_ENCRYPTION_KEY_FILE=None):
+                with patch('mdblistrr.runtime_secrets.DEFAULT_SECRET_DIR', __import__('pathlib').Path(secret_dir)), patch('mdblistrr.runtime_secrets.DEFAULT_SECRET_FILES', {'DJANGO_SECRET_KEY': __import__('pathlib').Path(secret_dir)/'django_secret_key','MDBLISTARR_ENCRYPTION_KEY': __import__('pathlib').Path(secret_dir)/'mdblistarr_encryption_key'}):
+                    bootstrap_runtime_secrets()
+                    dk = open(os.path.join(secret_dir,'django_secret_key')).read().strip()
+                    ek = open(os.path.join(secret_dir,'mdblistarr_encryption_key')).read().strip()
+                    self.assertGreater(len(dk), 40); Fernet(ek.encode())
+                    if os.name == 'posix':
+                        self.assertEqual(oct(os.stat(secret_dir).st_mode & 0o777), '0o700')
+                        self.assertEqual(oct(os.stat(os.path.join(secret_dir,'django_secret_key')).st_mode & 0o777), '0o600')
+                    bootstrap_runtime_secrets()
+                    self.assertEqual(open(os.path.join(secret_dir,'django_secret_key')).read().strip(), dk)
+                    self.assertEqual(open(os.path.join(secret_dir,'mdblistarr_encryption_key')).read().strip(), ek)
+
+    def test_secret_precedence_and_invalid_default_fail_closed(self):
+        from mdblistrr.runtime_secrets import resolve_secret, SecretResolutionError
+        with tempfile.TemporaryDirectory() as d:
+            default = os.path.join(d, 'default')
+            filep = os.path.join(d, 'file')
+            open(filep,'w').write('from-file\n')
+            with env(DJANGO_SECRET_KEY='from-env', DJANGO_SECRET_KEY_FILE=filep):
+                self.assertEqual(resolve_secret('DJANGO_SECRET_KEY', default_path=default), 'from-file')
+            with env(DJANGO_SECRET_KEY='from-env', DJANGO_SECRET_KEY_FILE=None):
+                self.assertEqual(resolve_secret('DJANGO_SECRET_KEY', default_path=default), 'from-env')
+            bad = os.path.join(d, 'badkey'); open(bad,'w').write('bad')
+            with env(MDBLISTARR_ENCRYPTION_KEY=None, MDBLISTARR_ENCRYPTION_KEY_FILE=None):
+                with self.assertRaises(SecretResolutionError):
+                    resolve_secret('MDBLISTARR_ENCRYPTION_KEY', default_path=bad, required=True)
+                self.assertEqual(open(bad).read(), 'bad')
+
+    def test_setup_flow_creates_single_admin_and_then_disables_setup(self):
+        User = get_user_model()
+        response = self.client.get('/', follow=False)
+        self.assertEqual(response.status_code, 302); self.assertIn('/setup/', response['Location'])
+        self.assertEqual(self.client.get('/accounts/login/').status_code, 302)
+        self.assertEqual(self.client.get('/setup/').status_code, 200)
+        self.assertContains(self.client.post('/setup/', {'username':'owner','password1':'password','password2':'password'}), 'too common', status_code=200)
+        response = self.client.post('/setup/', {'username':'owner','password1':'Safe-Password-12345','password2':'Safe-Password-12345'}, follow=False)
+        self.assertEqual(response.status_code, 302); self.assertEqual(User.objects.filter(is_superuser=True,is_staff=True,is_active=True).count(), 1)
+        user = User.objects.get(username='owner'); self.assertTrue(user.check_password('Safe-Password-12345'))
+        self.assertEqual(self.client.get('/setup/').status_code, 302)
+        self.client.logout(); self.assertEqual(self.client.post('/setup/', {'username':'other','password1':'Safe-Password-12345','password2':'Safe-Password-12345'}).status_code, 302)
+        self.assertFalse(User.objects.filter(username='other').exists())
+
+    def test_setup_required_json_then_auth_json_statuses(self):
+        self.assertEqual(self.client.post('/set_active_tab/', data='{}', content_type='application/json').status_code, 503)
+        User = get_user_model(); User.objects.create_user('staff', password='pw', is_staff=True, is_superuser=True)
+        self.assertEqual(self.client.post('/set_active_tab/', data='{}', content_type='application/json').status_code, 401)
+        User.objects.create_user('user', password='pw')
+        self.client.login(username='user', password='pw')
+        self.assertEqual(self.client.post('/set_active_tab/', data='{}', content_type='application/json').status_code, 403)

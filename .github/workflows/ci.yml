@@ -11,8 +11,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      DJANGO_SECRET_KEY: ci-django-secret-key-not-for-production
-      MDBLISTARR_ENCRYPTION_KEY: 8GZIXAVtd06FNR3woMMfkavlX1rB1NhfRnm22RgYV1Q=
       DJANGO_ALLOWED_HOSTS: mdblistarr,localhost,127.0.0.1,testserver
     steps:
       - uses: actions/checkout@v4
@@ -28,13 +26,39 @@ jobs:
       - run: python mdblistarr/manage.py check
       - run: python mdblistarr/manage.py check --deploy --fail-level ERROR
         env:
-          DJANGO_SECRET_KEY: ci-django-secret-key-not-for-production
-          MDBLISTARR_ENCRYPTION_KEY: 8GZIXAVtd06FNR3woMMfkavlX1rB1NhfRnm22RgYV1Q=
-          DJANGO_ALLOWED_HOSTS: mdblistarr,localhost,127.0.0.1,testserver
           SESSION_COOKIE_SECURE: "1"
           CSRF_COOKIE_SECURE: "1"
       - run: python mdblistarr/manage.py test mdblistrr
       - run: docker build -t mdblistarr:ci .
+      - name: Fresh-volume Docker smoke test
+        run: |
+          set -euo pipefail
+          volume="mdblistarr-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          c1="mdblistarr-ci-1-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          c2="mdblistarr-ci-2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() { docker rm -f "$c1" "$c2" >/dev/null 2>&1 || true; docker volume rm "$volume" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker volume create "$volume"
+          docker run -d --name "$c1" -p 5353:5353 -e DJANGO_ALLOWED_HOSTS=mdblistarr,localhost,127.0.0.1,testserver -v "$volume":/usr/src/db mdblistarr:ci
+          for i in {1..60}; do curl -fsS http://127.0.0.1:5353/healthz && break || sleep 2; done
+          curl -fsS http://127.0.0.1:5353/setup/ >/tmp/setup.html
+          docker exec "$c1" test -s /usr/src/db/secrets/django_secret_key
+          docker exec "$c1" test -s /usr/src/db/secrets/mdblistarr_encryption_key
+          docker exec "$c1" sh -c "test \$(stat -c %a /usr/src/db/secrets) = 700"
+          docker exec "$c1" sh -c "test \$(stat -c %a /usr/src/db/secrets/django_secret_key) = 600"
+          django_hash=$(docker exec "$c1" sha256sum /usr/src/db/secrets/django_secret_key | awk '{print $1}')
+          fernet_hash=$(docker exec "$c1" sha256sum /usr/src/db/secrets/mdblistarr_encryption_key | awk '{print $1}')
+          django_value=$(docker exec "$c1" cat /usr/src/db/secrets/django_secret_key)
+          fernet_value=$(docker exec "$c1" cat /usr/src/db/secrets/mdblistarr_encryption_key)
+          logs=$(docker logs "$c1" 2>&1)
+          ! printf '%s' "$logs" | grep -F "$django_value"
+          ! printf '%s' "$logs" | grep -F "$fernet_value"
+          docker rm -f "$c1"
+          docker run -d --name "$c2" -p 5353:5353 -e DJANGO_ALLOWED_HOSTS=mdblistarr,localhost,127.0.0.1,testserver -v "$volume":/usr/src/db mdblistarr:ci
+          for i in {1..60}; do curl -fsS http://127.0.0.1:5353/healthz && break || sleep 2; done
+          curl -fsS http://127.0.0.1:5353/setup/ >/tmp/setup2.html
+          test "$(docker exec "$c2" sha256sum /usr/src/db/secrets/django_secret_key | awk '{print $1}')" = "$django_hash"
+          test "$(docker exec "$c2" sha256sum /usr/src/db/secrets/mdblistarr_encryption_key | awk '{print $1}')" = "$fernet_hash"
 
   publish:
     needs: test

@@ -7,6 +7,8 @@ import requests as _requests
 
 from django import forms
 from django.contrib import messages
+from django.contrib.auth import get_user_model, login
+from django.db import transaction
 from django.http import JsonResponse, HttpResponseRedirect
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
@@ -17,6 +19,8 @@ from .connect import Connect
 from .connect import sanitize_text
 from .models import Preferences, RadarrInstance, SonarrInstance
 from .services import get_mdblistarr, reset_mdblistarr
+from .admin_state import usable_administrator_exists
+from .forms import InitialAdminSetupForm
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +167,28 @@ class SonarrInstanceForm(forms.ModelForm):
                     self.fields['root_folder'].choices.append((self.instance.root_folder, self.instance.root_folder))
             except Exception as e:
                 logger.error(f"Error initializing SonarrInstanceForm: {sanitize_text(e)}")
+
+
+def setup_view(request):
+    if usable_administrator_exists():
+        return redirect('home_view' if request.user.is_authenticated and request.user.is_staff else 'login')
+    if request.method == 'POST':
+        form = InitialAdminSetupForm(request.POST)
+        if form.is_valid():
+            with transaction.atomic():
+                if usable_administrator_exists():
+                    return redirect('home_view' if request.user.is_authenticated and request.user.is_staff else 'login')
+                User = get_user_model()
+                user = User.objects.create_superuser(
+                    username=form.cleaned_data['username'],
+                    password=form.cleaned_data['password1'],
+                )
+                user.is_active = True; user.is_staff = True; user.is_superuser = True; user.save()
+            login(request, user)
+            return redirect('home_view')
+    else:
+        form = InitialAdminSetupForm()
+    return render(request, 'setup.html', {'form': form})
 
 def home_view(request):
     mdblistarr = get_mdblistarr()

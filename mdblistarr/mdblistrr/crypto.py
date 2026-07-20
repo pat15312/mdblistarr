@@ -1,6 +1,7 @@
 import os
 from cryptography.fernet import Fernet, InvalidToken
 from django.core.exceptions import ImproperlyConfigured
+from .runtime_secrets import resolve_secret
 
 PREFIX = "mdblistarr:v1:fernet:"
 SECRET_PREF_NAMES = {"mdblist_apikey", "mdblist_access_token", "mdblist_refresh_token"}
@@ -9,20 +10,7 @@ class SecretDecryptionError(RuntimeError):
     pass
 
 def read_secret(name, file_name=None, required=False):
-    file_name = file_name or f"{name}_FILE"
-    file_value = os.environ.get(file_name)
-    value = os.environ.get(name)
-    if file_value:
-        try:
-            with open(file_value, "r", encoding="utf-8") as fh:
-                return fh.read().rstrip("\r\n")
-        except OSError as exc:
-            raise ImproperlyConfigured(f"Unable to read secret file configured by {file_name}.") from exc
-    if value:
-        return value
-    if required:
-        raise ImproperlyConfigured(f"{name} or {file_name} must be configured.")
-    return ""
+    return resolve_secret(name, file_env=file_name, required=required)
 
 def is_encrypted(value):
     return isinstance(value, str) and value.startswith(PREFIX)
