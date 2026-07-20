@@ -112,17 +112,57 @@ class SecurityTests(TestCase):
             call_command('encrypt_secrets')
 
     def test_mixed_plaintext_and_encrypted_migration_idempotent(self):
-        RadarrInstance.objects.create(name='r1', url='http://r', apikey='plain-radarr', quality_profile='1', root_folder='/m')
-        SonarrInstance.objects.create(name='s1', url='http://s', apikey='plain-sonarr', quality_profile='1', root_folder='/t')
-        Preferences.objects.create(name='mdblist_apikey', value='plain-pref')
+        radarr = RadarrInstance.objects.create(name='r1', url='http://r', apikey='initial-radarr', quality_profile='1', root_folder='/m')
+        sonarr = SonarrInstance.objects.create(name='s1', url='http://s', apikey='initial-sonarr', quality_profile='1', root_folder='/t')
+        Preferences.set_secret('mdblist_apikey', 'initial-pref')
         Preferences.set_secret('mdblist_access_token', 'already-encrypted')
+        encrypted_access_before = self.raw_pref('mdblist_access_token')
+
+        with connection.cursor() as c:
+            c.execute("UPDATE mdblistrr_radarrinstance SET apikey=%s WHERE id=%s", ['plain-radarr', radarr.id])
+            c.execute("UPDATE mdblistrr_sonarrinstance SET apikey=%s WHERE id=%s", ['plain-sonarr', sonarr.id])
+            c.execute("UPDATE mdblistrr_preferences SET value=%s WHERE name=%s", ['plain-pref', 'mdblist_apikey'])
+
+            c.execute("SELECT apikey FROM mdblistrr_radarrinstance WHERE id=%s", [radarr.id])
+            self.assertEqual(c.fetchone()[0], 'plain-radarr')
+            c.execute("SELECT apikey FROM mdblistrr_sonarrinstance WHERE id=%s", [sonarr.id])
+            self.assertEqual(c.fetchone()[0], 'plain-sonarr')
+            c.execute("SELECT value FROM mdblistrr_preferences WHERE name=%s", ['mdblist_apikey'])
+            self.assertEqual(c.fetchone()[0], 'plain-pref')
+
         call_command('encrypt_secrets')
-        first = self.raw_pref('mdblist_apikey')
-        call_command('encrypt_secrets')
-        self.assertEqual(first, self.raw_pref('mdblist_apikey'))
+
+        with connection.cursor() as c:
+            c.execute("SELECT apikey FROM mdblistrr_radarrinstance WHERE id=%s", [radarr.id])
+            radarr_ciphertext = c.fetchone()[0]
+            c.execute("SELECT apikey FROM mdblistrr_sonarrinstance WHERE id=%s", [sonarr.id])
+            sonarr_ciphertext = c.fetchone()[0]
+            c.execute("SELECT value FROM mdblistrr_preferences WHERE name=%s", ['mdblist_apikey'])
+            pref_ciphertext = c.fetchone()[0]
+
+        for plaintext, ciphertext in [
+            ('plain-radarr', radarr_ciphertext),
+            ('plain-sonarr', sonarr_ciphertext),
+            ('plain-pref', pref_ciphertext),
+        ]:
+            self.assertTrue(ciphertext.startswith(crypto.PREFIX))
+            self.assertNotIn(plaintext, ciphertext)
+
         self.assertEqual(Preferences.get_secret('mdblist_apikey'), 'plain-pref')
-        self.assertEqual(RadarrInstance.objects.get().apikey, 'plain-radarr')
-        self.assertEqual(SonarrInstance.objects.get().apikey, 'plain-sonarr')
+        self.assertEqual(RadarrInstance.objects.get(id=radarr.id).apikey, 'plain-radarr')
+        self.assertEqual(SonarrInstance.objects.get(id=sonarr.id).apikey, 'plain-sonarr')
+        self.assertEqual(self.raw_pref('mdblist_access_token'), encrypted_access_before)
+
+        call_command('encrypt_secrets')
+        with connection.cursor() as c:
+            c.execute("SELECT apikey FROM mdblistrr_radarrinstance WHERE id=%s", [radarr.id])
+            self.assertEqual(c.fetchone()[0], radarr_ciphertext)
+            c.execute("SELECT apikey FROM mdblistrr_sonarrinstance WHERE id=%s", [sonarr.id])
+            self.assertEqual(c.fetchone()[0], sonarr_ciphertext)
+            c.execute("SELECT value FROM mdblistrr_preferences WHERE name=%s", ['mdblist_apikey'])
+            self.assertEqual(c.fetchone()[0], pref_ciphertext)
+            c.execute("SELECT value FROM mdblistrr_preferences WHERE name=%s", ['mdblist_access_token'])
+            self.assertEqual(c.fetchone()[0], encrypted_access_before)
 
     def test_admin_bootstrap_restart_legacy_and_password_file(self):
         User = get_user_model()
