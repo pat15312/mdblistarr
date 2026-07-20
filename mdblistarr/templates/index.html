@@ -506,7 +506,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     'Content-Type': 'application/json',
                     'X-CSRFToken': form.querySelector('input[name="csrfmiddlewaretoken"]').value
                 },
-                body: JSON.stringify({ url, apikey })
+                body: JSON.stringify({ url, apikey, instance_id: form.querySelector('input[name="instance_id"]').value })
             })
             .then(response => response.json())
             .then(data => {

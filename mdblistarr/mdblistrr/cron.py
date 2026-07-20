@@ -1,7 +1,7 @@
 from django.utils import timezone
 from django.tasks import task
 from django_scheduled_tasks import cron_task
-from .connect import Connect
+from .connect import sanitize_text, Connect
 import time
 import json
 import random
@@ -174,7 +174,7 @@ def post_radarr_payload():
 
         return res
     except:
-        save_log(provider, 2, f'{traceback.format_exc()}')
+        save_log(provider, 2, sanitize_text(traceback.format_exc()))
         return {'response': 'Exception'}
 
 @cron_task(cron_schedule="0 * * * *")
@@ -383,7 +383,7 @@ def post_sonarr_payload():
 
         return res
     except:
-        save_log(provider, 2, f'{traceback.format_exc()}')
+        save_log(provider, 2, sanitize_text(traceback.format_exc()))
         return {'response': 'Exception'}
 
 @cron_task(cron_schedule="0 * * * *")
@@ -536,7 +536,7 @@ def get_mdblist_queue_to_arr():
             else:
                 save_log(provider, 2, f"Skipping queue item with unknown mediatype={mediatype}: {item}")
     except Exception:
-        save_log(provider, 2, f'{traceback.format_exc()}')
+        save_log(provider, 2, sanitize_text(traceback.format_exc()))
         return {'result': 500}
     
     return {'result': 200}
@@ -595,7 +595,7 @@ def process_instance_changes():
             save_log(provider, 2, f'Configuration upload to MDBList.com Failed: {res}')
             return res
     except Exception as e:
-        save_log(provider, 2, f'{traceback.format_exc()}')
+        save_log(provider, 2, sanitize_text(traceback.format_exc()))
         return {'result': 500}
 
 @cron_task(cron_schedule="*/15 * * * *")
