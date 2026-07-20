@@ -1,6 +1,6 @@
 # models.py
 from django.db import models
-from .crypto import decrypt, encrypt, is_encrypted, SECRET_PREF_NAMES
+from .crypto import decrypt, encrypt, SECRET_PREF_NAMES
 from django.dispatch import receiver
 from django.db.models.signals import pre_save, post_save, pre_delete
 
@@ -23,12 +23,41 @@ class Preferences(models.Model):
     def secret_names(cls):
         return SECRET_PREF_NAMES
 
+    @classmethod
+    def get_value(cls, name, default=None):
+        pref = cls.objects.filter(name=name).first()
+        return pref.value if pref is not None else default
+
+    @classmethod
+    def set_value(cls, name, value):
+        pref, _ = cls.objects.update_or_create(name=name, defaults={"value": value})
+        return pref
+
+    @classmethod
+    def get_secret(cls, name, default=None):
+        if name not in SECRET_PREF_NAMES:
+            raise ValueError(f"{name} is not configured as a secret preference")
+        pref = cls.objects.filter(name=name).first()
+        if pref is None or pref.value in (None, ""):
+            return default
+        return decrypt(pref.value)
+
+    @classmethod
+    def set_secret(cls, name, value):
+        if name not in SECRET_PREF_NAMES:
+            raise ValueError(f"{name} is not configured as a secret preference")
+        encrypted = encrypt(value)
+        pref, _ = cls.objects.update_or_create(name=name, defaults={"value": encrypted})
+        pref.value = encrypted
+        return pref
+
+    @classmethod
+    def clear_secret(cls, name):
+        return cls.set_secret(name, "")
+
     def save(self, *args, **kwargs):
         if self.name in SECRET_PREF_NAMES:
             self.value = encrypt(self.value)
-            super().save(*args, **kwargs)
-            self.value = decrypt(self.value)
-            return
         super().save(*args, **kwargs)
     
     class Meta:

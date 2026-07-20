@@ -6,6 +6,14 @@ from lxml import html
 
 logging.basicConfig(format='%(asctime)s severity=%(levelname)s filename=%(filename)s line=%(lineno)s message="%(message)s"', level=logging.INFO)
 
+
+SENSITIVE_RE = re.compile(r"(?i)(apikey=)[^&\s]+|(?:bearer\s+)[A-Za-z0-9._~+\-/=]+|([A-Za-z0-9_-]{20,})")
+
+def sanitize_text(value):
+    if value is None:
+        return value
+    return SENSITIVE_RE.sub(lambda m: (m.group(1) + "<redacted>") if m.group(1) else "<redacted>", str(value))
+
 DEFAULT_HEADERS = {
     'accept':'*/*',
     # Avoid advertising brotli unless we're sure the runtime can decode it.
@@ -101,12 +109,12 @@ class Connect:
                     "status_code": response.status_code,
                     "content_type": response.headers.get("content-type"),
                     "url": self._redact_url(url),
-                    "raw_response": text[:500],
+                    "raw_response": sanitize_text(text[:500]),
                 }
         except ConnectionError as e:
-            return {"error": "connection_failed", "exception": str(e), "url": self._redact_url(url)}
+            return {"error": "connection_failed", "exception": sanitize_text(e), "url": self._redact_url(url)}
         except RequestException as e:
-            return {"error": "request_failed", "exception": str(e), "url": self._redact_url(url)}
+            return {"error": "request_failed", "exception": sanitize_text(e), "url": self._redact_url(url)}
 
     @retry(stop=stop_after_attempt(6), wait=wait_fixed(10))
     def get(self, url, json=None, headers=None, params=None, cookies=None):
@@ -137,12 +145,12 @@ class Connect:
                 return {
                     "error": "Invalid POST response",
                     "status_code": response.status_code,
-                    "raw_response": (decoded or response.text)[:500]  # Limit output for debugging
+                    "raw_response": sanitize_text((decoded or response.text)[:500])  # Limit output for debugging
                 }
         except ConnectionError as e:
-            return {"error": "Connection failed", "exception": str(e)}
+            return {"error": "Connection failed", "exception": sanitize_text(e)}
         except RequestException as e:
-            return {"error": "Request failed", "exception": str(e)}
+            return {"error": "Request failed", "exception": sanitize_text(e)}
 
     @retry(stop=stop_after_attempt(6), wait=wait_fixed(10))
     def post(self, url, data=None, json=None, headers=None, params=None, cookies=None):

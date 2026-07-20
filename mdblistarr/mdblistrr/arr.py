@@ -1,11 +1,17 @@
 import logging, time, json, re, traceback
 import requests as _requests
 from urllib.parse import urlsplit
-from .connect import Connect, DEFAULT_HEADERS
+from .connect import Connect, DEFAULT_HEADERS, sanitize_text
 from .models import RadarrInstance, SonarrInstance
 
 MDBLIST_TOKEN_URL = "https://api.mdblist.com/oauth/token/"
 MDBLIST_DEFAULT_CLIENT_ID = "EUk8hb6sCGab70Z08k9EKMv1kahOh311Xxk4fDrj"
+
+def _api_headers(apikey):
+    return {**DEFAULT_HEADERS, "X-Api-Key": apikey}
+
+def _safe_error(prefix, exc):
+    return f"{prefix}: {sanitize_text(exc)}"
 
 class SonarrAPI():
     def __init__(self, url=None, apikey=None, instance_id=None):
@@ -36,7 +42,7 @@ class SonarrAPI():
                 else:
                     raise ValueError("No Sonarr instance found and no URL/API key provided")
             except Exception as e:
-                raise ValueError(f"Failed to initialize SonarrAPI: {str(e)}")
+                raise ValueError(f"Failed to initialize SonarrAPI: {sanitize_text(e)}")
     
     def _get_url(self, url):
         if not re.match(r'http(s?)\:', url):
@@ -46,45 +52,45 @@ class SonarrAPI():
     
     def get_status(self):
         try:
-            json = self.connect.get_json(f"{self.url}/api/v3/system/status", params={"apikey": self.apikey})
+            json = self.connect.get_json(f"{self.url}/api/v3/system/status", headers=_api_headers(self.apikey))
             return {'status': 1, 'message': 'Ok', 'json': json}
         except Exception as e:
-            return {'status': 0, 'message': f'Error connecting to Sonarr API: {str(e)}'}
+            return {'status': 0, 'message': f'Error connecting to Sonarr API: {sanitize_text(e)}'}
     
     def get_quality_profile(self):
         try:
-            json = self.connect.get_json(f"{self.url}/api/v3/qualityprofile", params={"apikey": self.apikey})
+            json = self.connect.get_json(f"{self.url}/api/v3/qualityprofile", headers=_api_headers(self.apikey))
             return json
         except Exception as e:
-            return [{'id': 0, 'name': f'Error connecting to Sonarr API: {str(e)}'}]
+            return [{'id': 0, 'name': f'Error connecting to Sonarr API: {sanitize_text(e)}'}]
     
     def get_root_folder(self):
         try:
-            json = self.connect.get_json(f"{self.url}/api/v3/rootfolder", params={"apikey": self.apikey})
+            json = self.connect.get_json(f"{self.url}/api/v3/rootfolder", headers=_api_headers(self.apikey))
             return json
         except Exception as e:
-            return [{'id': 0, 'path': f'Error connecting to Sonarr API: {str(e)}'}]
+            return [{'id': 0, 'path': f'Error connecting to Sonarr API: {sanitize_text(e)}'}]
     
     def get_series(self):
         try:
-            json = self.connect.get_json(f"{self.url}/api/v3/series", params={"apikey": self.apikey})
+            json = self.connect.get_json(f"{self.url}/api/v3/series", headers=_api_headers(self.apikey))
             return json
         except Exception as e:
-            return [{'result': f'Error connecting to Sonarr API: {str(e)}'}]
+            return [{'result': f'Error connecting to Sonarr API: {sanitize_text(e)}'}]
 
     def get_episodes(self, series_id):
         """Fetch all episodes for a given series."""
         try:
-            return self.connect.get_json(f"{self.url}/api/v3/episode", params={"apikey": self.apikey, "seriesId": series_id})
+            return self.connect.get_json(f"{self.url}/api/v3/episode", headers=_api_headers(self.apikey), params={"seriesId": series_id})
         except Exception as e:
-            return [{'result': f'Error connecting to Sonarr API (episode): {str(e)}'}]
+            return [{'result': f'Error connecting to Sonarr API (episode): {sanitize_text(e)}'}]
 
     def get_episode_files(self, series_id):
         """Fetch all episode files for a given series."""
         try:
-            return self.connect.get_json(f"{self.url}/api/v3/episodefile", params={"apikey": self.apikey, "seriesId": series_id})
+            return self.connect.get_json(f"{self.url}/api/v3/episodefile", headers=_api_headers(self.apikey), params={"seriesId": series_id})
         except Exception as e:
-            return [{'result': f'Error connecting to Sonarr API (episodefile): {str(e)}'}]
+            return [{'result': f'Error connecting to Sonarr API (episodefile): {sanitize_text(e)}'}]
 
     def get_import_list_exclusions(self):
         """
@@ -92,16 +98,16 @@ class SonarrAPI():
         Used to mark items as excluded in the full library sync payload.
         """
         try:
-            json = self.connect.get_json(f"{self.url}/api/v3/importlistexclusion", params={"apikey": self.apikey})
+            json = self.connect.get_json(f"{self.url}/api/v3/importlistexclusion", headers=_api_headers(self.apikey))
             return json
         except Exception as e:
-            return [{'result': f'Error connecting to Sonarr API (importlistexclusion): {str(e)}'}]
+            return [{'result': f'Error connecting to Sonarr API (importlistexclusion): {sanitize_text(e)}'}]
     
     def post_show(self, payload):
         try:
-            return self.connect.post_json(f"{self.url}/api/v3/series", json=payload, params={"apikey": self.apikey})
+            return self.connect.post_json(f"{self.url}/api/v3/series", json=payload, headers=_api_headers(self.apikey))
         except Exception:
-            return {'errorMessage': traceback.format_exc()}
+            return {'errorMessage': sanitize_text(traceback.format_exc())}
 
 class RadarrAPI():
     def __init__(self, url=None, apikey=None, instance_id=None):
@@ -132,7 +138,7 @@ class RadarrAPI():
                 else:
                     raise ValueError("No Radarr instance found and no URL/API key provided")
             except Exception as e:
-                raise ValueError(f"Failed to initialize RadarrAPI: {str(e)}")
+                raise ValueError(f"Failed to initialize RadarrAPI: {sanitize_text(e)}")
     
     def _get_url(self, url):
         if not re.match(r'http(s?)\:', url):
@@ -142,31 +148,31 @@ class RadarrAPI():
     
     def get_status(self):
         try:
-            json = self.connect.get_json(f"{self.url}/api/v3/system/status", params={"apikey": self.apikey})
+            json = self.connect.get_json(f"{self.url}/api/v3/system/status", headers=_api_headers(self.apikey))
             return {'status': 1, 'message': 'Ok', 'json': json}
         except Exception as e:
-            return {'status': 0, 'message': f'Error connecting to Radarr API: {str(e)}'}
+            return {'status': 0, 'message': f'Error connecting to Radarr API: {sanitize_text(e)}'}
     
     def get_quality_profile(self):
         try:
-            json = self.connect.get_json(f"{self.url}/api/v3/qualityprofile", params={"apikey": self.apikey})
+            json = self.connect.get_json(f"{self.url}/api/v3/qualityprofile", headers=_api_headers(self.apikey))
             return json
         except Exception as e:
-            return [{'id': 0, 'name': f'Error connecting to Radarr API: {str(e)}'}]
+            return [{'id': 0, 'name': f'Error connecting to Radarr API: {sanitize_text(e)}'}]
     
     def get_root_folder(self):
         try:
-            json = self.connect.get_json(f"{self.url}/api/v3/rootfolder", params={"apikey": self.apikey})
+            json = self.connect.get_json(f"{self.url}/api/v3/rootfolder", headers=_api_headers(self.apikey))
             return json
         except Exception as e:
-            return [{'id': 0, 'path': f'Error connecting to Radarr API: {str(e)}'}]
+            return [{'id': 0, 'path': f'Error connecting to Radarr API: {sanitize_text(e)}'}]
     
     def get_movies(self):
         try:
-            json = self.connect.get_json(f"{self.url}/api/v3/movie", params={"apikey": self.apikey})
+            json = self.connect.get_json(f"{self.url}/api/v3/movie", headers=_api_headers(self.apikey))
             return json
         except Exception as e:
-            return [{'result': f'Error connecting to Radarr API: {str(e)}'}]
+            return [{'result': f'Error connecting to Radarr API: {sanitize_text(e)}'}]
 
     def get_exclusions(self):
         """
@@ -174,16 +180,16 @@ class RadarrAPI():
         Used to mark items as excluded in the full library sync payload.
         """
         try:
-            json = self.connect.get_json(f"{self.url}/api/v3/exclusions", params={"apikey": self.apikey})
+            json = self.connect.get_json(f"{self.url}/api/v3/exclusions", headers=_api_headers(self.apikey))
             return json
         except Exception as e:
-            return [{'result': f'Error connecting to Radarr API (exclusions): {str(e)}'}]
+            return [{'result': f'Error connecting to Radarr API (exclusions): {sanitize_text(e)}'}]
 
     def post_movie(self, payload):
         try:
-            return self.connect.post_json(f"{self.url}/api/v3/movie", json=payload, params={"apikey": self.apikey})
+            return self.connect.post_json(f"{self.url}/api/v3/movie", json=payload, headers=_api_headers(self.apikey))
         except Exception:
-            return {'errorMessage': traceback.format_exc()}
+            return {'errorMessage': sanitize_text(traceback.format_exc())}
 
     def _find_movie_id_by_tmdb(self, tmdb_id):
         """
@@ -202,7 +208,8 @@ class RadarrAPI():
             # Some Radarr versions support filtering by tmdbId.
             filtered = self.connect.get_json(
                 f"{self.url}/api/v3/movie",
-                params={"apikey": self.apikey, "tmdbId": tmdb_id},
+                headers=_api_headers(self.apikey),
+                params={"tmdbId": tmdb_id},
             )
             if isinstance(filtered, list):
                 for m in filtered:
@@ -233,7 +240,7 @@ class RadarrAPI():
         return self.connect.post_json(
             f"{self.url}/api/v3/command",
             json={"name": "MoviesSearch", "movieIds": [movie_id]},
-            params={"apikey": self.apikey},
+            headers=_api_headers(self.apikey),
         )
 
 class MdblistAPI():
@@ -277,8 +284,8 @@ class MdblistAPI():
                 self.refresh_token = data.get('refresh_token', self.refresh_token)
                 self.token_expires_at = time.time() + data.get('expires_in', 2592000)
                 from .models import Preferences
-                Preferences.objects.update_or_create(name='mdblist_access_token', defaults={'value': self.access_token})
-                Preferences.objects.update_or_create(name='mdblist_refresh_token', defaults={'value': self.refresh_token or ''})
+                Preferences.set_secret('mdblist_access_token', self.access_token)
+                Preferences.set_secret('mdblist_refresh_token', self.refresh_token or '')
                 Preferences.objects.update_or_create(name='mdblist_token_expires_at', defaults={'value': str(int(self.token_expires_at))})
         except Exception:
             pass
@@ -302,32 +309,32 @@ class MdblistAPI():
             self._ensure_valid_token()
             return self.connect.post_json("https://api.mdblist.com/arr/upload", json=payload, **self._auth())
         except:
-            return {'response': f'{traceback.format_exc()}'}
+            return {'response': sanitize_text(traceback.format_exc())}
 
     def get_mdblist_queue(self):
         try:
             self._ensure_valid_token()
             return self.connect.get_json("https://api.mdblist.com/arr/queue", **self._auth())
         except:
-            return {'response': f'{traceback.format_exc()}'}
+            return {'response': sanitize_text(traceback.format_exc())}
 
     def post_collection(self, payload):
         try:
             self._ensure_valid_token()
             return self.connect.post_json("https://api.mdblist.com/sync/collection", json=payload, **self._auth())
         except:
-            return {'error': f'{traceback.format_exc()}'}
+            return {'error': sanitize_text(traceback.format_exc())}
 
     def post_collection_remove(self, payload):
         try:
             self._ensure_valid_token()
             return self.connect.post_json("https://api.mdblist.com/sync/collection/remove", json=payload, **self._auth())
         except:
-            return {'error': f'{traceback.format_exc()}'}
+            return {'error': sanitize_text(traceback.format_exc())}
 
     def post_arr_changes(self, payload):
         try:
             self._ensure_valid_token()
             return self.connect.post_json("https://api.mdblist.com/arr/config", json=payload, **self._auth())
         except:
-            return {'response': 'Exception', 'error': f'{traceback.format_exc()}'}
+            return {'response': 'Exception', 'error': sanitize_text(traceback.format_exc())}

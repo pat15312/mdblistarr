@@ -14,6 +14,7 @@ from django.views.decorators.http import require_POST
 
 from .arr import MdblistAPI, RadarrAPI, SonarrAPI, MDBLIST_DEFAULT_CLIENT_ID
 from .connect import Connect
+from .connect import sanitize_text
 from .models import Preferences, RadarrInstance, SonarrInstance
 from .services import get_mdblistarr, reset_mdblistarr
 
@@ -68,7 +69,7 @@ class MDBListForm(forms.Form):
 
         if mdblist_apikey and not self.oauth_connected:
             mdblistarr = get_mdblistarr()
-            test_instance = mdblistarr.mdblist if mdblistarr.mdblist else MdblistAPI(apikey=mdblist_apikey)
+            test_instance = MdblistAPI(apikey=mdblist_apikey)
             if not test_instance.test_api(mdblist_apikey):
                 self._errors['mdblist_apikey'] = self.error_class(['API key is invalid, unable to connect'])
                 self.fields['mdblist_apikey'].widget.attrs.update({'class': 'form-control is-invalid'})
@@ -124,7 +125,7 @@ class RadarrInstanceForm(forms.ModelForm):
                 if self.instance.root_folder and not any(self.instance.root_folder == choice[0] for choice in root_choices):
                     self.fields['root_folder'].choices.append((self.instance.root_folder, self.instance.root_folder))
             except Exception as e:
-                logger.error(f"Error initializing RadarrInstanceForm: {str(e)}")
+                logger.error(f"Error initializing RadarrInstanceForm: {sanitize_text(e)}")
 
 class SonarrInstanceForm(forms.ModelForm):
     class Meta:
@@ -161,12 +162,12 @@ class SonarrInstanceForm(forms.ModelForm):
                 if self.instance.root_folder and not any(self.instance.root_folder == choice[0] for choice in root_choices):
                     self.fields['root_folder'].choices.append((self.instance.root_folder, self.instance.root_folder))
             except Exception as e:
-                logger.error(f"Error initializing SonarrInstanceForm: {str(e)}")
+                logger.error(f"Error initializing SonarrInstanceForm: {sanitize_text(e)}")
 
 def home_view(request):
     mdblistarr = get_mdblistarr()
     oauth_connected = bool(
-        Preferences.objects.filter(name='mdblist_access_token').exclude(value='').first()
+        Preferences.get_secret('mdblist_access_token')
     )
     oauth_username = Preferences.objects.filter(name='mdblist_username').values_list('value', flat=True).first() or ''
     oauth_name = Preferences.objects.filter(name='mdblist_name').values_list('value', flat=True).first() or ''
@@ -239,7 +240,7 @@ def home_view(request):
             if mdblist_form.is_valid():
                 apikey = mdblist_form.cleaned_data.get('mdblist_apikey', '').strip()
                 if apikey and not oauth_connected:
-                    Preferences.objects.update_or_create(name='mdblist_apikey', defaults={'value': apikey})
+                    Preferences.set_secret('mdblist_apikey', apikey)
                 Preferences.objects.update_or_create(
                     name='sync_library_status',
                     defaults={'value': '1' if mdblist_form.cleaned_data.get('sync_library_status') else '0'}
@@ -387,7 +388,7 @@ def oauth_device_start(request):
         r = _requests.post(MDBLIST_DEVICE_AUTH_URL, data={'client_id': client_id, 'scope': 'write'})
         data = r.json()
     except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+        return JsonResponse({'error': 'MDBList device authorization request failed.'}, status=500)
 
     if not data.get('device_code'):
         return JsonResponse({'error': data.get('error_description') or data.get('error', 'Unknown error')}, status=400)
@@ -419,15 +420,15 @@ def oauth_device_poll(request):
         })
         data = r.json()
     except Exception as e:
-        return JsonResponse({'status': 'error', 'message': str(e)})
+        return JsonResponse({'status': 'error', 'message': 'MDBList token request failed.'})
 
     if data.get('access_token'):
         expires_at = int(time.time() + data.get('expires_in', 2592000))
         access_token = data['access_token']
-        Preferences.objects.update_or_create(name='mdblist_access_token', defaults={'value': access_token})
-        Preferences.objects.update_or_create(name='mdblist_refresh_token', defaults={'value': data.get('refresh_token', '')})
+        Preferences.set_secret('mdblist_access_token', access_token)
+        Preferences.set_secret('mdblist_refresh_token', data.get('refresh_token', ''))
         Preferences.objects.update_or_create(name='mdblist_token_expires_at', defaults={'value': str(expires_at)})
-        Preferences.objects.filter(name='mdblist_apikey').update(value='')
+        Preferences.clear_secret('mdblist_apikey')
         request.session.pop('oauth_device_code', None)
         request.session.pop('oauth_device_client_id', None)
 
@@ -461,18 +462,18 @@ def oauth_device_poll(request):
 
 @require_POST
 def oauth_disconnect(request):
-    token_pref = Preferences.objects.filter(name='mdblist_access_token').first()
-    client_id_pref = Preferences.objects.filter(name='mdblist_client_id').first()
-    if token_pref and token_pref.value:
+    token = Preferences.get_secret('mdblist_access_token')
+    client_id = Preferences.get_value('mdblist_client_id')
+    if token:
         try:
             _requests.post(MDBLIST_REVOKE_URL, data={
-                'token': token_pref.value,
-                'client_id': (client_id_pref.value if client_id_pref else '') or MDBLIST_DEFAULT_CLIENT_ID,
+                'token': token,
+                'client_id': client_id or MDBLIST_DEFAULT_CLIENT_ID,
             }, timeout=5)
         except Exception:
             pass
-    Preferences.objects.filter(name='mdblist_access_token').update(value='')
-    Preferences.objects.filter(name='mdblist_refresh_token').update(value='')
+    Preferences.clear_secret('mdblist_access_token')
+    Preferences.clear_secret('mdblist_refresh_token')
     Preferences.objects.filter(name='mdblist_token_expires_at').update(value='')
     Preferences.objects.filter(name='mdblist_username').update(value='')
     Preferences.objects.filter(name='mdblist_name').update(value='')
