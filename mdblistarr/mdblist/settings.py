@@ -20,8 +20,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/4.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-from mdblistrr.crypto import read_secret
-SECRET_KEY = read_secret('DJANGO_SECRET_KEY', required=not os.environ.get('MDBLISTARR_ALLOW_INSECURE_DEV_SECRET')) or 'dev-only-insecure-secret'
+from mdblistrr.runtime_secrets import resolve_secret
+SECRET_KEY = resolve_secret('DJANGO_SECRET_KEY', required=not os.environ.get('MDBLISTARR_ALLOW_INSECURE_DEV_SECRET'), generate=not os.environ.get('MDBLISTARR_ALLOW_INSECURE_DEV_SECRET')) or 'dev-only-insecure-secret'
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DJANGO_DEBUG', '0').lower() in {'1','true','yes'}

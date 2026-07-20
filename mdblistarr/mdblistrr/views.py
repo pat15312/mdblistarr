@@ -3,20 +3,27 @@ import random
 import time
 import traceback
 import json
+import fcntl
+import os
 import requests as _requests
 
 from django import forms
 from django.contrib import messages
+from django.contrib.auth import get_user_model, login
+from django.db import transaction
 from django.http import JsonResponse, HttpResponseRedirect
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
-from django.views.decorators.http import require_POST
+from django.views.decorators.debug import sensitive_post_parameters
+from django.views.decorators.http import require_http_methods, require_POST
 
 from .arr import MdblistAPI, RadarrAPI, SonarrAPI, MDBLIST_DEFAULT_CLIENT_ID
 from .connect import Connect
 from .connect import sanitize_text
 from .models import Preferences, RadarrInstance, SonarrInstance
 from .services import get_mdblistarr, reset_mdblistarr
+from .admin_state import usable_administrator_exists
+from .forms import InitialAdminSetupForm
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +170,55 @@ class SonarrInstanceForm(forms.ModelForm):
                     self.fields['root_folder'].choices.append((self.instance.root_folder, self.instance.root_folder))
             except Exception as e:
                 logger.error(f"Error initializing SonarrInstanceForm: {sanitize_text(e)}")
+
+
+SETUP_LOCK_PATH = os.environ.get('MDBLISTARR_SETUP_LOCK_PATH', '/usr/src/db/.initial-setup.lock')
+
+def _setup_complete_redirect(request):
+    return redirect('home_view' if request.user.is_authenticated and request.user.is_staff else 'login')
+
+class setup_claim_lock:
+    def __enter__(self):
+        os.makedirs(os.path.dirname(SETUP_LOCK_PATH), exist_ok=True)
+        self.handle = open(SETUP_LOCK_PATH, 'a+', encoding='utf-8')
+        try:
+            os.chmod(SETUP_LOCK_PATH, 0o600)
+        except OSError:
+            pass
+        fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self.handle.close()
+
+@sensitive_post_parameters('password1', 'password2')
+@require_http_methods(["GET", "POST"])
+def setup_view(request):
+    if usable_administrator_exists():
+        return _setup_complete_redirect(request)
+    if request.method == 'POST':
+        form = InitialAdminSetupForm(request.POST)
+        if form.is_valid():
+            # There is no user row to lock before setup. This process-wide and
+            # cross-process file lock serializes the first-admin claim before
+            # the final state check and transactional account creation.
+            with setup_claim_lock():
+                if usable_administrator_exists():
+                    return _setup_complete_redirect(request)
+                with transaction.atomic():
+                    user = form.save(commit=False)
+                    user.is_active = True
+                    user.is_staff = True
+                    user.is_superuser = True
+                    user.save()
+            login(request, user)
+            return redirect('home_view')
+    else:
+        form = InitialAdminSetupForm()
+    return render(request, 'setup.html', {'form': form})
 
 def home_view(request):
     mdblistarr = get_mdblistarr()
