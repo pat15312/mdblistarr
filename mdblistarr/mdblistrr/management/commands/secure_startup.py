@@ -1,4 +1,4 @@
-from django.core.management.base import BaseCommand, CommandError
+from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from mdblistrr.crypto import read_secret
@@ -15,7 +15,8 @@ class Command(BaseCommand):
             legacy = User.objects.filter(username="admin", is_active=True).first()
             if legacy and legacy.check_password("admin"):
                 legacy.is_active = False
-                legacy.save(update_fields=["is_active"])
+                legacy.set_unusable_password()
+                legacy.save(update_fields=["is_active", "password"])
                 self.stdout.write("Disabled legacy insecure admin account.")
             if not usable_administrator_exists():
                 if not password:

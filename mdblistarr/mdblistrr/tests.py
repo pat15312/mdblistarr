@@ -1,19 +1,26 @@
+import io
 import os
+import subprocess
+import sys
 import tempfile
-from contextlib import contextmanager
+import threading
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
+from pathlib import Path
 from unittest.mock import patch, Mock
 
 from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
 from django.core.management import call_command, CommandError
 from django.db import connection
-from django.test import Client, TestCase, override_settings
+from django.test import Client, TestCase, TransactionTestCase, override_settings
 
 from . import crypto
 from .arr import MdblistAPI, RadarrAPI, SonarrAPI
 from .connect import sanitize_text
 from .models import Preferences, RadarrInstance, SonarrInstance
 from .services import get_mdblistarr, reset_mdblistarr
+from .admin_state import usable_administrator_exists
+from .forms import InitialAdminSetupForm
 
 KEY = Fernet.generate_key().decode()
 WRONG_KEY = Fernet.generate_key().decode()
@@ -184,7 +191,10 @@ class SecurityTests(TestCase):
         legacy = User.objects.create_superuser('admin', password='admin')
         with env(MDBLISTARR_ADMIN_USERNAME='owner', MDBLISTARR_ADMIN_PASSWORD='new-safe'):
             call_command('secure_startup')
-        self.assertFalse(User.objects.get(id=legacy.id).is_active)
+        legacy = User.objects.get(id=legacy.id)
+        self.assertFalse(legacy.is_active)
+        self.assertFalse(legacy.has_usable_password())
+        self.assertFalse(self.client.login(username='admin', password='admin'))
         User.objects.all().delete()
         changed = User.objects.create_superuser('admin', password='changed-password')
         call_command('secure_startup')
@@ -321,3 +331,177 @@ class RuntimeSecretBootstrapTests(TestCase):
         User.objects.create_user('user', password='pw')
         self.client.login(username='user', password='pw')
         self.assertEqual(self.client.post('/set_active_tab/', data='{}', content_type='application/json').status_code, 403)
+
+    def test_secret_file_failures_generation_precedence_and_management_discovery(self):
+        from mdblistrr.runtime_secrets import resolve_secret, SecretResolutionError
+        with tempfile.TemporaryDirectory() as d:
+            missing = os.path.join(d, 'missing')
+            default = os.path.join(d, 'default')
+            with env(DJANGO_SECRET_KEY='env-value', DJANGO_SECRET_KEY_FILE=missing):
+                with self.assertRaises(SecretResolutionError):
+                    resolve_secret('DJANGO_SECRET_KEY', default_path=default, generate=True, required=True)
+                self.assertFalse(os.path.exists(default))
+            empty = os.path.join(d, 'empty'); open(empty, 'w').close()
+            with env(DJANGO_SECRET_KEY_FILE=empty, DJANGO_SECRET_KEY=None):
+                with self.assertRaises(SecretResolutionError):
+                    resolve_secret('DJANGO_SECRET_KEY', default_path=default, generate=True, required=True)
+                self.assertEqual(open(empty).read(), '')
+            with env(DJANGO_SECRET_KEY='direct-value', DJANGO_SECRET_KEY_FILE=None):
+                self.assertEqual(resolve_secret('DJANGO_SECRET_KEY', default_path=default, generate=True), 'direct-value')
+                self.assertFalse(os.path.exists(default))
+            filep = os.path.join(d, 'file'); open(filep, 'w').write('file-value\n')
+            with env(DJANGO_SECRET_KEY='direct-value', DJANGO_SECRET_KEY_FILE=filep):
+                self.assertEqual(resolve_secret('DJANGO_SECRET_KEY', default_path=default, generate=True), 'file-value')
+            key_file = os.path.join(d, 'fernet')
+            open(key_file, 'w').write(KEY + '\n')
+            with env(MDBLISTARR_ENCRYPTION_KEY=None, MDBLISTARR_ENCRYPTION_KEY_FILE=None):
+                with patch('mdblistrr.runtime_secrets.DEFAULT_SECRET_FILES', {'MDBLISTARR_ENCRYPTION_KEY': Path(key_file)}):
+                    Preferences.objects.create(name='mdblist_apikey', value='plain-default-discovery')
+                    call_command('encrypt_secrets')
+                    self.assertTrue(Preferences.objects.get(name='mdblist_apikey').value.startswith(crypto.PREFIX))
+
+    def test_no_clobber_concurrent_generation_and_link_failure_cleanup(self):
+        from mdblistrr.runtime_secrets import resolve_secret, SecretResolutionError
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'secrets' / 'django_secret_key'
+            errors = []
+            results = []
+            def worker():
+                try:
+                    results.append(resolve_secret('DJANGO_SECRET_KEY', default_path=path, generate=True, required=True))
+                except Exception as exc:
+                    errors.append(exc)
+            with env(DJANGO_SECRET_KEY=None, DJANGO_SECRET_KEY_FILE=None):
+                threads = [threading.Thread(target=worker) for _ in range(8)]
+                for thread in threads: thread.start()
+                for thread in threads: thread.join()
+            self.assertFalse(errors)
+            self.assertEqual(len(set(results)), 1)
+            self.assertEqual(path.read_text().strip(), results[0])
+            if os.name == 'posix':
+                self.assertEqual(oct(path.parent.stat().st_mode & 0o777), '0o700')
+                self.assertEqual(oct(path.stat().st_mode & 0o777), '0o600')
+            self.assertFalse(list(path.parent.glob(f'.{path.name}.*')))
+
+            path.write_text('original-secret\n')
+            with patch('mdblistrr.runtime_secrets.os.link', side_effect=OSError('link unsupported')):
+                with self.assertRaises(SecretResolutionError):
+                    # Remove the file after the pre-check so creation is attempted, then
+                    # ensure a failed safe publish never replaces an existing value.
+                    existing = path.read_text()
+                    path.unlink()
+                    try:
+                        resolve_secret('DJANGO_SECRET_KEY', default_path=path, generate=True, required=True)
+                    finally:
+                        path.write_text(existing)
+            self.assertEqual(path.read_text(), 'original-secret\n')
+            self.assertFalse(list(path.parent.glob(f'.{path.name}.*')))
+
+    def test_both_generated_secret_file_permissions_and_values_not_printed(self):
+        from mdblistrr.runtime_secrets import bootstrap_runtime_secrets
+        with tempfile.TemporaryDirectory() as d:
+            secret_dir = Path(d) / 'secrets'
+            defaults = {'DJANGO_SECRET_KEY': secret_dir / 'django_secret_key', 'MDBLISTARR_ENCRYPTION_KEY': secret_dir / 'mdblistarr_encryption_key'}
+            out, err = io.StringIO(), io.StringIO()
+            with env(DJANGO_SECRET_KEY=None, DJANGO_SECRET_KEY_FILE=None, MDBLISTARR_ENCRYPTION_KEY=None, MDBLISTARR_ENCRYPTION_KEY_FILE=None):
+                with patch('mdblistrr.runtime_secrets.DEFAULT_SECRET_FILES', defaults), redirect_stdout(out), redirect_stderr(err):
+                    bootstrap_runtime_secrets()
+            django_value = defaults['DJANGO_SECRET_KEY'].read_text().strip()
+            fernet_value = defaults['MDBLISTARR_ENCRYPTION_KEY'].read_text().strip()
+            self.assertNotIn(django_value, out.getvalue() + err.getvalue())
+            self.assertNotIn(fernet_value, out.getvalue() + err.getvalue())
+            if os.name == 'posix':
+                self.assertEqual(oct(secret_dir.stat().st_mode & 0o777), '0o700')
+                self.assertEqual(oct(defaults['DJANGO_SECRET_KEY'].stat().st_mode & 0o777), '0o600')
+                self.assertEqual(oct(defaults['MDBLISTARR_ENCRYPTION_KEY'].stat().st_mode & 0o777), '0o600')
+
+    def test_reset_db_semantics_preserve_generated_keys(self):
+        from mdblistrr.runtime_secrets import bootstrap_runtime_secrets
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / 'db.sqlite3'
+            db.write_text('db')
+            secret_dir = Path(d) / 'secrets'
+            defaults = {'DJANGO_SECRET_KEY': secret_dir / 'django_secret_key', 'MDBLISTARR_ENCRYPTION_KEY': secret_dir / 'mdblistarr_encryption_key'}
+            with env(DJANGO_SECRET_KEY=None, DJANGO_SECRET_KEY_FILE=None, MDBLISTARR_ENCRYPTION_KEY=None, MDBLISTARR_ENCRYPTION_KEY_FILE=None):
+                with patch('mdblistrr.runtime_secrets.DEFAULT_SECRET_FILES', defaults):
+                    bootstrap_runtime_secrets()
+            before = {name: path.read_text() for name, path in defaults.items()}
+            db.unlink()
+            self.assertEqual({name: path.read_text() for name, path in defaults.items()}, before)
+
+    def test_admin_state_helper_password_usability_cases_and_static_path(self):
+        User = get_user_model()
+        inactive = User.objects.create_superuser('inactive', password='pw'); inactive.is_active = False; inactive.save()
+        self.assertFalse(usable_administrator_exists())
+        User.objects.create_user('staffonly', password='pw', is_staff=True)
+        self.assertFalse(usable_administrator_exists())
+        User.objects.create_user('superonly', password='pw', is_superuser=True)
+        self.assertFalse(usable_administrator_exists())
+        unusable = User.objects.create_user('unusable', is_staff=True, is_superuser=True); unusable.set_unusable_password(); unusable.save()
+        self.assertFalse(usable_administrator_exists())
+        User.objects.create_user('valid', password='pw', is_staff=True, is_superuser=True)
+        self.assertTrue(usable_administrator_exists())
+        self.assertNotEqual(self.client.get('/static/example.css').status_code, 302)
+
+    def test_setup_form_validation_csrf_methods_and_unavailable_cases(self):
+        User = get_user_model()
+        long_username = 'u' * (User._meta.get_field('username').max_length + 1)
+        invalid_cases = [
+            ({'username':'bad space','password1':'Safe-Password-12345','password2':'Safe-Password-12345'}, 'username'),
+            ({'username':long_username,'password1':'Safe-Password-12345','password2':'Safe-Password-12345'}, 'username'),
+            ({'username':'owner','password1':'Safe-Password-12345','password2':'Different-Password-12345'}, 'password2'),
+            ({'username':'similarname','password1':'similarname','password2':'similarname'}, 'password2'),
+            ({'username':'common','password1':'password','password2':'password'}, 'password2'),
+            ({'username':'numeric','password1':'1234567890123','password2':'1234567890123'}, 'password2'),
+        ]
+        for data, field in invalid_cases:
+            form = InitialAdminSetupForm(data)
+            self.assertFalse(form.is_valid(), data)
+            self.assertIn(field, form.errors)
+        User.objects.create_user('duplicate')
+        form = InitialAdminSetupForm({'username':'duplicate','password1':'Safe-Password-12345','password2':'Safe-Password-12345'})
+        self.assertFalse(form.is_valid()); self.assertIn('username', form.errors)
+        form = InitialAdminSetupForm({'username':'validowner','password1':'Safe-Password-12345','password2':'Safe-Password-12345'})
+        self.assertTrue(form.is_valid(), form.errors)
+        c = Client(enforce_csrf_checks=True)
+        self.assertEqual(c.post('/setup/', {'username':'csrf','password1':'Safe-Password-12345','password2':'Safe-Password-12345'}).status_code, 403)
+        self.assertEqual(self.client.put('/setup/').status_code, 405)
+        User.objects.filter(username='duplicate').delete()
+        with env(MDBLISTARR_ADMIN_USERNAME='headless', MDBLISTARR_ADMIN_PASSWORD='Safe-Password-12345'):
+            call_command('secure_startup')
+        self.assertEqual(self.client.get('/setup/').status_code, 302)
+        count = User.objects.filter(is_superuser=True, is_staff=True, is_active=True).count()
+        self.client.post('/setup/', {'username':'late','password1':'Safe-Password-12345','password2':'Safe-Password-12345'})
+        self.assertEqual(User.objects.filter(is_superuser=True, is_staff=True, is_active=True).count(), count)
+
+@override_settings(ALLOWED_HOSTS=['testserver'])
+class SetupConcurrencyTests(TransactionTestCase):
+    reset_sequences = True
+
+    def test_concurrent_setup_claim_creates_exactly_one_admin(self):
+        results = []
+        errors = []
+        with tempfile.TemporaryDirectory() as d:
+            with patch('mdblistrr.views.SETUP_LOCK_PATH', os.path.join(d, '.initial-setup.lock')):
+                def submit(username):
+                    try:
+                        client = Client()
+                        response = client.post('/setup/', {
+                            'username': username,
+                            'password1': 'Safe-Password-12345',
+                            'password2': 'Safe-Password-12345',
+                        })
+                        results.append((username, response.status_code))
+                    except Exception as exc:
+                        errors.append(exc)
+                threads = [threading.Thread(target=submit, args=(name,)) for name in ('owner1', 'owner2')]
+                for thread in threads: thread.start()
+                for thread in threads: thread.join()
+        self.assertFalse(errors)
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(status in (302, 303) for _, status in results), results)
+        User = get_user_model()
+        admins = list(User.objects.filter(is_active=True, is_staff=True, is_superuser=True))
+        self.assertEqual(len(admins), 1)
+        self.assertIn(admins[0].username, {'owner1', 'owner2'})
+        self.assertEqual(User.objects.count(), 1)

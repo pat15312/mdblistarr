@@ -1,8 +1,8 @@
+import errno
 import os
 import secrets
 import string
 import tempfile
-import sys
 from pathlib import Path
 from cryptography.fernet import Fernet
 try:
@@ -41,29 +41,49 @@ def _read_file(path, name, source):
         raise SecretResolutionError(f'Unable to read {source} for {name}.') from exc
     return _validate(name, value)
 
+def _cleanup_tmp(path):
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
 def _atomic_create(path, value):
+    """Publish a newly-generated secret with strict no-clobber semantics.
+
+    The Docker target is Linux, where hard-linking a fully-written temp file to
+    the destination is atomic and fails with EEXIST if another process wins the
+    race. Do not fall back to os.replace(): replacing a persistent encryption key
+    would be worse than failing startup.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    try: os.chmod(path.parent, 0o700)
-    except OSError: pass
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
     fd, tmp = tempfile.mkstemp(prefix=f'.{path.name}.', dir=str(path.parent), text=True)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as fh:
-            fh.write(value + '\n'); fh.flush(); os.fsync(fh.fileno())
-        try: os.chmod(tmp, 0o600)
-        except OSError: pass
+            fh.write(value + '\n')
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
         try:
             os.link(tmp, path)
         except FileExistsError:
             return False
-        except OSError:
-            os.replace(tmp, path); tmp = None; return True
-        else:
-            return True
+        except OSError as exc:
+            if exc.errno == errno.EEXIST:
+                return False
+            raise SecretResolutionError('Unable to safely create persistent secret file without overwrite support.') from exc
+        return True
     finally:
-        if tmp:
-            try: os.unlink(tmp)
-            except FileNotFoundError: pass
+        _cleanup_tmp(tmp)
 
 def resolve_secret(name, file_env=None, required=False, default_path=None, generate=False):
     file_env = file_env or f'{name}_FILE'

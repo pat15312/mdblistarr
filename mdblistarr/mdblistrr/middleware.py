@@ -2,6 +2,7 @@ from django.conf import settings
 from django.http import JsonResponse
 from django.shortcuts import redirect
 from django.urls import reverse
+from urllib.parse import urlparse
 from .admin_state import usable_administrator_exists
 
 def _json_request(request):
@@ -15,7 +16,12 @@ class StaffRequiredMiddleware:
         login_url = reverse('login')
         setup_url = reverse('setup')
         public = (login_url, setup_url, '/healthz')
-        if path.startswith(settings.STATIC_URL) or path in public:
+        static_path = urlparse(settings.STATIC_URL).path or settings.STATIC_URL
+        if not static_path.startswith('/'):
+            static_path = '/' + static_path
+        if not static_path.endswith('/'):
+            static_path += '/'
+        if path.startswith(static_path) or path in public:
             if path == login_url and not usable_administrator_exists():
                 return redirect('setup')
             return self.get_response(request)
