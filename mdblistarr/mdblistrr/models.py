@@ -1,12 +1,35 @@
 # models.py
 from django.db import models
+from .crypto import decrypt, encrypt, is_encrypted, SECRET_PREF_NAMES
 from django.dispatch import receiver
 from django.db.models.signals import pre_save, post_save, pre_delete
+
+class EncryptedCharField(models.CharField):
+    def from_db_value(self, value, expression, connection):
+        return decrypt(value)
+
+    def to_python(self, value):
+        return decrypt(value)
+
+    def get_prep_value(self, value):
+        return encrypt(value)
 
 class Preferences(models.Model):
     id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=255, unique=True)
-    value = models.CharField(max_length=255, null=True)
+    value = models.CharField(max_length=2048, null=True)
+
+    @classmethod
+    def secret_names(cls):
+        return SECRET_PREF_NAMES
+
+    def save(self, *args, **kwargs):
+        if self.name in SECRET_PREF_NAMES:
+            self.value = encrypt(self.value)
+            super().save(*args, **kwargs)
+            self.value = decrypt(self.value)
+            return
+        super().save(*args, **kwargs)
     
     class Meta:
         verbose_name_plural = "preferences"
@@ -18,7 +41,7 @@ class RadarrInstance(models.Model):
     id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=255)
     url = models.CharField(max_length=255)
-    apikey = models.CharField(max_length=255)
+    apikey = EncryptedCharField(max_length=2048)
     quality_profile = models.CharField(max_length=255)
     root_folder = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -30,7 +53,7 @@ class SonarrInstance(models.Model):
     id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=255)
     url = models.CharField(max_length=255)
-    apikey = models.CharField(max_length=255)
+    apikey = EncryptedCharField(max_length=2048)
     quality_profile = models.CharField(max_length=255)
     root_folder = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)

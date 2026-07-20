@@ -10,7 +10,6 @@ from django.contrib import messages
 from django.http import JsonResponse, HttpResponseRedirect
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
-from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
 from .arr import MdblistAPI, RadarrAPI, SonarrAPI, MDBLIST_DEFAULT_CLIENT_ID
@@ -37,7 +36,8 @@ class MDBListForm(forms.Form):
     mdblist_apikey = forms.CharField(
         label='MDBList API Key',
         required=False,
-        widget=forms.TextInput(attrs={'placeholder': 'Enter your mdblist.com API key', 'class': 'form-control'}),
+        widget=forms.PasswordInput(render_value=False, attrs={'placeholder': 'Leave blank to keep saved API key', 'class': 'form-control'}),
+        help_text='Leave blank to keep the saved API key.',
     )
     sync_library_status = forms.BooleanField(
         label='Sync Library Status',
@@ -96,13 +96,15 @@ class RadarrInstanceForm(forms.ModelForm):
         widgets = {
             'name': forms.TextInput(attrs={'placeholder': 'Instance Name', 'class': 'form-control'}),
             'url': forms.TextInput(attrs={'placeholder': 'Radarr URL', 'class': 'form-control'}),
-            'apikey': forms.TextInput(attrs={'placeholder': 'Radarr API Key', 'class': 'form-control'}),
+            'apikey': forms.PasswordInput(render_value=False, attrs={'placeholder': 'Leave blank to keep saved API key', 'class': 'form-control'}),
             'quality_profile': forms.Select(attrs={'class': 'form-control'}),
             'root_folder': forms.Select(attrs={'class': 'form-control'}),
         }
     
     def __init__(self, *args, **kwargs):
         super(RadarrInstanceForm, self).__init__(*args, **kwargs)
+        self.fields['apikey'].required = not bool(self.instance and self.instance.pk)
+        self.fields['apikey'].help_text = 'Leave blank to keep the saved API key.'
         
         self.fields['quality_profile'].choices = [('0', 'Select Quality Profile')]
         self.fields['root_folder'].choices = [('0', 'Select Root Folder')]
@@ -131,13 +133,15 @@ class SonarrInstanceForm(forms.ModelForm):
         widgets = {
             'name': forms.TextInput(attrs={'placeholder': 'Instance Name', 'class': 'form-control'}),
             'url': forms.TextInput(attrs={'placeholder': 'Sonarr URL', 'class': 'form-control'}),
-            'apikey': forms.TextInput(attrs={'placeholder': 'Sonarr API Key', 'class': 'form-control'}),
+            'apikey': forms.PasswordInput(render_value=False, attrs={'placeholder': 'Leave blank to keep saved API key', 'class': 'form-control'}),
             'quality_profile': forms.Select(attrs={'class': 'form-control'}),
             'root_folder': forms.Select(attrs={'class': 'form-control'}),
         }
     
     def __init__(self, *args, **kwargs):
         super(SonarrInstanceForm, self).__init__(*args, **kwargs)
+        self.fields['apikey'].required = not bool(self.instance and self.instance.pk)
+        self.fields['apikey'].help_text = 'Leave blank to keep the saved API key.'
         
         self.fields['quality_profile'].choices = [('0', 'Select Quality Profile')]
         self.fields['root_folder'].choices = [('0', 'Select Root Folder')]
@@ -179,7 +183,7 @@ def home_view(request):
     mdblist_form = MDBListForm(
         oauth_connected=oauth_connected,
         initial={
-            'mdblist_apikey': mdblistarr.mdblist_apikey if not oauth_connected else '',
+            'mdblist_apikey': '',
             'sync_library_status': sync_library_pref and sync_library_pref.value == '1',
             'sync_instance_scope': sync_instance_scope_pref.value if sync_instance_scope_pref else 'first',
             'sync_hour': sync_hour_pref.value,
@@ -294,6 +298,8 @@ def home_view(request):
                 instance = radarr_form.save(commit=False)
                 
                 mdblistarr = get_mdblistarr()
+                if not instance.apikey and instance_id and instance_id != 'new':
+                    instance.apikey = RadarrInstance.objects.get(id=instance_id).apikey
                 connection = mdblistarr.test_radarr_connection(instance.url, instance.apikey)
                 
                 if connection['status']:
@@ -319,6 +325,8 @@ def home_view(request):
                 instance = sonarr_form.save(commit=False)
                 
                 mdblistarr = get_mdblistarr()
+                if not instance.apikey and instance_id and instance_id != 'new':
+                    instance.apikey = SonarrInstance.objects.get(id=instance_id).apikey
                 connection = mdblistarr.test_sonarr_connection(instance.url, instance.apikey)
                 
                 if connection['status']:
@@ -473,12 +481,15 @@ def oauth_disconnect(request):
     messages.success(request, "Disconnected from MDBList OAuth.")
     return redirect('home_view')
 
-@csrf_exempt
+@require_POST
 def test_radarr_connection(request):
     if request.method == 'POST':
         data = json.loads(request.body)
         url = data.get('url')
         apikey = data.get('apikey')
+        instance_id = data.get('instance_id')
+        if not apikey and instance_id and instance_id != 'new':
+            apikey = get_object_or_404(RadarrInstance, id=instance_id).apikey
         
         mdblistarr = get_mdblistarr()
         result = mdblistarr.test_radarr_connection(url, apikey)
@@ -501,12 +512,15 @@ def test_radarr_connection(request):
     
     return JsonResponse({'status': 'error', 'message': 'Invalid request method'})
 
-@csrf_exempt
+@require_POST
 def test_sonarr_connection(request):
     if request.method == 'POST':
         data = json.loads(request.body)
         url = data.get('url')
         apikey = data.get('apikey')
+        instance_id = data.get('instance_id')
+        if not apikey and instance_id and instance_id != 'new':
+            apikey = get_object_or_404(SonarrInstance, id=instance_id).apikey
         
         mdblistarr = get_mdblistarr()
         result = mdblistarr.test_sonarr_connection(url, apikey)
