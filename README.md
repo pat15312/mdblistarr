@@ -72,3 +72,15 @@ services:
 volumes:
   db:
 ```
+
+### Reverse proxy / TrueNAS hostnames
+
+If you access MDBListarr through a hostname, custom port, or reverse proxy, set Django's host and CSRF origin values explicitly:
+
+```yaml
+environment:
+  - PORT=5353
+  - CSRF_TRUSTED_ORIGINS=https://mdblistarr.example.com,http://192.168.1.10:5353
+```
+
+`CSRF_TRUSTED_ORIGINS` must include the scheme (`http://` or `https://`) and the port when one is used.
