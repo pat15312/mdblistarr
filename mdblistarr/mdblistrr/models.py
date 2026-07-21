@@ -73,19 +73,33 @@ class RadarrInstance(models.Model):
     apikey = EncryptedCharField(max_length=2048)
     quality_profile = models.CharField(max_length=255)
     root_folder = models.CharField(max_length=255)
+    enable_queue_import = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     
     def __str__(self):
         return self.name
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.enable_queue_import and (not self.quality_profile or self.quality_profile == '0' or not self.root_folder or self.root_folder == '0'):
+            raise ValidationError('Queue-import Radarr instances require a valid quality profile and root folder.')
 
 class SonarrInstance(models.Model):
     id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=255)
     url = models.CharField(max_length=255)
     apikey = EncryptedCharField(max_length=2048)
-    quality_profile = models.CharField(max_length=255)
-    root_folder = models.CharField(max_length=255)
+    quality_profile = models.CharField(max_length=255, null=True, blank=True)
+    root_folder = models.CharField(max_length=255, null=True, blank=True)
+    is_library_source = models.BooleanField(default=True)
+    is_ondemand_target = models.BooleanField(default=False)
+    enable_queue_import = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.enable_queue_import and (not self.quality_profile or self.quality_profile == '0' or not self.root_folder or self.root_folder == '0'):
+            raise ValidationError('Queue-import Sonarr instances require a valid quality profile and root folder.')
     
     def __str__(self):
         return self.name

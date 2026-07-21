@@ -128,25 +128,46 @@ class Connect:
     def post_html(self, url, data=None, json=None, headers=None, cookies=None):
         return html.fromstring(self.post(url, data=data, json=json, headers=headers, cookies=cookies).content)
 
+    def _http_error_response(self, response, decoded_body=None, default_error="HTTP request failed"):
+        error = default_error
+        if isinstance(decoded_body, dict):
+            error = decoded_body.get("error") or decoded_body.get("errorMessage") or default_error
+        return {
+            "error": error,
+            "status_code": response.status_code,
+            "decoded_response": sanitize_text(decoded_body) if decoded_body is not None else "",
+        }
+
     def post_json(self, url, data=None, json=None, headers=None, params=None, cookies=None):
         try:
             response = self.post(url, data=data, json=json, headers=headers, params=params, cookies=cookies)
+            success = 200 <= response.status_code < 300
             if not response.text.strip():
+                if success:
+                    return {"status": "ok", "status_code": response.status_code}
                 return {"error": "Empty response from server", "status_code": response.status_code}
             try:
-                return response.json()
-            except JSONDecodeError:
+                data = response.json()
+            except (JSONDecodeError, ValueError):
                 decoded = self._decode_response_bytes(response)
                 if decoded.strip():
                     try:
-                        return jsonlib.loads(decoded)
+                        data = jsonlib.loads(decoded)
                     except Exception:
-                        pass
-                return {
-                    "error": "Invalid POST response",
-                    "status_code": response.status_code,
-                    "raw_response": sanitize_text((decoded or response.text)[:500])  # Limit output for debugging
-                }
+                        data = {
+                            "error": "Invalid POST response",
+                            "status_code": response.status_code,
+                            "raw_response": sanitize_text((decoded or response.text)[:500])
+                        }
+                else:
+                    data = {
+                        "error": "Invalid POST response",
+                        "status_code": response.status_code,
+                        "raw_response": sanitize_text((decoded or response.text)[:500])
+                    }
+            if not success:
+                return self._http_error_response(response, data)
+            return data
         except ConnectionError as e:
             return {"error": "Connection failed", "exception": sanitize_text(e)}
         except RequestException as e:
@@ -157,3 +178,29 @@ class Connect:
         if headers is None:
             headers = DEFAULT_HEADERS
         return self.session.post(url, data=data, json=json, params=params, headers=headers, cookies=cookies)
+
+    def put_json(self, url, data=None, json=None, headers=None, params=None, cookies=None):
+        try:
+            response = self.put(url, data=data, json=json, headers=headers, params=params, cookies=cookies)
+            success = 200 <= response.status_code < 300
+            if not response.text.strip():
+                if success:
+                    return {"status": "ok", "status_code": response.status_code}
+                return {"error": "Empty response from server", "status_code": response.status_code}
+            try:
+                data = response.json()
+            except (JSONDecodeError, ValueError):
+                data = {"error": "Invalid PUT response", "status_code": response.status_code, "raw_response": sanitize_text(response.text[:500])}
+            if not success:
+                return self._http_error_response(response, data)
+            return data
+        except ConnectionError as e:
+            return {"error": "Connection failed", "exception": sanitize_text(e)}
+        except RequestException as e:
+            return {"error": "Request failed", "exception": sanitize_text(e)}
+
+    @retry(stop=stop_after_attempt(6), wait=wait_fixed(10))
+    def put(self, url, data=None, json=None, headers=None, params=None, cookies=None):
+        if headers is None:
+            headers = DEFAULT_HEADERS
+        return self.session.put(url, data=data, json=json, params=params, headers=headers, cookies=cookies)
