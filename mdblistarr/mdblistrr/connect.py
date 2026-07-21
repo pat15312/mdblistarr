@@ -128,6 +128,16 @@ class Connect:
     def post_html(self, url, data=None, json=None, headers=None, cookies=None):
         return html.fromstring(self.post(url, data=data, json=json, headers=headers, cookies=cookies).content)
 
+    def _http_error_response(self, response, decoded_body=None, default_error="HTTP request failed"):
+        error = default_error
+        if isinstance(decoded_body, dict):
+            error = decoded_body.get("error") or decoded_body.get("errorMessage") or default_error
+        return {
+            "error": error,
+            "status_code": response.status_code,
+            "decoded_response": sanitize_text(decoded_body) if decoded_body is not None else "",
+        }
+
     def post_json(self, url, data=None, json=None, headers=None, params=None, cookies=None):
         try:
             response = self.post(url, data=data, json=json, headers=headers, params=params, cookies=cookies)
@@ -155,9 +165,8 @@ class Connect:
                         "status_code": response.status_code,
                         "raw_response": sanitize_text((decoded or response.text)[:500])
                     }
-            if isinstance(data, dict) and not success:
-                data.setdefault("error", "HTTP request failed")
-                data.setdefault("status_code", response.status_code)
+            if not success:
+                return self._http_error_response(response, data)
             return data
         except ConnectionError as e:
             return {"error": "Connection failed", "exception": sanitize_text(e)}
@@ -182,9 +191,8 @@ class Connect:
                 data = response.json()
             except (JSONDecodeError, ValueError):
                 data = {"error": "Invalid PUT response", "status_code": response.status_code, "raw_response": sanitize_text(response.text[:500])}
-            if isinstance(data, dict) and not success:
-                data.setdefault("error", "HTTP request failed")
-                data.setdefault("status_code", response.status_code)
+            if not success:
+                return self._http_error_response(response, data)
             return data
         except ConnectionError as e:
             return {"error": "Connection failed", "exception": sanitize_text(e)}

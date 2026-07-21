@@ -607,15 +607,44 @@ class SonarrReviewFixTests(TestCase):
     def test_transport_empty_non_2xx_and_invalid_json_fail(self):
         from .connect import Connect
         class Response:
-            def __init__(self, status_code, text):
-                self.status_code = status_code; self.text = text; self.content = text.encode(); self.headers = {}
+            def __init__(self, status_code, text, body=None):
+                self.status_code = status_code; self.text = text; self.content = text.encode(); self.headers = {}; self.body = body
             def json(self):
+                if self.body is not None:
+                    return self.body
                 raise ValueError('bad json')
         c = Connect()
         with patch.object(c, 'put', return_value=Response(500, '')):
             self.assertEqual(c.put_json('http://x')['error'], 'Empty response from server')
         with patch.object(c, 'put', return_value=Response(500, 'not json')):
             self.assertEqual(c.put_json('http://x')['error'], 'Invalid PUT response')
+
+    def test_non_2xx_json_lists_and_scalars_are_error_dicts_but_2xx_lists_pass_through(self):
+        from .connect import Connect
+        class Response:
+            def __init__(self, status_code, body):
+                self.status_code = status_code; self.body = body; self.text = 'json'; self.content = b'json'; self.headers = {}
+            def json(self):
+                return self.body
+        c = Connect()
+        with patch.object(c, 'put', return_value=Response(500, [{'msg': 'bad'}])):
+            res = c.put_json('http://x')
+            self.assertEqual(res['error'], 'HTTP request failed')
+            self.assertEqual(res['status_code'], 500)
+            self.assertIn('bad', res['decoded_response'])
+        with patch.object(c, 'post', return_value=Response(500, [{'msg': 'bad'}])):
+            res = c.post_json('http://x')
+            self.assertEqual(res['error'], 'HTTP request failed')
+            self.assertEqual(res['status_code'], 500)
+        with patch.object(c, 'post', return_value=Response(503, 'temporarily unavailable')):
+            res = c.post_json('http://x')
+            self.assertEqual(res['error'], 'HTTP request failed')
+            self.assertEqual(res['status_code'], 503)
+            self.assertIn('temporarily unavailable', res['decoded_response'])
+        with patch.object(c, 'put', return_value=Response(200, [{'msg': 'ok'}])):
+            self.assertEqual(c.put_json('http://x'), [{'msg': 'ok'}])
+        with patch.object(c, 'post', return_value=Response(201, [{'msg': 'ok'}])):
+            self.assertEqual(c.post_json('http://x'), [{'msg': 'ok'}])
 
 @override_settings(ALLOWED_HOSTS=['testserver'])
 class SonarrReconciliationIntegrationReviewTests(TestCase):
