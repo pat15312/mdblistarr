@@ -589,12 +589,60 @@ class SonarrReviewFixTests(TestCase):
     def ep(self, sid=1, season=1, num=1, has=False, mon=False, air='2020-01-01T00:00:00Z'):
         return {'id': sid, 'seasonNumber': season, 'episodeNumber': num, 'hasFile': has, 'monitored': mon, 'airDateUtc': air}
 
-    def test_missing_and_invalid_dates_fail_closed_for_completeness(self):
+    def test_missing_dates_are_unscheduled_not_malformed_for_completeness(self):
         from .sonarr_reconcile import determine_series_completeness
-        self.assertTrue(determine_series_completeness([self.ep(has=True), self.ep(sid=2, has=False, air=None)])['malformed'])
-        self.assertFalse(determine_series_completeness([self.ep(has=True), self.ep(sid=2, has=False, air=None)])['complete'])
-        self.assertTrue(determine_series_completeness([self.ep(has=True), self.ep(sid=2, has=False, air='not-a-date')])['malformed'])
-        self.assertFalse(determine_series_completeness([self.ep(has=True), self.ep(sid=2, has=False, air='not-a-date')])['complete'])
+        result = determine_series_completeness([self.ep(has=True), self.ep(sid=2, has=False, air=None)])
+        self.assertFalse(result['malformed'])
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['unscheduled_ignored'], 1)
+
+    def test_invalid_dates_still_fail_closed_for_completeness(self):
+        from .sonarr_reconcile import determine_series_completeness
+        result = determine_series_completeness([self.ep(has=True), self.ep(sid=2, has=False, air='not-a-date')])
+        self.assertTrue(result['malformed'])
+        self.assertFalse(result['complete'])
+
+
+    def test_undated_target_episode_is_unmonitored_without_search_and_valid_peer_processed(self):
+        from .sonarr_reconcile import calculate_episode_monitoring
+        target = [
+            {'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': True, 'airDateUtc': None, 'airDate': None},
+            {'id': 2, 'seasonNumber': 1, 'episodeNumber': 2, 'hasFile': False, 'monitored': False, 'airDateUtc': None, 'airDate': None},
+            {'id': 3, 'seasonNumber': 1, 'episodeNumber': 3, 'hasFile': False, 'monitored': False, 'airDateUtc': '2020-01-01T00:00:00Z'},
+        ]
+        stats = calculate_episode_monitoring([], target, search_newly_eligible=True)
+        self.assertEqual(stats.failures, 0)
+        self.assertEqual(stats.malformed_episodes, 0)
+        self.assertEqual(stats.unscheduled_episodes_ignored, 2)
+        self.assertEqual(stats.monitor_false_ids, [1])
+        self.assertEqual(stats.monitor_true_ids, [3])
+        self.assertEqual(stats.search_ids, [3])
+
+    def test_blank_air_dates_are_unscheduled_and_do_not_search(self):
+        from .sonarr_reconcile import calculate_episode_monitoring
+        stats = calculate_episode_monitoring([], [{'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': False, 'airDateUtc': ' ', 'airDate': ''}], search_newly_eligible=True)
+        self.assertEqual(stats.failures, 0)
+        self.assertEqual(stats.monitor_true_ids, [])
+        self.assertEqual(stats.monitor_false_ids, [])
+        self.assertEqual(stats.search_ids, [])
+        self.assertEqual(stats.episodes_unchanged, 1)
+
+    def test_later_valid_air_date_becomes_normally_eligible(self):
+        from .sonarr_reconcile import calculate_episode_monitoring
+        undated = {'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': False, 'airDateUtc': None, 'airDate': None}
+        aired = dict(undated, airDateUtc='2020-01-01T00:00:00Z')
+        self.assertEqual(calculate_episode_monitoring([], [undated], search_newly_eligible=True).monitor_true_ids, [])
+        stats = calculate_episode_monitoring([], [aired], search_newly_eligible=True)
+        self.assertEqual(stats.monitor_true_ids, [1])
+        self.assertEqual(stats.search_ids, [1])
+
+    def test_non_empty_invalid_target_date_remains_malformed(self):
+        from .sonarr_reconcile import calculate_episode_monitoring
+        stats = calculate_episode_monitoring([], [{'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': False, 'airDateUtc': None, 'airDate': 'not-a-date'}])
+        self.assertEqual(stats.failures, 1)
+        self.assertEqual(stats.malformed_episodes, 1)
+        self.assertEqual(stats.monitor_true_ids, [])
+        self.assertEqual(stats.monitor_false_ids, [])
 
     def test_invalid_season_episode_values_are_malformed_not_raised(self):
         from .sonarr_reconcile import calculate_episode_monitoring, determine_series_completeness
