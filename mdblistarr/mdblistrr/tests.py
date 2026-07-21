@@ -719,3 +719,104 @@ class SonarrReconciliationIntegrationReviewTests(TestCase):
         self.assertEqual(res['result'], 200)
         put.assert_called_once_with([1], True)
         search.assert_called_once_with([1])
+
+@override_settings(ALLOWED_HOSTS=['testserver'])
+class SonarrSeriesResponseValidationTests(TestCase):
+    def setUp(self):
+        self.env = env(MDBLISTARR_ENCRYPTION_KEY=KEY)
+        self.env.__enter__()
+        self.source = SonarrInstance.objects.create(name='source', url='http://source', apikey='src', is_library_source=True)
+        self.target = SonarrInstance.objects.create(name='target', url='http://target', apikey='tgt', is_library_source=False, is_ondemand_target=True)
+        Preferences.set_value('sonarr_reconciliation_enabled','1')
+        Preferences.set_value('sonarr_reconciliation_source_id', str(self.source.id))
+        Preferences.set_value('sonarr_reconciliation_target_id', str(self.target.id))
+        Preferences.set_value('sonarr_search_newly_eligible', '1')
+
+    def tearDown(self):
+        self.env.__exit__(None, None, None)
+
+    def _run_with_series(self, source_series, target_series):
+        from .cron import reconcile_sonarr_ondemand
+        def init(api_self, instance_id=None, **kw): api_self.instance_id = instance_id
+        def get_series(api_self): return source_series if api_self.instance_id == self.source.id else target_series
+        with patch('mdblistrr.cron.SonarrAPI.__init__', init), \
+             patch('mdblistrr.cron.SonarrAPI.get_series', get_series), \
+             patch('mdblistrr.cron.SonarrAPI.get_episodes') as episodes, \
+             patch('mdblistrr.cron.SonarrAPI.put_episode_monitor') as put, \
+             patch('mdblistrr.cron.SonarrAPI.trigger_episode_search') as search:
+            res = reconcile_sonarr_ondemand(force=True)
+        return res, episodes, put, search
+
+    def test_source_list_error_sentinel_aborts_before_fetch_or_writes(self):
+        res, episodes, put, search = self._run_with_series(
+            [{'result': 'Error connecting to Sonarr API'}],
+            [{'id': 20, 'tvdbId': 222}],
+        )
+        self.assertEqual(res['result'], 502)
+        self.assertIn('source_series_item_0_api_error', res['message'])
+        episodes.assert_not_called(); put.assert_not_called(); search.assert_not_called()
+
+    def test_source_dict_error_aborts_safely(self):
+        res, episodes, put, search = self._run_with_series(
+            {'error': 'connection_failed'},
+            [{'id': 20, 'tvdbId': 222}],
+        )
+        self.assertEqual(res['result'], 502)
+        self.assertEqual(res['message'], 'source_series_not_list')
+        episodes.assert_not_called(); put.assert_not_called(); search.assert_not_called()
+
+    def test_mixed_valid_and_error_or_malformed_source_list_aborts(self):
+        for bad_item in ({'result': 'Error connecting to Sonarr API'}, {'id': 11}, 'not-a-dict'):
+            res, episodes, put, search = self._run_with_series(
+                [{'id': 10, 'tvdbId': 111}, bad_item],
+                [{'id': 20, 'tvdbId': 222}],
+            )
+            self.assertEqual(res['result'], 502)
+            episodes.assert_not_called(); put.assert_not_called(); search.assert_not_called()
+
+    def test_malformed_target_series_response_aborts_without_writes(self):
+        for target_series in ({'error': 'target failed'}, [{'id': 20}], [{'result': 'Error connecting to Sonarr API'}]):
+            res, episodes, put, search = self._run_with_series(
+                [{'id': 10, 'tvdbId': 111}],
+                target_series,
+            )
+            self.assertEqual(res['result'], 502)
+            episodes.assert_not_called(); put.assert_not_called(); search.assert_not_called()
+
+    def test_empty_source_list_remains_valid_target_only_reconciliation(self):
+        from .cron import reconcile_sonarr_ondemand
+        target_series = [{'id': 20, 'tvdbId': 222}]
+        target_eps = [{'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': False, 'airDateUtc': '2020-01-01T00:00:00Z'}]
+        def init(api_self, instance_id=None, **kw): api_self.instance_id = instance_id
+        def get_series(api_self): return [] if api_self.instance_id == self.source.id else target_series
+        def get_episodes(api_self, series_id): return target_eps
+        with patch('mdblistrr.cron.SonarrAPI.__init__', init), \
+             patch('mdblistrr.cron.SonarrAPI.get_series', get_series), \
+             patch('mdblistrr.cron.SonarrAPI.get_episodes', get_episodes), \
+             patch('mdblistrr.cron.SonarrAPI.put_episode_monitor', return_value={'status': 'ok', 'status_code': 202}) as put, \
+             patch('mdblistrr.cron.SonarrAPI.trigger_episode_search', return_value={'status': 'ok', 'status_code': 201}) as search:
+            res = reconcile_sonarr_ondemand(force=True)
+        self.assertEqual(res['result'], 200)
+        put.assert_called_once_with([1], True)
+        search.assert_called_once_with([1])
+
+    def test_valid_source_and_target_response_still_work(self):
+        from .cron import reconcile_sonarr_ondemand
+        source_series = [{'id': 10, 'tvdbId': 111}]
+        target_series = [{'id': 20, 'tvdbId': 111}]
+        episodes_by_series = {
+            10: [{'id': 10, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': True, 'airDateUtc': '2020-01-01T00:00:00Z'}],
+            20: [{'id': 20, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': True, 'airDateUtc': '2020-01-01T00:00:00Z'}],
+        }
+        def init(api_self, instance_id=None, **kw): api_self.instance_id = instance_id
+        def get_series(api_self): return source_series if api_self.instance_id == self.source.id else target_series
+        def get_episodes(api_self, series_id): return episodes_by_series[series_id]
+        with patch('mdblistrr.cron.SonarrAPI.__init__', init), \
+             patch('mdblistrr.cron.SonarrAPI.get_series', get_series), \
+             patch('mdblistrr.cron.SonarrAPI.get_episodes', get_episodes), \
+             patch('mdblistrr.cron.SonarrAPI.put_episode_monitor', return_value={'status': 'ok', 'status_code': 202}) as put, \
+             patch('mdblistrr.cron.SonarrAPI.trigger_episode_search') as search:
+            res = reconcile_sonarr_ondemand(force=True)
+        self.assertEqual(res['result'], 200)
+        put.assert_called_once_with([20], False)
+        search.assert_not_called()

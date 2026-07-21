@@ -614,6 +614,26 @@ def process_instance_changes_task():
     return process_instance_changes()
 
 
+
+def validate_sonarr_series_response(series, label):
+    if not isinstance(series, list):
+        return False, f'{label}_series_not_list'
+    for index, item in enumerate(series):
+        if not isinstance(item, dict):
+            return False, f'{label}_series_item_{index}_not_dict'
+        if item.get('result') or item.get('error') or item.get('errorMessage'):
+            return False, f'{label}_series_item_{index}_api_error'
+        status_code = item.get('status_code')
+        if status_code is not None:
+            try:
+                if int(status_code) < 200 or int(status_code) >= 300:
+                    return False, f'{label}_series_item_{index}_http_error'
+            except (TypeError, ValueError):
+                return False, f'{label}_series_item_{index}_bad_status'
+        if not item.get('id') or not item.get('tvdbId'):
+            return False, f'{label}_series_item_{index}_missing_identifiers'
+    return True, ''
+
 RECONCILE_LOCK_PATH = os.environ.get('MDBLISTARR_RECONCILE_LOCK_PATH', '/tmp/mdblistarr-sonarr-reconcile.lock')
 
 def _apply_monitor_batches(target_api, ids, monitored, batch_size=100):
@@ -667,10 +687,15 @@ def reconcile_sonarr_ondemand(force=False):
                 return {'result': 400, 'message': 'source_target_same'}
             source_api, target_api = SonarrAPI(instance_id=source.id), SonarrAPI(instance_id=target.id)
             source_series, target_series = source_api.get_series(), target_api.get_series()
-            if not isinstance(source_series, list) or not isinstance(target_series, list):
-                save_log(provider, 2, 'Sonarr reconciliation failed: source or target series response malformed')
-                return {'result': 502, 'message': 'series_response_malformed'}
-            source_by_tvdb = {s.get('tvdbId'): s for s in source_series if isinstance(s, dict) and s.get('tvdbId') and s.get('id')}
+            source_ok, source_error = validate_sonarr_series_response(source_series, 'source')
+            if not source_ok:
+                save_log(provider, 2, f'Sonarr reconciliation failed: permanent source series response invalid ({sanitize_text(source_error)})')
+                return {'result': 502, 'message': source_error}
+            target_ok, target_error = validate_sonarr_series_response(target_series, 'target')
+            if not target_ok:
+                save_log(provider, 2, f'Sonarr reconciliation failed: On Demand target series response invalid ({sanitize_text(target_error)})')
+                return {'result': 502, 'message': target_error}
+            source_by_tvdb = {s.get('tvdbId'): s for s in source_series}
             totals = calculate_episode_monitoring([], [])
             totals.series_compared = totals.episodes_inspected = totals.episodes_unchanged = 0
             include_specials = Preferences.get_value('sonarr_include_specials', '0') == '1'
