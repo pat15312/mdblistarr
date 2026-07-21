@@ -157,3 +157,23 @@ class Connect:
         if headers is None:
             headers = DEFAULT_HEADERS
         return self.session.post(url, data=data, json=json, params=params, headers=headers, cookies=cookies)
+
+    def put_json(self, url, data=None, json=None, headers=None, params=None, cookies=None):
+        try:
+            response = self.put(url, data=data, json=json, headers=headers, params=params, cookies=cookies)
+            if not response.text.strip():
+                return {"status": "ok", "status_code": response.status_code}
+            try:
+                return response.json()
+            except JSONDecodeError:
+                return {"error": "Invalid PUT response", "status_code": response.status_code, "raw_response": sanitize_text(response.text[:500])}
+        except ConnectionError as e:
+            return {"error": "Connection failed", "exception": sanitize_text(e)}
+        except RequestException as e:
+            return {"error": "Request failed", "exception": sanitize_text(e)}
+
+    @retry(stop=stop_after_attempt(6), wait=wait_fixed(10))
+    def put(self, url, data=None, json=None, headers=None, params=None, cookies=None):
+        if headers is None:
+            headers = DEFAULT_HEADERS
+        return self.session.put(url, data=data, json=json, params=params, headers=headers, cookies=cookies)

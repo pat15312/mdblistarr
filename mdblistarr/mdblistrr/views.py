@@ -23,7 +23,7 @@ from .connect import sanitize_text
 from .models import Preferences, RadarrInstance, SonarrInstance
 from .services import get_mdblistarr, reset_mdblistarr
 from .admin_state import usable_administrator_exists
-from .forms import InitialAdminSetupForm
+from .forms import InitialAdminSetupForm, SonarrReconciliationForm
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,11 @@ class MDBListForm(forms.Form):
         choices=SYNC_INSTANCE_SCOPE_CHOICES,
         widget=forms.Select(attrs={'class': 'form-select'}),
         help_text='Choose whether library status sync uses only the first configured Radarr/Sonarr instance or all configured instances.',
+    )
+    enable_mdblist_queue_processing = forms.BooleanField(
+        label='Enable MDBList queue processing', required=False,
+        widget=forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+        help_text='Disabled by default. When disabled, MDBListarr never polls the MDBList queue or adds items to Radarr/Sonarr.'
     )
     sync_hour = forms.ChoiceField(
         label='Sync Hour (UTC)',
@@ -100,13 +105,14 @@ class ServerSelectionForm(forms.Form):
 class RadarrInstanceForm(forms.ModelForm):
     class Meta:
         model = RadarrInstance
-        fields = ['name', 'url', 'apikey', 'quality_profile', 'root_folder']
+        fields = ['name', 'url', 'apikey', 'enable_queue_import', 'quality_profile', 'root_folder']
         widgets = {
             'name': forms.TextInput(attrs={'placeholder': 'Instance Name', 'class': 'form-control'}),
             'url': forms.TextInput(attrs={'placeholder': 'Radarr URL', 'class': 'form-control'}),
             'apikey': forms.PasswordInput(render_value=False, attrs={'placeholder': 'Leave blank to keep saved API key', 'class': 'form-control'}),
             'quality_profile': forms.Select(attrs={'class': 'form-control'}),
             'root_folder': forms.Select(attrs={'class': 'form-control'}),
+            'enable_queue_import': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
     
     def __init__(self, *args, **kwargs):
@@ -134,16 +140,28 @@ class RadarrInstanceForm(forms.ModelForm):
             except Exception as e:
                 logger.error(f"Error initializing RadarrInstanceForm: {sanitize_text(e)}")
 
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get('enable_queue_import'):
+            if not cleaned.get('quality_profile') or cleaned.get('quality_profile') == '0':
+                self.add_error('quality_profile', 'Required when queue import is enabled.')
+            if not cleaned.get('root_folder') or cleaned.get('root_folder') == '0':
+                self.add_error('root_folder', 'Required when queue import is enabled.')
+        return cleaned
+
 class SonarrInstanceForm(forms.ModelForm):
     class Meta:
         model = SonarrInstance
-        fields = ['name', 'url', 'apikey', 'quality_profile', 'root_folder']
+        fields = ['name', 'url', 'apikey', 'is_library_source', 'is_ondemand_target', 'enable_queue_import', 'quality_profile', 'root_folder']
         widgets = {
             'name': forms.TextInput(attrs={'placeholder': 'Instance Name', 'class': 'form-control'}),
             'url': forms.TextInput(attrs={'placeholder': 'Sonarr URL', 'class': 'form-control'}),
             'apikey': forms.PasswordInput(render_value=False, attrs={'placeholder': 'Leave blank to keep saved API key', 'class': 'form-control'}),
             'quality_profile': forms.Select(attrs={'class': 'form-control'}),
             'root_folder': forms.Select(attrs={'class': 'form-control'}),
+            'is_library_source': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'is_ondemand_target': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'enable_queue_import': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
     
     def __init__(self, *args, **kwargs):
@@ -170,6 +188,15 @@ class SonarrInstanceForm(forms.ModelForm):
                     self.fields['root_folder'].choices.append((self.instance.root_folder, self.instance.root_folder))
             except Exception as e:
                 logger.error(f"Error initializing SonarrInstanceForm: {sanitize_text(e)}")
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get('enable_queue_import'):
+            if not cleaned.get('quality_profile') or cleaned.get('quality_profile') == '0':
+                self.add_error('quality_profile', 'Required when queue import is enabled.')
+            if not cleaned.get('root_folder') or cleaned.get('root_folder') == '0':
+                self.add_error('root_folder', 'Required when queue import is enabled.')
+        return cleaned
 
 
 SETUP_LOCK_PATH = os.environ.get('MDBLISTARR_SETUP_LOCK_PATH', '/usr/src/db/.initial-setup.lock')
@@ -232,6 +259,7 @@ def home_view(request):
     sync_library_pref = Preferences.objects.filter(name='sync_library_status').first()
     sync_instance_scope_pref = Preferences.objects.filter(name='sync_instance_scope').first()
     sync_hour_pref = Preferences.objects.filter(name='sync_hour').first()
+    queue_pref = Preferences.objects.filter(name='enable_mdblist_queue_processing').first()
     if not sync_hour_pref:
         random_hour = str(random.randint(0, 23))
         sync_hour_pref, _ = Preferences.objects.update_or_create(
@@ -244,6 +272,7 @@ def home_view(request):
             'sync_library_status': sync_library_pref and sync_library_pref.value == '1',
             'sync_instance_scope': sync_instance_scope_pref.value if sync_instance_scope_pref else 'first',
             'sync_hour': sync_hour_pref.value,
+            'enable_mdblist_queue_processing': queue_pref and queue_pref.value == '1',
         },
     )
     
@@ -261,6 +290,14 @@ def home_view(request):
     
     radarr_form = RadarrInstanceForm()
     sonarr_form = SonarrInstanceForm()
+    reconcile_form = SonarrReconciliationForm(initial={
+        'enabled': Preferences.get_value('sonarr_reconciliation_enabled', '0') == '1',
+        'source': Preferences.get_value('sonarr_reconciliation_source_id', ''),
+        'target': Preferences.get_value('sonarr_reconciliation_target_id', ''),
+        'include_specials': Preferences.get_value('sonarr_include_specials', '0') == '1',
+        'search_newly_eligible': Preferences.get_value('sonarr_search_newly_eligible', '0') == '1',
+        'interval_minutes': Preferences.get_value('sonarr_reconciliation_interval_minutes', '15') or '15',
+    })
     
     active_radarr_id = request.session.get('active_radarr_id')
     active_sonarr_id = request.session.get('active_sonarr_id')
@@ -309,6 +346,10 @@ def home_view(request):
                     name='sync_hour',
                     defaults={'value': mdblist_form.cleaned_data.get('sync_hour', '10')}
                 )
+                Preferences.objects.update_or_create(
+                    name='enable_mdblist_queue_processing',
+                    defaults={'value': '1' if mdblist_form.cleaned_data.get('enable_mdblist_queue_processing') else '0'}
+                )
                 reset_mdblistarr()
                 messages.success(request, "MDBList configuration saved successfully!")
                 return HttpResponseRedirect(reverse('home_view'))
@@ -340,7 +381,6 @@ def home_view(request):
                     active_sonarr_id = 'new'
                     request.session['active_sonarr_id'] = 'new'
                     sonarr_form = SonarrInstanceForm()
-        
         elif form_type == 'radarr_save':
             instance_id = request.POST.get('instance_id')
             
@@ -368,6 +408,13 @@ def home_view(request):
                     radarr_form.add_error('apikey', 'Unable to connect to Radarr')
                     radarr_form.fields['apikey'].widget.attrs.update({'class': 'form-control is-invalid'})
         
+        elif form_type == 'sonarr_reconcile':
+            reconcile_form = SonarrReconciliationForm(request.POST)
+            if reconcile_form.is_valid():
+                reconcile_form.save_preferences()
+                messages.success(request, 'Sonarr reconciliation settings saved successfully!')
+                return HttpResponseRedirect(reverse('home_view'))
+
         elif form_type == 'sonarr_save':
             instance_id = request.POST.get('instance_id')
             
@@ -423,6 +470,7 @@ def home_view(request):
         'sonarr_selection_form': sonarr_selection_form,
         'radarr_form': radarr_form,
         'sonarr_form': sonarr_form,
+        'reconcile_form': reconcile_form,
         'active_radarr_id': active_radarr_id,
         'active_sonarr_id': active_sonarr_id,
         'active_tab': request.session.get('active_tab', 'mdblist'),
@@ -612,3 +660,22 @@ def set_active_tab(request):
     except json.JSONDecodeError:
         pass
     return JsonResponse({"status": "error", "message": "Invalid tab"}, status=400)
+
+
+@require_POST
+def run_sonarr_reconciliation_now(request):
+    if not request.user.is_staff:
+        return JsonResponse({'status': 'error', 'message': 'Forbidden'}, status=403)
+    from .cron import reconcile_sonarr_ondemand
+    res = reconcile_sonarr_ondemand(force=True)
+    messages.success(request, 'Sonarr On Demand reconciliation finished.' if res.get('result') == 200 else 'Sonarr On Demand reconciliation failed; check logs.')
+    return redirect('home_view')
+
+@require_POST
+def run_sonarr_library_sync_now(request):
+    if not request.user.is_staff:
+        return JsonResponse({'status': 'error', 'message': 'Forbidden'}, status=403)
+    from .cron import post_sonarr_payload
+    res = post_sonarr_payload(force=True)
+    messages.success(request, 'Sonarr library sync finished.' if res.get('response') == 'Ok' else 'Sonarr library sync did not complete; check logs.')
+    return redirect('home_view')

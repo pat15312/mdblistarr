@@ -146,3 +146,46 @@ Change an administrator password with `python manage.py changepassword USERNAME`
 ### Reverse proxies and HTTPS
 
 Authentication protects the web interface; encryption protects copied database backups; HTTPS protects credentials in transit; none of these protect against host-root, Docker-daemon, or running-container compromise. Plain HTTP remains usable for a trusted home LAN, so Secure cookies and HSTS are not forced by default. For an untrusted network, terminate HTTPS at a trusted reverse proxy, set `SESSION_COOKIE_SECURE=1`, `CSRF_COOKIE_SECURE=1`, and configure `DJANGO_SECURE_PROXY_SSL_HEADER` only for proxy headers you actually trust.
+
+## Sonarr On Demand reconciliation
+
+MDBListarr supports three explicit Sonarr purposes so a permanent Sonarr instance can remain read-only while a separate Sonarr On Demand instance is reconciled for NzbDAV-style ephemeral viewing.
+
+### Sonarr purposes and safety boundaries
+
+- **Permanent library source**: MDBListarr reads series and episode state, uploads library state to MDBList, and compares episode availability during reconciliation. MDBListarr never sends add-series, monitoring, search, delete, profile, path, tag, move, rename, or file requests to this source.
+- **On Demand reconciliation target**: MDBListarr writes only episode monitoring changes. It never deletes series, episodes, or files and never changes quality profiles, root folders, series type, tags, paths, or files.
+- **Queue-import capability**: MDBList queue import is separate, disabled by default, and must be explicitly enabled globally and per instance. Queue targets require a real quality profile and root folder; read-only/reconciliation-only Sonarr instances do not.
+
+Sonarr API keys are not permission-scoped, so MDBListarr enforces the read-only and write-boundary rules in application code. Do not reuse the same Sonarr instance as both the permanent source and On Demand target for one reconciliation relationship.
+
+### Queue processing is disabled by default
+
+`Enable MDBList queue processing` defaults to off for new and upgraded installations. When disabled, the scheduled queue task returns without calling the MDBList queue endpoint and without sending Radarr or Sonarr add requests. To use legacy queue importing, enable the global setting and enable queue import on each desired Arr instance with a valid quality profile and root folder.
+
+### Whole-show downloaded status
+
+Sonarr shows are reported to MDBList as downloaded only when every relevant aired episode has `hasFile=true` in a permanent library source. Relevant episodes are regular season 1+ episodes that have already aired. Season 0 specials and future/unaired episodes are ignored by default. Enable `Include specials in completeness checks` to include specials in the same permanent-file rules. Shows with no relevant aired episodes are not reported as downloaded. Import-list exclusions remain separate from downloaded status.
+
+This means partially retained programmes remain eligible for On Demand lists. For example, if Standard Sonarr has American Dad seasons 1-10 permanently stored but seasons 11-21 are aired and absent, MDBListarr reports the show as incomplete rather than fully downloaded, so a MDBList exclusion for Downloaded does not remove it from the On Demand list.
+
+### On Demand reconciliation algorithm
+
+At the configured interval, MDBListarr matches series in the On Demand target to the permanent source by TVDB ID. Episodes are matched by stable season and episode numbers from Sonarr episode data. Target episodes with a permanent source file are set unmonitored. Aired regular target episodes without a permanent source file are set monitored. Future episodes and specials are set unmonitored unless specials are enabled. Existing correct states are not written again.
+
+`Search newly eligible On Demand episodes` is disabled by default. When enabled, MDBListarr triggers episode-search commands only for episodes that changed to monitored during that reconciliation run and do not already have a file in the On Demand target. It does not run whole-series searches.
+
+### Required Sonarr On Demand import-list setup
+
+Configure native Sonarr MDBList import lists in the On Demand instance to:
+
+1. Add series with monitoring set to **None** or an equivalent no-episodes-monitored mode.
+2. Disable automatic **Search Missing** on the import list.
+3. Let MDBListarr reconciliation select the needed episodes after the series exists.
+4. Optionally enable `Search newly eligible On Demand episodes` only after validating monitoring results.
+
+### Scheduling, upgrade notes, and troubleshooting
+
+Library-state sync keeps the existing configured sync-hour behaviour. On Demand reconciliation runs on the existing scheduled-task system every five minutes and internally honors the configured reconciliation interval. A file lock prevents overlapping reconciliation runs; a second invocation exits cleanly while a run is active.
+
+Upgrades preserve encrypted API keys, existing quality profiles, root folders, authentication, and runtime secrets. Sonarr quality profile and root folder fields may be blank for read-only or reconciliation-only uses. Expected logs include counts for series inspected, complete/incomplete/no-relevant shows, exclusions, reconciliation comparisons, monitoring changes, skipped specials/future episodes, searches, and failures. Logs are sanitized and must not contain API keys or bearer tokens.

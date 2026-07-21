@@ -10,6 +10,8 @@ from .models import Log, InstanceChangeLog, RadarrInstance, SonarrInstance, Pref
 from .services import get_mdblistarr, reset_mdblistarr
 from .arr import SonarrAPI
 from .arr import RadarrAPI
+from .sonarr_reconcile import determine_series_completeness, calculate_episode_monitoring
+import fcntl, os
 
 def save_log(provider, status, text):
     log = Log()
@@ -31,7 +33,7 @@ def get_radarr_sync_instances():
     return [first_instance] if first_instance else []
 
 def get_sonarr_sync_instances():
-    instances = SonarrInstance.objects.order_by('id')
+    instances = SonarrInstance.objects.filter(is_library_source=True).order_by('id')
     if get_sync_instance_scope() == 'all':
         return list(instances)
     first_instance = instances.first()
@@ -49,7 +51,7 @@ def merge_arr_record(records, key_name, item_id, exists=None, date_added=None, e
         rec['exists'] = False
     records[item_id] = rec
 
-def post_radarr_payload():
+def post_radarr_payload(force=False):
     provider = 1  # Radarr JSON POST
     try:
         pref = Preferences.objects.filter(name='sync_hour').first()
@@ -57,9 +59,10 @@ def post_radarr_payload():
             random_hour = str(random.randint(0, 23))
             pref, _ = Preferences.objects.update_or_create(name='sync_hour', defaults={'value': random_hour})
         sync_hour = int(pref.value)
-        if timezone.now().hour != sync_hour:
+        if not force and timezone.now().hour != sync_hour:
             return {"response": "Not scheduled hour"}
-        time.sleep(random.uniform(0.0, 3600.0))
+        if not force:
+            time.sleep(random.uniform(0.0, 3600.0))
         reset_mdblistarr()
         mdblistarr = get_mdblistarr()
         if mdblistarr.mdblist is None:
@@ -182,7 +185,7 @@ def post_radarr_payload():
 def post_radarr_payload_task():
     return post_radarr_payload()
 
-def post_sonarr_payload():
+def post_sonarr_payload(force=False):
     provider = 2  # Sonarr JSON POST
     try:
         pref = Preferences.objects.filter(name='sync_hour').first()
@@ -190,9 +193,10 @@ def post_sonarr_payload():
             random_hour = str(random.randint(0, 23))
             pref, _ = Preferences.objects.update_or_create(name='sync_hour', defaults={'value': random_hour})
         sync_hour = int(pref.value)
-        if timezone.now().hour != sync_hour:
+        if not force and timezone.now().hour != sync_hour:
             return {"response": "Not scheduled hour"}
-        time.sleep(random.uniform(0.0, 3600.0))
+        if not force:
+            time.sleep(random.uniform(0.0, 3600.0))
         reset_mdblistarr()
         mdblistarr = get_mdblistarr()
         if mdblistarr.mdblist is None:
@@ -231,33 +235,15 @@ def post_sonarr_payload():
                 if not tvdb_id:
                     continue
 
-                # Prefer series-level statistics when present.
-                # We consider "downloaded" if there is at least 1 episode file.
-                episode_file_count = None
-                stats = show.get('statistics') if isinstance(show.get('statistics'), dict) else None
-                if stats is not None and isinstance(stats.get('episodeFileCount'), int):
-                    episode_file_count = stats.get('episodeFileCount')
-
-                # Fallback: sum season statistics.
-                if episode_file_count is None and isinstance(show.get('seasons'), list):
-                    total = 0
-                    found_any = False
-                    for season in show['seasons']:
-                        if not isinstance(season, dict):
-                            continue
-                        s = season.get('statistics') if isinstance(season.get('statistics'), dict) else None
-                        if s is None:
-                            continue
-                        if isinstance(s.get('episodeFileCount'), int):
-                            total += s.get('episodeFileCount')
-                            found_any = True
-                    if found_any:
-                        episode_file_count = total
-
-                if episode_file_count is None:
-                    # Can't infer reliably; treat presence in Sonarr as "exists".
-                    merge_arr_record(records_by_tvdb, 'tvdb', tvdb_id, exists=True)
-                elif episode_file_count > 0:
+                episodes = sonarr_api.get_episodes(show.get('id'))
+                complete = determine_series_completeness(
+                    episodes,
+                    include_specials=Preferences.get_value('sonarr_include_specials', '0') == '1'
+                )
+                if complete.get('malformed'):
+                    save_log(provider, 2, f"{sonarr_api.name}: Sonarr episodes malformed for tvdb={tvdb_id}")
+                    return {"response": "SonarrError"}
+                if complete['complete']:
                     merge_arr_record(records_by_tvdb, 'tvdb', tvdb_id, exists=True)
                 else:
                     merge_arr_record(records_by_tvdb, 'tvdb', tvdb_id, exists=False)
@@ -397,6 +383,8 @@ def get_mdblist_queue_to_arr():
         time.sleep(random.uniform(0.0, 36.0))
         reset_mdblistarr()
         mdblistarr = get_mdblistarr()
+        if Preferences.get_value('enable_mdblist_queue_processing', '0') != '1':
+            return {'result': 200, 'message': 'MDBList queue processing disabled'}
         if mdblistarr.mdblist is None:
             save_log(provider, 2, "MDBList API key not configured")
             return {"result": 400, "error": "mdblist_apikey not configured"}
@@ -455,6 +443,9 @@ def get_mdblist_queue_to_arr():
             if mediatype == 'movie':
                 provider = 1
                 instance_id = item.get('instanceid')
+                if not RadarrInstance.objects.filter(id=instance_id, enable_queue_import=True).exists():
+                    save_log(provider, 2, f"Skipping Radarr queue item because instance is not queue-import enabled: {item.get('title')}")
+                    continue
                 movie_request_json = {
                     "title": item['title'],
                     "tmdbid": item['tmdbid'],
@@ -506,6 +497,9 @@ def get_mdblist_queue_to_arr():
             elif mediatype == 'show':
                 provider = 2
                 instance_id = item.get('instanceid')
+                if not SonarrInstance.objects.filter(id=instance_id, enable_queue_import=True).exists():
+                    save_log(provider, 2, f"Skipping Sonarr queue item because instance is not queue-import enabled: {item.get('title')}")
+                    continue
                 show_request_json = {
                     "title": item['title'],
                     "tvdbid": item['tvdbid'],
@@ -602,3 +596,75 @@ def process_instance_changes():
 @task
 def process_instance_changes_task():
     return process_instance_changes()
+
+
+RECONCILE_LOCK_PATH = os.environ.get('MDBLISTARR_RECONCILE_LOCK_PATH', '/tmp/mdblistarr-sonarr-reconcile.lock')
+
+def reconcile_sonarr_ondemand(force=False):
+    provider = 2
+    if Preferences.get_value('sonarr_reconciliation_enabled', '0') != '1':
+        return {'result': 200, 'message': 'Sonarr reconciliation disabled'}
+    interval = int(Preferences.get_value('sonarr_reconciliation_interval_minutes', '15') or '15')
+    if not force and timezone.now().minute % interval != 0:
+        return {'result': 200, 'message': 'Not scheduled interval'}
+    os.makedirs(os.path.dirname(RECONCILE_LOCK_PATH), exist_ok=True)
+    with open(RECONCILE_LOCK_PATH, 'a+') as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {'result': 200, 'message': 'Reconciliation already running'}
+        try:
+            source = SonarrInstance.objects.get(id=Preferences.get_value('sonarr_reconciliation_source_id'), is_library_source=True)
+            target = SonarrInstance.objects.get(id=Preferences.get_value('sonarr_reconciliation_target_id'), is_ondemand_target=True)
+            if source.id == target.id:
+                save_log(provider, 2, 'Sonarr reconciliation source and target must be different instances')
+                return {'result': 400}
+            source_api, target_api = SonarrAPI(instance_id=source.id), SonarrAPI(instance_id=target.id)
+            source_series, target_series = source_api.get_series(), target_api.get_series()
+            if not isinstance(source_series, list) or not isinstance(target_series, list):
+                save_log(provider, 2, 'Sonarr reconciliation failed: source or target series response malformed')
+                return {'result': 502}
+            source_by_tvdb = {s.get('tvdbId'): s for s in source_series if isinstance(s, dict) and s.get('tvdbId') and s.get('id')}
+            totals = calculate_episode_monitoring([], [])
+            totals.series_compared = totals.episodes_inspected = totals.episodes_unchanged = 0
+            include_specials = Preferences.get_value('sonarr_include_specials', '0') == '1'
+            search_enabled = Preferences.get_value('sonarr_search_newly_eligible', '0') == '1'
+            for show in target_series:
+                if not isinstance(show, dict) or not show.get('tvdbId') or not show.get('id'):
+                    totals.failures += 1; continue
+                src = source_by_tvdb.get(show.get('tvdbId'))
+                if not src:
+                    totals.series_unmatched += 1; continue
+                totals.series_compared += 1
+                src_eps = source_api.get_episodes(src['id'])
+                tgt_eps = target_api.get_episodes(show['id'])
+                stats = calculate_episode_monitoring(src_eps, tgt_eps, include_specials, search_enabled)
+                if stats.failures:
+                    totals.failures += 1; continue
+                for ids, monitored in ((stats.monitor_true_ids, True), (stats.monitor_false_ids, False)):
+                    for i in range(0, len(ids), 100):
+                        batch = ids[i:i+100]
+                        if batch:
+                            res = target_api.put_episode_monitor(batch, monitored)
+                            if isinstance(res, dict) and res.get('errorMessage'):
+                                totals.failures += 1
+                for i in range(0, len(stats.search_ids), 100):
+                    batch = stats.search_ids[i:i+100]
+                    if batch:
+                        target_api.trigger_episode_search(batch); totals.searches_triggered += len(batch)
+                totals.episodes_inspected += stats.episodes_inspected
+                totals.episodes_newly_monitored += stats.episodes_newly_monitored
+                totals.episodes_newly_unmonitored += stats.episodes_newly_unmonitored
+                totals.episodes_unchanged += stats.episodes_unchanged
+                totals.specials_ignored += stats.specials_ignored
+                totals.future_episodes_ignored += stats.future_episodes_ignored
+            save_log(provider, 1, f'Sonarr reconciliation: series compared={totals.series_compared} unmatched={totals.series_unmatched} episodes inspected={totals.episodes_inspected} newly_monitored={totals.episodes_newly_monitored} newly_unmonitored={totals.episodes_newly_unmonitored} unchanged={totals.episodes_unchanged} searches={totals.searches_triggered} specials_ignored={totals.specials_ignored} future_ignored={totals.future_episodes_ignored} failures={totals.failures}')
+            return {'result': 200, 'failures': totals.failures}
+        except Exception:
+            save_log(provider, 2, sanitize_text(traceback.format_exc()))
+            return {'result': 500}
+
+@cron_task(cron_schedule="*/5 * * * *")
+@task
+def reconcile_sonarr_ondemand_task():
+    return reconcile_sonarr_ondemand()

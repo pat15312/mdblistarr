@@ -83,6 +83,11 @@
                         {{ mdblist_form.sync_instance_scope }}
                         <div class="form-text">{{ mdblist_form.sync_instance_scope.help_text }}</div>
                     </div>
+                    <div class="fieldWrapper mb-3 form-check">
+                        {{ mdblist_form.enable_mdblist_queue_processing }}
+                        {{ mdblist_form.enable_mdblist_queue_processing.label_tag }}
+                        <div class="form-text">{{ mdblist_form.enable_mdblist_queue_processing.help_text }}</div>
+                    </div>
                     <div class="fieldWrapper mb-3">
                         {{ mdblist_form.sync_hour.label_tag }}
                         {{ mdblist_form.sync_hour }}
@@ -163,6 +168,8 @@
                                 {{ radarr_form.apikey.help_text }}
                             </div>
                         </div>
+
+                        <div class="fieldWrapper mb-3 form-check">{{ radarr_form.enable_queue_import }} {{ radarr_form.enable_queue_import.label_tag }}<div class="form-text">Queue import capability: explicit opt-in and requires quality profile/root folder.</div></div>
 
                         <!-- Quality Profile field -->
                         <div class="fieldWrapper mb-3">
@@ -276,6 +283,11 @@
                             </div>
                         </div>
 
+                        <div class="alert alert-warning">For On Demand import lists, configure Sonarr to add series with monitoring set to None and disable automatic Search Missing. MDBListarr will reconcile episode monitoring afterwards.</div>
+                        <div class="fieldWrapper mb-3 form-check">{{ sonarr_form.is_library_source }} {{ sonarr_form.is_library_source.label_tag }}<div class="form-text">Permanent library source: read-only for library state and comparison.</div></div>
+                        <div class="fieldWrapper mb-3 form-check">{{ sonarr_form.is_ondemand_target }} {{ sonarr_form.is_ondemand_target.label_tag }}<div class="form-text">On Demand target: only episode monitoring may be changed by reconciliation.</div></div>
+                        <div class="fieldWrapper mb-3 form-check">{{ sonarr_form.enable_queue_import }} {{ sonarr_form.enable_queue_import.label_tag }}<div class="form-text">Queue import capability: explicit opt-in and requires quality profile/root folder.</div></div>
+
                         <!-- Quality Profile field -->
                         <div class="fieldWrapper mb-3">
                             {{ sonarr_form.quality_profile.label_tag }}
@@ -317,6 +329,19 @@
                 </div>
             </div>
             {% endif %}
+            <div class="card mb-4"><div class="card-header"><h5 class="mb-0">On Demand Reconciliation</h5></div><div class="card-body">
+            <form action="{% url 'home_view' %}" method="post">{% csrf_token %}<input type="hidden" name="form_type" value="sonarr_reconcile">
+            {% if reconcile_form.non_field_errors %}<div class="alert alert-warning">{{ reconcile_form.non_field_errors }}</div>{% endif %}
+            <div class="form-check mb-3">{{ reconcile_form.enabled }} {{ reconcile_form.enabled.label_tag }}</div>
+            <div class="mb-3">{{ reconcile_form.source.label_tag }} {{ reconcile_form.source }}</div>
+            <div class="mb-3">{{ reconcile_form.target.label_tag }} {{ reconcile_form.target }}</div>
+            <div class="form-check mb-3">{{ reconcile_form.include_specials }} {{ reconcile_form.include_specials.label_tag }}</div>
+            <div class="form-check mb-3">{{ reconcile_form.search_newly_eligible }} {{ reconcile_form.search_newly_eligible.label_tag }}</div>
+            <div class="mb-3">{{ reconcile_form.interval_minutes.label_tag }} {{ reconcile_form.interval_minutes }}</div>
+            <button type="submit" class="btn btn-success">Save Reconciliation Settings</button></form>
+            <form action="{% url 'run_sonarr_reconciliation_now' %}" method="post" class="mt-3 d-inline">{% csrf_token %}<button type="submit" class="btn btn-outline-primary">Run reconciliation now</button></form>
+            <form action="{% url 'run_sonarr_library_sync_now' %}" method="post" class="mt-3 d-inline">{% csrf_token %}<button type="submit" class="btn btn-outline-secondary">Run Sonarr library sync now</button></form>
+            </div></div>
         </div>
     </div>
 </div>

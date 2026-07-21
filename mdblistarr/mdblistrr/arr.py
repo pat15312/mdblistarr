@@ -109,6 +109,26 @@ class SonarrAPI():
         except Exception:
             return {'errorMessage': sanitize_text(traceback.format_exc())}
 
+    def put_episode_monitor(self, episode_ids, monitored):
+        try:
+            return self.connect.put_json(
+                f"{self.url}/api/v3/episode/monitor",
+                json={"episodeIds": list(episode_ids), "monitored": bool(monitored)},
+                headers=_api_headers(self.apikey),
+            )
+        except Exception:
+            return {'errorMessage': sanitize_text(traceback.format_exc())}
+
+    def trigger_episode_search(self, episode_ids):
+        try:
+            return self.connect.post_json(
+                f"{self.url}/api/v3/command",
+                json={"name": "EpisodeSearch", "episodeIds": list(episode_ids)},
+                headers=_api_headers(self.apikey),
+            )
+        except Exception:
+            return {'errorMessage': sanitize_text(traceback.format_exc())}
+
 class RadarrAPI():
     def __init__(self, url=None, apikey=None, instance_id=None):
         self.connect = Connect()

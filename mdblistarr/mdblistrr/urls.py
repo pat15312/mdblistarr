@@ -13,4 +13,6 @@ urlpatterns = [
     path('oauth/device/start', views.oauth_device_start, name='oauth_device_start'),
     path('oauth/device/poll', views.oauth_device_poll, name='oauth_device_poll'),
     path('oauth/disconnect', views.oauth_disconnect, name='oauth_disconnect'),
+    path('sonarr/reconcile/run', views.run_sonarr_reconciliation_now, name='run_sonarr_reconciliation_now'),
+    path('sonarr/library-sync/run', views.run_sonarr_library_sync_now, name='run_sonarr_library_sync_now'),
 ]
