@@ -131,22 +131,34 @@ class Connect:
     def post_json(self, url, data=None, json=None, headers=None, params=None, cookies=None):
         try:
             response = self.post(url, data=data, json=json, headers=headers, params=params, cookies=cookies)
+            success = 200 <= response.status_code < 300
             if not response.text.strip():
+                if success:
+                    return {"status": "ok", "status_code": response.status_code}
                 return {"error": "Empty response from server", "status_code": response.status_code}
             try:
-                return response.json()
-            except JSONDecodeError:
+                data = response.json()
+            except (JSONDecodeError, ValueError):
                 decoded = self._decode_response_bytes(response)
                 if decoded.strip():
                     try:
-                        return jsonlib.loads(decoded)
+                        data = jsonlib.loads(decoded)
                     except Exception:
-                        pass
-                return {
-                    "error": "Invalid POST response",
-                    "status_code": response.status_code,
-                    "raw_response": sanitize_text((decoded or response.text)[:500])  # Limit output for debugging
-                }
+                        data = {
+                            "error": "Invalid POST response",
+                            "status_code": response.status_code,
+                            "raw_response": sanitize_text((decoded or response.text)[:500])
+                        }
+                else:
+                    data = {
+                        "error": "Invalid POST response",
+                        "status_code": response.status_code,
+                        "raw_response": sanitize_text((decoded or response.text)[:500])
+                    }
+            if isinstance(data, dict) and not success:
+                data.setdefault("error", "HTTP request failed")
+                data.setdefault("status_code", response.status_code)
+            return data
         except ConnectionError as e:
             return {"error": "Connection failed", "exception": sanitize_text(e)}
         except RequestException as e:
@@ -161,12 +173,19 @@ class Connect:
     def put_json(self, url, data=None, json=None, headers=None, params=None, cookies=None):
         try:
             response = self.put(url, data=data, json=json, headers=headers, params=params, cookies=cookies)
+            success = 200 <= response.status_code < 300
             if not response.text.strip():
-                return {"status": "ok", "status_code": response.status_code}
+                if success:
+                    return {"status": "ok", "status_code": response.status_code}
+                return {"error": "Empty response from server", "status_code": response.status_code}
             try:
-                return response.json()
-            except JSONDecodeError:
-                return {"error": "Invalid PUT response", "status_code": response.status_code, "raw_response": sanitize_text(response.text[:500])}
+                data = response.json()
+            except (JSONDecodeError, ValueError):
+                data = {"error": "Invalid PUT response", "status_code": response.status_code, "raw_response": sanitize_text(response.text[:500])}
+            if isinstance(data, dict) and not success:
+                data.setdefault("error", "HTTP request failed")
+                data.setdefault("status_code", response.status_code)
+            return data
         except ConnectionError as e:
             return {"error": "Connection failed", "exception": sanitize_text(e)}
         except RequestException as e:

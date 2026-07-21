@@ -668,7 +668,11 @@ def run_sonarr_reconciliation_now(request):
         return JsonResponse({'status': 'error', 'message': 'Forbidden'}, status=403)
     from .cron import reconcile_sonarr_ondemand
     res = reconcile_sonarr_ondemand(force=True)
-    messages.success(request, 'Sonarr On Demand reconciliation finished.' if res.get('result') == 200 else 'Sonarr On Demand reconciliation failed; check logs.')
+    
+    if res.get('result') == 200:
+        messages.success(request, 'Sonarr On Demand reconciliation finished.')
+    else:
+        messages.error(request, f"Sonarr On Demand reconciliation failed or partially failed: {sanitize_text(res.get('message') or res)}")
     return redirect('home_view')
 
 @require_POST

@@ -51,6 +51,22 @@ def merge_arr_record(records, key_name, item_id, exists=None, date_added=None, e
         rec['exists'] = False
     records[item_id] = rec
 
+
+def arr_api_failed(response):
+    if response is None:
+        return True
+    if isinstance(response, dict):
+        status_code = response.get('status_code')
+        if status_code is not None:
+            try:
+                if int(status_code) < 200 or int(status_code) >= 300:
+                    return True
+            except (TypeError, ValueError):
+                return True
+        if response.get('error') or response.get('errorMessage'):
+            return True
+    return False
+
 def post_radarr_payload(force=False):
     provider = 1  # Radarr JSON POST
     try:
@@ -600,6 +616,36 @@ def process_instance_changes_task():
 
 RECONCILE_LOCK_PATH = os.environ.get('MDBLISTARR_RECONCILE_LOCK_PATH', '/tmp/mdblistarr-sonarr-reconcile.lock')
 
+def _apply_monitor_batches(target_api, ids, monitored, batch_size=100):
+    applied = []
+    failed = False
+    for i in range(0, len(ids), batch_size):
+        batch = ids[i:i + batch_size]
+        if not batch:
+            continue
+        res = target_api.put_episode_monitor(batch, monitored)
+        if arr_api_failed(res):
+            failed = True
+            continue
+        applied.extend(batch)
+    return applied, failed
+
+
+def _search_episode_batches(target_api, ids, batch_size=100):
+    searched = 0
+    failed = False
+    for i in range(0, len(ids), batch_size):
+        batch = ids[i:i + batch_size]
+        if not batch:
+            continue
+        res = target_api.trigger_episode_search(batch)
+        if arr_api_failed(res):
+            failed = True
+            continue
+        searched += len(batch)
+    return searched, failed
+
+
 def reconcile_sonarr_ondemand(force=False):
     provider = 2
     if Preferences.get_value('sonarr_reconciliation_enabled', '0') != '1':
@@ -618,12 +664,12 @@ def reconcile_sonarr_ondemand(force=False):
             target = SonarrInstance.objects.get(id=Preferences.get_value('sonarr_reconciliation_target_id'), is_ondemand_target=True)
             if source.id == target.id:
                 save_log(provider, 2, 'Sonarr reconciliation source and target must be different instances')
-                return {'result': 400}
+                return {'result': 400, 'message': 'source_target_same'}
             source_api, target_api = SonarrAPI(instance_id=source.id), SonarrAPI(instance_id=target.id)
             source_series, target_series = source_api.get_series(), target_api.get_series()
             if not isinstance(source_series, list) or not isinstance(target_series, list):
                 save_log(provider, 2, 'Sonarr reconciliation failed: source or target series response malformed')
-                return {'result': 502}
+                return {'result': 502, 'message': 'series_response_malformed'}
             source_by_tvdb = {s.get('tvdbId'): s for s in source_series if isinstance(s, dict) and s.get('tvdbId') and s.get('id')}
             totals = calculate_episode_monitoring([], [])
             totals.series_compared = totals.episodes_inspected = totals.episodes_unchanged = 0
@@ -631,38 +677,46 @@ def reconcile_sonarr_ondemand(force=False):
             search_enabled = Preferences.get_value('sonarr_search_newly_eligible', '0') == '1'
             for show in target_series:
                 if not isinstance(show, dict) or not show.get('tvdbId') or not show.get('id'):
-                    totals.failures += 1; continue
+                    totals.failures += 1
+                    continue
                 src = source_by_tvdb.get(show.get('tvdbId'))
-                if not src:
-                    totals.series_unmatched += 1; continue
-                totals.series_compared += 1
-                src_eps = source_api.get_episodes(src['id'])
+                if src:
+                    src_eps = source_api.get_episodes(src['id'])
+                    totals.series_compared += 1
+                else:
+                    src_eps = []
+                    totals.series_target_only += 1
                 tgt_eps = target_api.get_episodes(show['id'])
                 stats = calculate_episode_monitoring(src_eps, tgt_eps, include_specials, search_enabled)
-                if stats.failures:
-                    totals.failures += 1; continue
-                for ids, monitored in ((stats.monitor_true_ids, True), (stats.monitor_false_ids, False)):
-                    for i in range(0, len(ids), 100):
-                        batch = ids[i:i+100]
-                        if batch:
-                            res = target_api.put_episode_monitor(batch, monitored)
-                            if isinstance(res, dict) and res.get('errorMessage'):
-                                totals.failures += 1
-                for i in range(0, len(stats.search_ids), 100):
-                    batch = stats.search_ids[i:i+100]
-                    if batch:
-                        target_api.trigger_episode_search(batch); totals.searches_triggered += len(batch)
                 totals.episodes_inspected += stats.episodes_inspected
-                totals.episodes_newly_monitored += stats.episodes_newly_monitored
-                totals.episodes_newly_unmonitored += stats.episodes_newly_unmonitored
                 totals.episodes_unchanged += stats.episodes_unchanged
                 totals.specials_ignored += stats.specials_ignored
                 totals.future_episodes_ignored += stats.future_episodes_ignored
-            save_log(provider, 1, f'Sonarr reconciliation: series compared={totals.series_compared} unmatched={totals.series_unmatched} episodes inspected={totals.episodes_inspected} newly_monitored={totals.episodes_newly_monitored} newly_unmonitored={totals.episodes_newly_unmonitored} unchanged={totals.episodes_unchanged} searches={totals.searches_triggered} specials_ignored={totals.specials_ignored} future_ignored={totals.future_episodes_ignored} failures={totals.failures}')
-            return {'result': 200, 'failures': totals.failures}
+                totals.malformed_episodes += stats.malformed_episodes
+                if stats.failures:
+                    totals.failures += 1
+                    continue
+
+                applied_true, true_failed = _apply_monitor_batches(target_api, stats.monitor_true_ids, True)
+                applied_false, false_failed = _apply_monitor_batches(target_api, stats.monitor_false_ids, False)
+                totals.episodes_newly_monitored += len(applied_true)
+                totals.episodes_newly_unmonitored += len(applied_false)
+                if true_failed or false_failed:
+                    totals.failures += 1
+
+                if search_enabled and applied_true:
+                    eligible_search_ids = [episode_id for episode_id in stats.search_ids if episode_id in set(applied_true)]
+                    searched, search_failed = _search_episode_batches(target_api, eligible_search_ids)
+                    totals.searches_triggered += searched
+                    if search_failed:
+                        totals.failures += 1
+            status = 207 if totals.failures else 200
+            log_status = 2 if totals.failures else 1
+            save_log(provider, log_status, f'Sonarr reconciliation: series compared={totals.series_compared} target_only={totals.series_target_only} episodes inspected={totals.episodes_inspected} newly_monitored={totals.episodes_newly_monitored} newly_unmonitored={totals.episodes_newly_unmonitored} unchanged={totals.episodes_unchanged} searches={totals.searches_triggered} specials_ignored={totals.specials_ignored} future_ignored={totals.future_episodes_ignored} malformed={totals.malformed_episodes} failures={totals.failures}')
+            return {'result': status, 'failures': totals.failures, 'message': 'partial_failure' if totals.failures else 'ok'}
         except Exception:
             save_log(provider, 2, sanitize_text(traceback.format_exc()))
-            return {'result': 500}
+            return {'result': 500, 'message': 'exception'}
 
 @cron_task(cron_schedule="*/5 * * * *")
 @task
