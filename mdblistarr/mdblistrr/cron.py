@@ -717,6 +717,7 @@ def reconcile_sonarr_ondemand(force=False):
                 totals.episodes_unchanged += stats.episodes_unchanged
                 totals.specials_ignored += stats.specials_ignored
                 totals.future_episodes_ignored += stats.future_episodes_ignored
+                totals.unscheduled_episodes_ignored += stats.unscheduled_episodes_ignored
                 totals.malformed_episodes += stats.malformed_episodes
                 if stats.failures:
                     totals.failures += 1
@@ -737,7 +738,7 @@ def reconcile_sonarr_ondemand(force=False):
                         totals.failures += 1
             status = 207 if totals.failures else 200
             log_status = 2 if totals.failures else 1
-            save_log(provider, log_status, f'Sonarr reconciliation: series compared={totals.series_compared} target_only={totals.series_target_only} episodes inspected={totals.episodes_inspected} newly_monitored={totals.episodes_newly_monitored} newly_unmonitored={totals.episodes_newly_unmonitored} unchanged={totals.episodes_unchanged} searches={totals.searches_triggered} specials_ignored={totals.specials_ignored} future_ignored={totals.future_episodes_ignored} malformed={totals.malformed_episodes} failures={totals.failures}')
+            save_log(provider, log_status, f'Sonarr reconciliation: series compared={totals.series_compared} target_only={totals.series_target_only} episodes inspected={totals.episodes_inspected} newly_monitored={totals.episodes_newly_monitored} newly_unmonitored={totals.episodes_newly_unmonitored} unchanged={totals.episodes_unchanged} searches={totals.searches_triggered} specials_ignored={totals.specials_ignored} future_ignored={totals.future_episodes_ignored} unscheduled_ignored={totals.unscheduled_episodes_ignored} malformed={totals.malformed_episodes} failures={totals.failures}')
             return {'result': status, 'failures': totals.failures, 'message': 'partial_failure' if totals.failures else 'ok'}
         except Exception:
             save_log(provider, 2, sanitize_text(traceback.format_exc()))

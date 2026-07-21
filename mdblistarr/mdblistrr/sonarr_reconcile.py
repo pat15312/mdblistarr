@@ -5,12 +5,19 @@ from django.utils import timezone
 AIR_DATE_AIRED = 'aired'
 AIR_DATE_FUTURE = 'future'
 AIR_DATE_MALFORMED = 'malformed'
+AIR_DATE_UNSCHEDULED = 'unscheduled'
+
+
+def _blank_air_date(value):
+    return value is None or (isinstance(value, str) and value.strip() == '')
 
 
 def _parse_air_datetime(ep):
-    value = ep.get('airDateUtc') or ep.get('airDate')
-    if value in (None, ''):
-        return None, AIR_DATE_MALFORMED
+    values = [ep.get('airDateUtc'), ep.get('airDate')]
+    non_blank = [value for value in values if not _blank_air_date(value)]
+    if not non_blank:
+        return None, AIR_DATE_UNSCHEDULED
+    value = non_blank[0]
     if isinstance(value, datetime):
         dt = value
     else:
@@ -33,7 +40,7 @@ def air_date_status(ep, now=None):
         now = timezone.make_aware(now, timezone.get_current_timezone())
     air_dt, error = _parse_air_datetime(ep)
     if error:
-        return AIR_DATE_MALFORMED
+        return error
     return AIR_DATE_AIRED if air_dt <= now.astimezone(timezone.UTC) else AIR_DATE_FUTURE
 
 
@@ -66,13 +73,15 @@ def is_relevant_episode(ep, include_specials=False, now=None):
         return False, 'malformed'
     if date_state == AIR_DATE_FUTURE:
         return False, 'future'
+    if date_state == AIR_DATE_UNSCHEDULED:
+        return False, 'unscheduled'
     return True, None
 
 
 def determine_series_completeness(episodes, include_specials=False, now=None):
     if not isinstance(episodes, list):
-        return {'complete': False, 'relevant': 0, 'missing': 0, 'no_relevant': True, 'malformed': True, 'specials_ignored': 0, 'future_ignored': 0}
-    relevant = missing = specials = future = malformed = 0
+        return {'complete': False, 'relevant': 0, 'missing': 0, 'no_relevant': True, 'malformed': True, 'specials_ignored': 0, 'future_ignored': 0, 'unscheduled_ignored': 0}
+    relevant = missing = specials = future = malformed = unscheduled = 0
     for ep in episodes:
         if not isinstance(ep, dict):
             malformed += 1
@@ -83,13 +92,15 @@ def determine_series_completeness(episodes, include_specials=False, now=None):
                 specials += 1
             elif reason == 'future':
                 future += 1
+            elif reason == 'unscheduled':
+                unscheduled += 1
             else:
                 malformed += 1
             continue
         relevant += 1
         if ep.get('hasFile') is not True:
             missing += 1
-    return {'complete': relevant > 0 and missing == 0 and malformed == 0, 'relevant': relevant, 'missing': missing, 'no_relevant': relevant == 0, 'malformed': malformed > 0, 'specials_ignored': specials, 'future_ignored': future}
+    return {'complete': relevant > 0 and missing == 0 and malformed == 0, 'relevant': relevant, 'missing': missing, 'no_relevant': relevant == 0, 'malformed': malformed > 0, 'specials_ignored': specials, 'future_ignored': future, 'unscheduled_ignored': unscheduled}
 
 
 @dataclass
@@ -103,6 +114,7 @@ class ReconcileStats:
     searches_triggered: int = 0
     specials_ignored: int = 0
     future_episodes_ignored: int = 0
+    unscheduled_episodes_ignored: int = 0
     failures: int = 0
     malformed_episodes: int = 0
     monitor_true_ids: list = field(default_factory=list)
@@ -140,6 +152,8 @@ def calculate_episode_monitoring(source_episodes, target_episodes, include_speci
                 stats.specials_ignored += 1
             elif reason == 'future':
                 stats.future_episodes_ignored += 1
+            elif reason == 'unscheduled':
+                stats.unscheduled_episodes_ignored += 1
             else:
                 stats.failures = 1
                 stats.malformed_episodes += 1
