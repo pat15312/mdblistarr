@@ -678,7 +678,9 @@ def _season_number(value):
 def _season_updates_for_series(show, desired_by_season):
     updates = []
     unchanged = 0
-    seasons = (show.get('seasons') or []) if isinstance(show, dict) else []
+    if not isinstance(show, dict) or 'seasons' not in show:
+        return updates, unchanged, 1
+    seasons = show.get('seasons')
     if not isinstance(seasons, list):
         return updates, unchanged, 1
     for season in seasons:
@@ -697,16 +699,14 @@ def _season_updates_for_series(show, desired_by_season):
 
 
 def _apply_season_updates(target_api, series_id, updates):
-    newly_monitored = newly_unmonitored = failures = 0
-    for season_number, monitored in updates:
-        res = target_api.post_seasonpass(series_id, season_number, monitored)
-        if arr_api_failed(res):
-            failures += 1
-        elif monitored:
-            newly_monitored += 1
-        else:
-            newly_unmonitored += 1
-    return newly_monitored, newly_unmonitored, failures
+    if not updates:
+        return 0, 0, 0
+    res = target_api.post_seasonpass(series_id, updates)
+    if arr_api_failed(res):
+        return 0, 0, 1
+    newly_monitored = sum(1 for _season_number, monitored in updates if monitored)
+    newly_unmonitored = len(updates) - newly_monitored
+    return newly_monitored, newly_unmonitored, 0
 
 def reconcile_sonarr_ondemand(force=False):
     provider = 2

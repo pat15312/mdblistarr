@@ -272,6 +272,19 @@ class SecurityTests(TestCase):
             result = radarr.get_status()
         self.assertNotIn(secret, result['message'])
 
+    def test_sonarr_seasonpass_uses_nested_v3_payload_without_monitoring_options(self):
+        sonarr = SonarrAPI(url='http://sonarr', apikey='secret-key')
+        with patch.object(sonarr.connect, 'post_json', return_value={'status_code': 202}) as post_json:
+            result = sonarr.post_seasonpass(20, [(10, False), (11, True)])
+        self.assertEqual(result, {'status_code': 202})
+        self.assertEqual(post_json.call_args.args[0], 'http://sonarr/api/v3/seasonpass')
+        payload = post_json.call_args.kwargs['json']
+        self.assertEqual(payload, {'series': [{'id': 20, 'seasons': [{'seasonNumber': 10, 'monitored': False}, {'seasonNumber': 11, 'monitored': True}]}]})
+        self.assertNotIn('monitoringOptions', payload)
+        self.assertNotIn('seriesId', payload)
+        self.assertNotIn('seasonNumber', payload)
+
+
     def test_background_code_uses_decrypted_credentials(self):
         r = RadarrInstance.objects.create(name='r', url='http://r', apikey='radarr-background', quality_profile='1', root_folder='/m')
         self.assertEqual(RadarrAPI(instance_id=r.id).apikey, 'radarr-background')
@@ -573,7 +586,7 @@ class SonarrSafetyTests(TestCase):
         Preferences.set_value('sonarr_reconciliation_enabled','1')
         Preferences.set_value('sonarr_reconciliation_source_id', str(self.source.id))
         Preferences.set_value('sonarr_reconciliation_target_id', str(self.target.id))
-        series = [{'id': 10, 'tvdbId': 111}]
+        series = [{'id': 10, 'tvdbId': 111, 'seasons': [{'seasonNumber': 1, 'monitored': False}]}]
         eps_source = [{'id':1,'seasonNumber':1,'episodeNumber':1,'hasFile':True,'airDateUtc':'2020-01-01T00:00:00Z'}]
         eps_target = [{'id':2,'seasonNumber':1,'episodeNumber':1,'hasFile':False,'monitored':True,'airDateUtc':'2020-01-01T00:00:00Z'}]
         def init(api_self, instance_id=None, **kw): api_self.instance_id = instance_id
@@ -709,7 +722,7 @@ class SonarrReconciliationIntegrationReviewTests(TestCase):
     def tearDown(self):
         self.env.__exit__(None, None, None)
 
-    def _run(self, source_series, target_series, episodes_by_series, monitor_res={'status':'ok','status_code':202}, search_res={'status':'ok','status_code':201}):
+    def _run(self, source_series, target_series, episodes_by_series, monitor_res={'status':'ok','status_code':202}, search_res={'status':'ok','status_code':201}, season_res={'status':'ok','status_code':202}):
         from .cron import reconcile_sonarr_ondemand
         def init(api_self, instance_id=None, **kw): api_self.instance_id = instance_id
         def get_series(api_self): return source_series if api_self.instance_id == self.source.id else target_series
@@ -718,12 +731,13 @@ class SonarrReconciliationIntegrationReviewTests(TestCase):
              patch('mdblistrr.cron.SonarrAPI.get_series', get_series), \
              patch('mdblistrr.cron.SonarrAPI.get_episodes', get_episodes), \
              patch('mdblistrr.cron.SonarrAPI.put_episode_monitor', return_value=monitor_res) as put, \
+             patch('mdblistrr.cron.SonarrAPI.post_seasonpass', return_value=season_res), \
              patch('mdblistrr.cron.SonarrAPI.trigger_episode_search', return_value=search_res) as search:
             res = reconcile_sonarr_ondemand(force=True)
         return res, put, search
 
     def test_target_only_series_monitors_aired_regulars_and_unmonitors_future_specials(self):
-        target_series = [{'id': 20, 'tvdbId': 222}]
+        target_series = [{'id': 20, 'tvdbId': 222, 'seasons': [{'seasonNumber': 0, 'monitored': False}, {'seasonNumber': 1, 'monitored': False}]}]
         eps = [
             {'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': False, 'airDateUtc': '2020-01-01T00:00:00Z'},
             {'id': 2, 'seasonNumber': 1, 'episodeNumber': 2, 'hasFile': False, 'monitored': True, 'airDateUtc': '2999-01-01T00:00:00Z'},
@@ -736,14 +750,14 @@ class SonarrReconciliationIntegrationReviewTests(TestCase):
         search.assert_called_once_with([1])
 
     def test_malformed_target_episode_date_fails_without_writes(self):
-        target_series = [{'id': 20, 'tvdbId': 222}]
+        target_series = [{'id': 20, 'tvdbId': 222, 'seasons': [{'seasonNumber': 0, 'monitored': False}, {'seasonNumber': 1, 'monitored': False}]}]
         eps = [{'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': False, 'airDateUtc': 'invalid'}]
         res, put, search = self._run([], target_series, {20: eps})
         self.assertEqual(res['result'], 207)
         put.assert_not_called(); search.assert_not_called()
 
     def test_failed_monitor_responses_are_partial_failures_and_no_search_after_failed_true(self):
-        target_series = [{'id': 20, 'tvdbId': 222}]
+        target_series = [{'id': 20, 'tvdbId': 222, 'seasons': [{'seasonNumber': 0, 'monitored': False}, {'seasonNumber': 1, 'monitored': False}]}]
         eps = [{'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': False, 'airDateUtc': '2020-01-01T00:00:00Z'}]
         for failure in ({'error': 'Invalid PUT response', 'status_code': 500}, {'errorMessage': 'Sonarr rejected request'}):
             res, put, search = self._run([], target_series, {20: eps}, monitor_res=failure)
@@ -753,7 +767,7 @@ class SonarrReconciliationIntegrationReviewTests(TestCase):
             search.assert_not_called()
 
     def test_failed_episode_search_command_is_partial_failure_after_successful_monitor(self):
-        target_series = [{'id': 20, 'tvdbId': 222}]
+        target_series = [{'id': 20, 'tvdbId': 222, 'seasons': [{'seasonNumber': 0, 'monitored': False}, {'seasonNumber': 1, 'monitored': False}]}]
         eps = [{'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': False, 'airDateUtc': '2020-01-01T00:00:00Z'}]
         res, put, search = self._run([], target_series, {20: eps}, search_res={'errorMessage': 'search failed'})
         self.assertEqual(res['result'], 207)
@@ -761,7 +775,7 @@ class SonarrReconciliationIntegrationReviewTests(TestCase):
         search.assert_called_once_with([1])
 
     def test_successful_monitor_to_true_is_followed_by_expected_search(self):
-        target_series = [{'id': 20, 'tvdbId': 222}]
+        target_series = [{'id': 20, 'tvdbId': 222, 'seasons': [{'seasonNumber': 0, 'monitored': False}, {'seasonNumber': 1, 'monitored': False}]}]
         eps = [{'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': False, 'airDateUtc': '2020-01-01T00:00:00Z'}]
         res, put, search = self._run([], target_series, {20: eps})
         self.assertEqual(res['result'], 200)
@@ -831,9 +845,31 @@ class SonarrSeriesResponseValidationTests(TestCase):
             self.assertEqual(res['result'], 502)
             episodes.assert_not_called(); put.assert_not_called(); search.assert_not_called()
 
+    def test_missing_null_or_non_list_target_seasons_are_partial_failures(self):
+        from .cron import reconcile_sonarr_ondemand
+        target_eps = [{'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': True, 'airDateUtc': '2020-01-01T00:00:00Z'}]
+        def init(api_self, instance_id=None, **kw): api_self.instance_id = instance_id
+        for target_series in (
+            [{'id': 20, 'tvdbId': 222}],
+            [{'id': 20, 'tvdbId': 222, 'seasons': None}],
+            [{'id': 20, 'tvdbId': 222, 'seasons': {'seasonNumber': 1, 'monitored': True}}],
+        ):
+            def get_series(api_self): return [] if api_self.instance_id == self.source.id else target_series
+            with patch('mdblistrr.cron.SonarrAPI.__init__', init), \
+                 patch('mdblistrr.cron.SonarrAPI.get_series', get_series), \
+                 patch('mdblistrr.cron.SonarrAPI.get_episodes', return_value=target_eps), \
+                 patch('mdblistrr.cron.SonarrAPI.put_episode_monitor') as put, \
+                 patch('mdblistrr.cron.SonarrAPI.post_seasonpass') as seasonpass, \
+                 patch('mdblistrr.cron.SonarrAPI.trigger_episode_search') as search:
+                res = reconcile_sonarr_ondemand(force=True)
+            self.assertEqual(res['result'], 207)
+            put.assert_not_called()
+            seasonpass.assert_not_called()
+            search.assert_not_called()
+
     def test_empty_source_list_remains_valid_target_only_reconciliation(self):
         from .cron import reconcile_sonarr_ondemand
-        target_series = [{'id': 20, 'tvdbId': 222}]
+        target_series = [{'id': 20, 'tvdbId': 222, 'seasons': [{'seasonNumber': 0, 'monitored': False}, {'seasonNumber': 1, 'monitored': False}]}]
         target_eps = [{'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': False, 'airDateUtc': '2020-01-01T00:00:00Z'}]
         def init(api_self, instance_id=None, **kw): api_self.instance_id = instance_id
         def get_series(api_self): return [] if api_self.instance_id == self.source.id else target_series
@@ -842,6 +878,7 @@ class SonarrSeriesResponseValidationTests(TestCase):
              patch('mdblistrr.cron.SonarrAPI.get_series', get_series), \
              patch('mdblistrr.cron.SonarrAPI.get_episodes', get_episodes), \
              patch('mdblistrr.cron.SonarrAPI.put_episode_monitor', return_value={'status': 'ok', 'status_code': 202}) as put, \
+             patch('mdblistrr.cron.SonarrAPI.post_seasonpass', return_value={'status': 'ok', 'status_code': 202}), \
              patch('mdblistrr.cron.SonarrAPI.trigger_episode_search', return_value={'status': 'ok', 'status_code': 201}) as search:
             res = reconcile_sonarr_ondemand(force=True)
         self.assertEqual(res['result'], 200)
@@ -850,8 +887,8 @@ class SonarrSeriesResponseValidationTests(TestCase):
 
     def test_valid_source_and_target_response_still_work(self):
         from .cron import reconcile_sonarr_ondemand
-        source_series = [{'id': 10, 'tvdbId': 111}]
-        target_series = [{'id': 20, 'tvdbId': 111}]
+        source_series = [{'id': 10, 'tvdbId': 111, 'seasons': [{'seasonNumber': 1, 'monitored': True}]}]
+        target_series = [{'id': 20, 'tvdbId': 111, 'seasons': [{'seasonNumber': 1, 'monitored': True}]}]
         episodes_by_series = {
             10: [{'id': 10, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': True, 'airDateUtc': '2020-01-01T00:00:00Z'}],
             20: [{'id': 20, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': True, 'airDateUtc': '2020-01-01T00:00:00Z'}],
@@ -863,6 +900,7 @@ class SonarrSeriesResponseValidationTests(TestCase):
              patch('mdblistrr.cron.SonarrAPI.get_series', get_series), \
              patch('mdblistrr.cron.SonarrAPI.get_episodes', get_episodes), \
              patch('mdblistrr.cron.SonarrAPI.put_episode_monitor', return_value={'status': 'ok', 'status_code': 202}) as put, \
+             patch('mdblistrr.cron.SonarrAPI.post_seasonpass', return_value={'status': 'ok', 'status_code': 202}), \
              patch('mdblistrr.cron.SonarrAPI.trigger_episode_search') as search:
             res = reconcile_sonarr_ondemand(force=True)
         self.assertEqual(res['result'], 200)
@@ -908,7 +946,7 @@ class SonarrSeasonMonitoringReconciliationTests(TestCase):
         res, put, seasonpass, search = self.run_reconcile(source_series, target_series, {10: [self.ep(1, has=True)], 20: [self.ep(2, mon=True)]})
         self.assertEqual(res['result'], 200)
         put.assert_called_once_with([2], False)
-        seasonpass.assert_called_once_with(20, 1, False)
+        seasonpass.assert_called_once_with(20, [(1, False)])
         search.assert_not_called()
 
     def test_any_desired_true_monitors_currently_unmonitored_season(self):
@@ -916,7 +954,7 @@ class SonarrSeasonMonitoringReconciliationTests(TestCase):
         res, put, seasonpass, _ = self.run_reconcile([], target_series, {20: [self.ep(1, mon=False)]})
         self.assertEqual(res['result'], 200)
         put.assert_called_once_with([1], True)
-        seasonpass.assert_called_once_with(20, 1, True)
+        seasonpass.assert_called_once_with(20, [(1, True)])
 
     def test_spongebob_style_complete_permanent_season_unmonitors_episodes_and_season(self):
         source_series = [{'id': 10, 'tvdbId': 75886}]
@@ -926,32 +964,32 @@ class SonarrSeasonMonitoringReconciliationTests(TestCase):
         res, put, seasonpass, _ = self.run_reconcile(source_series, target_series, {10: source_eps, 20: target_eps})
         self.assertEqual(res['result'], 200)
         put.assert_called_once_with([e['id'] for e in target_eps], False)
-        seasonpass.assert_called_once_with(20, 10, False)
+        seasonpass.assert_called_once_with(20, [(10, False)])
 
     def test_future_only_season_is_false(self):
         target_series = [{'id': 20, 'tvdbId': 201, 'seasons': [{'seasonNumber': 1, 'monitored': True}]}]
         res, put, seasonpass, _ = self.run_reconcile([], target_series, {20: [self.ep(1, air='2999-01-01T00:00:00Z', mon=True)]})
         self.assertEqual(res['result'], 200)
         put.assert_called_once_with([1], False)
-        seasonpass.assert_called_once_with(20, 1, False)
+        seasonpass.assert_called_once_with(20, [(1, False)])
 
     def test_unscheduled_only_season_is_false(self):
         target_series = [{'id': 20, 'tvdbId': 202, 'seasons': [{'seasonNumber': 1, 'monitored': True}]}]
         res, put, seasonpass, _ = self.run_reconcile([], target_series, {20: [self.ep(1, air=None, mon=True)]})
         self.assertEqual(res['result'], 200)
         put.assert_called_once_with([1], False)
-        seasonpass.assert_called_once_with(20, 1, False)
+        seasonpass.assert_called_once_with(20, [(1, False)])
 
     def test_specials_follow_include_specials_preference(self):
         target_series = [{'id': 20, 'tvdbId': 203, 'seasons': [{'seasonNumber': 0, 'monitored': True}]}]
         res, put, seasonpass, _ = self.run_reconcile([], target_series, {20: [self.ep(1, season=0, mon=True)]})
         self.assertEqual(res['result'], 200)
-        seasonpass.assert_called_once_with(20, 0, False)
+        seasonpass.assert_called_once_with(20, [(0, False)])
         Preferences.set_value('sonarr_include_specials', '1')
         target_series[0]['seasons'][0]['monitored'] = False
         res, put, seasonpass, _ = self.run_reconcile([], target_series, {20: [self.ep(1, season=0, mon=False)]})
         self.assertEqual(res['result'], 200)
-        seasonpass.assert_called_once_with(20, 0, True)
+        seasonpass.assert_called_once_with(20, [(0, True)])
 
     def test_correct_season_flags_are_not_written_again(self):
         target_series = [{'id': 20, 'tvdbId': 204, 'seasons': [{'seasonNumber': 1, 'monitored': True}, {'seasonNumber': 2, 'monitored': False}]}]
@@ -960,6 +998,15 @@ class SonarrSeasonMonitoringReconciliationTests(TestCase):
         self.assertEqual(res['result'], 200)
         put.assert_not_called()
         seasonpass.assert_not_called()
+
+    def test_changed_seasons_are_batched_per_series(self):
+        target_series = [{'id': 20, 'tvdbId': 208, 'seasons': [{'seasonNumber': 10, 'monitored': True}, {'seasonNumber': 11, 'monitored': False}]}]
+        eps = [self.ep(1, season=10, mon=True, air='2999-01-01T00:00:00Z'), self.ep(2, season=11, mon=False)]
+        res, put, seasonpass, _ = self.run_reconcile([], target_series, {20: eps})
+        self.assertEqual(res['result'], 200)
+        put.assert_any_call([2], True)
+        put.assert_any_call([1], False)
+        seasonpass.assert_called_once_with(20, [(10, False), (11, True)])
 
     def test_failed_episode_monitor_batch_prevents_season_updates_for_series(self):
         target_series = [{'id': 20, 'tvdbId': 205, 'seasons': [{'seasonNumber': 1, 'monitored': False}]}]
@@ -973,7 +1020,7 @@ class SonarrSeasonMonitoringReconciliationTests(TestCase):
         res, put, seasonpass, _ = self.run_reconcile([], target_series, {20: [self.ep(1)]}, season_res={'status_code': 500})
         self.assertEqual(res['result'], 207)
         self.assertEqual(res['failures'], 1)
-        seasonpass.assert_called_once_with(20, 1, True)
+        seasonpass.assert_called_once_with(20, [(1, True)])
 
     def test_no_source_writes_deletes_or_unrelated_series_changes(self):
         source_series = [{'id': 10, 'tvdbId': 207}]
