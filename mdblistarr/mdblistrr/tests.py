@@ -1520,3 +1520,72 @@ class SonarrCleanupLinkedAbsenceTests(TestCase):
         self.assertEqual(deleted.deleted_at, original_deleted_at)
         self.assertEqual(c.cleanup_files_already_absent, 0)
         self.assertFalse(any('already_absent' in event for event in c.events))
+
+class SonarrCleanupCompleteSeriesAndSeasonZeroTests(TestCase):
+    def setUp(self):
+        os.environ['MDBLISTARR_ENCRYPTION_KEY'] = Fernet.generate_key().decode('ascii')
+        self.target = SonarrInstance.objects.create(name='target-complete-series', url='http://target', apikey='tgt', is_ondemand_target=True, is_library_source=False)
+
+    def ep(self, sid, season=1, num=1, has=True, mon=False, file_id=10, series_id=20, air='2020-01-01T00:00:00Z'):
+        return {'id': sid, 'seriesId': series_id, 'seasonNumber': season, 'episodeNumber': num, 'hasFile': has, 'monitored': mon, 'episodeFileId': file_id, 'airDateUtc': air}
+
+    def ready(self, file_id=500, keys=None):
+        now = timezone.now() - timezone.timedelta(hours=2)
+        return SonarrCleanupCandidate.objects.create(target_instance=self.target, tvdb_id=1, target_series_id=20, episode_file_id=file_id, linked_episode_keys=keys or [[1,1],[1,2]], reason='permanent_duplicate', status=SonarrCleanupCandidate.STATUS_READY, first_eligible_at=now, last_confirmed_at=now, ready_at=now)
+
+    def test_unrelated_episode_retaining_candidate_file_blocks_absence_pre_and_post_delete(self):
+        from .sonarr_cleanup import process_cleanup_for_series
+        from .sonarr_reconcile import calculate_episode_monitoring
+        src = [self.ep(1, num=1, series_id=10), self.ep(2, num=2, series_id=10), self.ep(3, num=3, series_id=10), self.ep(4, num=4, series_id=10)]
+        initial = [self.ep(11, num=1, file_id=500), self.ep(12, num=2, file_id=500), self.ep(13, num=3, file_id=777), self.ep(14, num=4, file_id=502)]
+        unrelated_still_active = [dict(initial[0], hasFile=False, episodeFileId=0), dict(initial[1], hasFile=False, episodeFileId=0), self.ep(13, num=3, file_id=500), self.ep(14, num=4, file_id=502)]
+        deletes = []
+        self.ready(500)
+        class SourceAPI:
+            def get_episodes(self, sid): return src
+        class PreTargetAPI:
+            def get_episodes(self, sid): return unrelated_still_active
+            def delete_episode_files(self, ids): deletes.append(ids); return {'status':'ok'}
+        c = process_cleanup_for_series(target_instance=self.target, tvdb_id=1, target_series_id=20, source_episodes=src, target_episodes=initial, stats=calculate_episode_monitoring(src, initial), target_api=PreTargetAPI(), source_api=SourceAPI(), source_series_id=10, cleanup_enabled=True, dry_run=False, grace_hours=0, remaining_delete_budget=2)
+        self.assertEqual(deletes, [])
+        self.assertEqual(c.cleanup_files_deleted, 0)
+        self.assertNotEqual(SonarrCleanupCandidate.objects.get(episode_file_id=500).status, SonarrCleanupCandidate.STATUS_DELETED)
+        SonarrCleanupCandidate.objects.all().delete()
+        self.ready(500)
+        self.ready(501, [[1,3]])
+        self.ready(502, [[1,4]])
+        class PostTargetAPI:
+            def __init__(self): self.calls = 0
+            def get_episodes(self, sid): self.calls += 1; return initial if self.calls == 1 else unrelated_still_active
+            def delete_episode_files(self, ids): deletes.append(ids); return {'status':'ok','status_code':204}
+        deletes.clear()
+        c = process_cleanup_for_series(target_instance=self.target, tvdb_id=1, target_series_id=20, source_episodes=src, target_episodes=initial, stats=calculate_episode_monitoring(src, initial), target_api=PostTargetAPI(), source_api=SourceAPI(), source_series_id=10, cleanup_enabled=True, dry_run=False, grace_hours=0, remaining_delete_budget=2)
+        self.assertEqual(deletes, [[500]])
+        self.assertEqual(SonarrCleanupCandidate.objects.get(episode_file_id=500).status, SonarrCleanupCandidate.STATUS_READY)
+        self.assertEqual(c.cleanup_failures, 1)
+        self.assertTrue(c.stop_deletes_for_run)
+        self.assertEqual(c.cleanup_deferred_by_limit, 1)
+        valid_absence = [dict(initial[0], hasFile=False, episodeFileId=0), dict(initial[1], hasFile=False, episodeFileId=0), dict(initial[2], episodeFileId=777), dict(initial[3], episodeFileId=502)]
+        SonarrCleanupCandidate.objects.all().delete()
+        self.ready(500)
+        class ValidTargetAPI:
+            def __init__(self): self.calls = 0
+            def get_episodes(self, sid): self.calls += 1; return initial if self.calls == 1 else valid_absence
+            def delete_episode_files(self, ids): return {'status':'ok','status_code':204}
+        c = process_cleanup_for_series(target_instance=self.target, tvdb_id=1, target_series_id=20, source_episodes=src, target_episodes=initial, stats=calculate_episode_monitoring(src, initial), target_api=ValidTargetAPI(), source_api=SourceAPI(), source_series_id=10, cleanup_enabled=True, dry_run=False, grace_hours=0, remaining_delete_budget=1)
+        self.assertEqual(c.cleanup_files_deleted, 1)
+
+    def test_season_zero_keys_are_supported_and_invalid_linked_keys_fail_closed(self):
+        from .sonarr_cleanup import candidate_file_state, eligible_episode_file_ids
+        from .sonarr_reconcile import calculate_episode_monitoring
+        cand = self.ready(600, [[0,1]])
+        special = [self.ep(1, season=0, num=1, file_id=600)]
+        self.assertEqual(candidate_file_state(special, cand, expected_series_id=20), 'active')
+        source_special = [self.ep(10, season=0, num=1, file_id=900, series_id=10)]
+        stats = calculate_episode_monitoring(source_special, special, include_specials=True)
+        self.assertEqual(eligible_episode_file_ids(source_special, special, stats), {600: [[0,1]]})
+        stats_disabled = calculate_episode_monitoring(source_special, special, include_specials=False)
+        self.assertEqual(eligible_episode_file_ids(source_special, special, stats_disabled), {})
+        for bad_keys in ([[[-1,1]], [['bad',1]], [[0,1],[0,1]]]):
+            cand.linked_episode_keys = bad_keys
+            self.assertEqual(candidate_file_state(special, cand, expected_series_id=20), 'uncertain')

@@ -36,6 +36,16 @@ def valid_file_id(value):
     return _positive_int(value) is not None
 
 
+def _nonnegative_int(value):
+    try:
+        if isinstance(value, bool):
+            return None
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
 def _source_has_files(source_episodes):
     if not isinstance(source_episodes, list):
         return None
@@ -163,11 +173,14 @@ def _candidate_key_set(cand):
     for item in cand.linked_episode_keys or []:
         if not isinstance(item, (list, tuple)) or len(item) != 2:
             return None
-        season = _positive_int(item[0])
-        number = _positive_int(item[1])
+        season = _nonnegative_int(item[0])
+        number = _nonnegative_int(item[1])
         if season is None or number is None:
             return None
-        keys.add((season, number))
+        key = (season, number)
+        if key in keys:
+            return None
+        keys.add(key)
     return keys
 
 
@@ -178,7 +191,12 @@ def candidate_file_state(target_episodes, cand, expected_series_id=None):
     if not required:
         return 'uncertain'
     by_key = {}
+    any_episode_still_uses_file = False
+    candidate_file_id = int(cand.episode_file_id)
     for ep in target_episodes:
+        file_id = _positive_int(ep.get('episodeFileId'))
+        if ep.get('hasFile') is True and file_id == candidate_file_id:
+            any_episode_still_uses_file = True
         key = episode_key(ep)
         if key in required:
             if key in by_key:
@@ -186,8 +204,7 @@ def candidate_file_state(target_episodes, cand, expected_series_id=None):
             by_key[key] = ep
     if set(by_key.keys()) != required:
         return 'uncertain'
-    candidate_file_id = int(cand.episode_file_id)
-    active_candidate = False
+    active_candidate = any_episode_still_uses_file
     replaced = False
     for ep in by_key.values():
         file_id = _positive_int(ep.get('episodeFileId'))
