@@ -666,6 +666,48 @@ def _search_episode_batches(target_api, ids, batch_size=100):
     return searched, failed
 
 
+def _season_number(value):
+    try:
+        if isinstance(value, bool):
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _season_updates_for_series(show, desired_by_season):
+    updates = []
+    unchanged = 0
+    seasons = (show.get('seasons') or []) if isinstance(show, dict) else []
+    if not isinstance(seasons, list):
+        return updates, unchanged, 1
+    for season in seasons:
+        if not isinstance(season, dict):
+            return updates, unchanged, 1
+        season_number = _season_number(season.get('seasonNumber'))
+        if season_number is None:
+            return updates, unchanged, 1
+        desired = bool(desired_by_season.get(season_number, False))
+        current = season.get('monitored') is True
+        if current == desired:
+            unchanged += 1
+        else:
+            updates.append((season_number, desired))
+    return updates, unchanged, 0
+
+
+def _apply_season_updates(target_api, series_id, updates):
+    newly_monitored = newly_unmonitored = failures = 0
+    for season_number, monitored in updates:
+        res = target_api.post_seasonpass(series_id, season_number, monitored)
+        if arr_api_failed(res):
+            failures += 1
+        elif monitored:
+            newly_monitored += 1
+        else:
+            newly_unmonitored += 1
+    return newly_monitored, newly_unmonitored, failures
+
 def reconcile_sonarr_ondemand(force=False):
     provider = 2
     if Preferences.get_value('sonarr_reconciliation_enabled', '0') != '1':
@@ -719,6 +761,12 @@ def reconcile_sonarr_ondemand(force=False):
                 totals.future_episodes_ignored += stats.future_episodes_ignored
                 totals.unscheduled_episodes_ignored += stats.unscheduled_episodes_ignored
                 totals.malformed_episodes += stats.malformed_episodes
+                updates, unchanged, season_failures = _season_updates_for_series(show, stats.desired_season_monitoring)
+                totals.seasons_unchanged += unchanged
+                if season_failures:
+                    totals.failures += season_failures
+                    totals.season_update_failures += season_failures
+                    continue
                 if stats.failures:
                     totals.failures += 1
                     continue
@@ -729,6 +777,14 @@ def reconcile_sonarr_ondemand(force=False):
                 totals.episodes_newly_unmonitored += len(applied_false)
                 if true_failed or false_failed:
                     totals.failures += 1
+                    continue
+
+                season_true, season_false, season_failures = _apply_season_updates(target_api, show['id'], updates)
+                totals.seasons_newly_monitored += season_true
+                totals.seasons_newly_unmonitored += season_false
+                totals.season_update_failures += season_failures
+                if season_failures:
+                    totals.failures += season_failures
 
                 if search_enabled and applied_true:
                     eligible_search_ids = [episode_id for episode_id in stats.search_ids if episode_id in set(applied_true)]
@@ -738,7 +794,7 @@ def reconcile_sonarr_ondemand(force=False):
                         totals.failures += 1
             status = 207 if totals.failures else 200
             log_status = 2 if totals.failures else 1
-            save_log(provider, log_status, f'Sonarr reconciliation: series compared={totals.series_compared} target_only={totals.series_target_only} episodes inspected={totals.episodes_inspected} newly_monitored={totals.episodes_newly_monitored} newly_unmonitored={totals.episodes_newly_unmonitored} unchanged={totals.episodes_unchanged} searches={totals.searches_triggered} specials_ignored={totals.specials_ignored} future_ignored={totals.future_episodes_ignored} unscheduled_ignored={totals.unscheduled_episodes_ignored} malformed={totals.malformed_episodes} failures={totals.failures}')
+            save_log(provider, log_status, f'Sonarr reconciliation: series compared={totals.series_compared} target_only={totals.series_target_only} episodes inspected={totals.episodes_inspected} newly_monitored={totals.episodes_newly_monitored} newly_unmonitored={totals.episodes_newly_unmonitored} unchanged={totals.episodes_unchanged} searches={totals.searches_triggered} specials_ignored={totals.specials_ignored} future_ignored={totals.future_episodes_ignored} unscheduled_ignored={totals.unscheduled_episodes_ignored} malformed={totals.malformed_episodes} seasons_newly_monitored={totals.seasons_newly_monitored} seasons_newly_unmonitored={totals.seasons_newly_unmonitored} seasons_unchanged={totals.seasons_unchanged} season_update_failures={totals.season_update_failures} failures={totals.failures}')
             return {'result': status, 'failures': totals.failures, 'message': 'partial_failure' if totals.failures else 'ok'}
         except Exception:
             save_log(provider, 2, sanitize_text(traceback.format_exc()))

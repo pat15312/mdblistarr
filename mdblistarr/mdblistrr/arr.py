@@ -119,6 +119,16 @@ class SonarrAPI():
         except Exception:
             return {'errorMessage': sanitize_text(traceback.format_exc())}
 
+    def post_seasonpass(self, series_id, season_number, monitored):
+        try:
+            return self.connect.post_json(
+                f"{self.url}/api/v3/seasonpass",
+                json={"seriesId": series_id, "seasonNumber": season_number, "monitored": bool(monitored)},
+                headers=_api_headers(self.apikey),
+            )
+        except Exception:
+            return {'errorMessage': sanitize_text(traceback.format_exc())}
+
     def trigger_episode_search(self, episode_ids):
         try:
             return self.connect.post_json(

@@ -117,9 +117,14 @@ class ReconcileStats:
     unscheduled_episodes_ignored: int = 0
     failures: int = 0
     malformed_episodes: int = 0
+    seasons_newly_monitored: int = 0
+    seasons_newly_unmonitored: int = 0
+    seasons_unchanged: int = 0
+    season_update_failures: int = 0
     monitor_true_ids: list = field(default_factory=list)
     monitor_false_ids: list = field(default_factory=list)
     search_ids: list = field(default_factory=list)
+    desired_season_monitoring: dict = field(default_factory=dict)
 
 
 def calculate_episode_monitoring(source_episodes, target_episodes, include_specials=False, search_newly_eligible=False, now=None):
@@ -160,6 +165,10 @@ def calculate_episode_monitoring(source_episodes, target_episodes, include_speci
                 return stats
         else:
             desired = not permanent.get(episode_key(ep), False)
+        season = episode_key(ep)[0]
+        stats.desired_season_monitoring.setdefault(season, False)
+        if desired:
+            stats.desired_season_monitoring[season] = True
         current = ep.get('monitored') is True
         if current == desired:
             stats.episodes_unchanged += 1

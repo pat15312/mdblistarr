@@ -154,7 +154,7 @@ MDBListarr supports three explicit Sonarr purposes so a permanent Sonarr instanc
 ### Sonarr purposes and safety boundaries
 
 - **Permanent library source**: MDBListarr reads series and episode state, uploads library state to MDBList, and compares episode availability during reconciliation. MDBListarr never sends add-series, monitoring, search, delete, profile, path, tag, move, rename, or file requests to this source.
-- **On Demand reconciliation target**: MDBListarr writes only episode monitoring changes. It never deletes series, episodes, or files and never changes quality profiles, root folders, series type, tags, paths, or files.
+- **On Demand reconciliation target**: MDBListarr writes only individual episode-monitoring changes and season-level monitoring changes. It never deletes series, episodes, or files and never changes quality profiles, root folders, series type, tags, paths, or files.
 - **Queue-import capability**: MDBList queue import is separate, disabled by default, and must be explicitly enabled globally and per instance. Queue targets require a real quality profile and root folder; read-only/reconciliation-only Sonarr instances do not.
 
 Sonarr API keys are not permission-scoped, so MDBListarr enforces the read-only and write-boundary rules in application code. Do not reuse the same Sonarr instance as both the permanent source and On Demand target for one reconciliation relationship.
