@@ -140,8 +140,12 @@ class SonarrAPI():
             return {'errorMessage': sanitize_text(traceback.format_exc())}
 
     def delete_episode_files(self, episode_file_ids):
-        ids = [int(i) for i in episode_file_ids]
         try:
+            ids = [int(i) for i in episode_file_ids]
+            if not ids:
+                return {'error': 'episodeFileIds must not be empty'}
+            if any(i <= 0 for i in ids):
+                return {'error': 'episodeFileIds must be positive integers'}
             return self.connect.delete_json(
                 f"{self.url}/api/v3/episodefile/bulk",
                 json={"episodeFileIds": ids},

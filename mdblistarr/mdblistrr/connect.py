@@ -223,7 +223,8 @@ class Connect:
                 return self._http_error_response(response, data, default_error="HTTP DELETE request failed")
             if isinstance(data, dict):
                 data.setdefault("status_code", response.status_code)
-            return data
+                return data
+            return {"status": "ok", "status_code": response.status_code, "json": data}
         except ConnectionError as e:
             return {"error": "Connection failed", "exception": sanitize_text(e)}
         except RequestException as e:

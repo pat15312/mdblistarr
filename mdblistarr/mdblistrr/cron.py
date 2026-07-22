@@ -747,6 +747,8 @@ def reconcile_sonarr_ondemand(force=False):
             cleanup_dry_run = Preferences.get_value('sonarr_cleanup_dry_run', '1') != '0'
             cleanup_grace_hours = int(Preferences.get_value('sonarr_cleanup_grace_hours', '24') or '24')
             cleanup_max = max(1, min(500, int(Preferences.get_value('sonarr_cleanup_max_deletions_per_run', '25') or '25')))
+            cleanup_remaining_delete_attempts = cleanup_max
+            cleanup_stop_real_deletes = False
             cleanup_totals = {'cleanup_candidates_new':0,'cleanup_candidates_pending':0,'cleanup_candidates_ready':0,'cleanup_candidates_cancelled':0,'cleanup_would_delete':0,'cleanup_files_deleted':0,'cleanup_files_already_absent':0,'cleanup_deferred_by_limit':0,'cleanup_failures':0}
             for show in target_series:
                 if not isinstance(show, dict) or not show.get('tvdbId') or not show.get('id'):
@@ -806,7 +808,12 @@ def reconcile_sonarr_ondemand(force=False):
                     cleanup = process_cleanup_for_series(
                         target_instance=target, tvdb_id=show.get('tvdbId'), target_series_id=show['id'],
                         source_episodes=src_eps, target_episodes=tgt_eps, stats=stats, target_api=target_api,
-                        cleanup_enabled=cleanup_enabled, dry_run=cleanup_dry_run, grace_hours=cleanup_grace_hours, max_deletions=cleanup_max)
+                        source_api=source_api, source_series_id=src['id'] if src else None, include_specials=include_specials,
+                        cleanup_enabled=cleanup_enabled, dry_run=cleanup_dry_run, grace_hours=cleanup_grace_hours,
+                        remaining_delete_budget=cleanup_remaining_delete_attempts, stop_real_deletes=cleanup_stop_real_deletes)
+                    cleanup_remaining_delete_attempts = max(0, cleanup_remaining_delete_attempts - cleanup.delete_attempts_consumed)
+                    if cleanup.stop_deletes_for_run:
+                        cleanup_stop_real_deletes = True
                     for key in cleanup_totals:
                         cleanup_totals[key] += getattr(cleanup, key)
                     totals.failures += cleanup.cleanup_failures
