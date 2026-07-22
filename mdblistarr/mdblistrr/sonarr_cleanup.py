@@ -123,7 +123,7 @@ def file_absent(target_episodes, file_id):
     return not any(isinstance(ep, dict) and _positive_int(ep.get('episodeFileId')) == int(file_id) and ep.get('hasFile') is True for ep in target_episodes)
 
 
-def validate_episode_response_for_cleanup(episodes):
+def validate_episode_response_for_cleanup(episodes, expected_series_id=None):
     if not isinstance(episodes, list):
         return False
     seen = set()
@@ -141,6 +141,12 @@ def validate_episode_response_for_cleanup(episodes):
                 return False
         if _positive_int(ep.get('id')) is None:
             return False
+        if expected_series_id is not None and ep.get('seriesId') is not None:
+            try:
+                if int(ep.get('seriesId')) != int(expected_series_id):
+                    return False
+            except (TypeError, ValueError):
+                return False
         key = episode_key(ep)
         if key is None or key in seen:
             return False
@@ -150,6 +156,50 @@ def validate_episode_response_for_cleanup(episodes):
         if ep.get('hasFile') is True and _positive_int(ep.get('episodeFileId')) is None:
             return False
     return True
+
+
+def _candidate_key_set(cand):
+    keys = set()
+    for item in cand.linked_episode_keys or []:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            return None
+        season = _positive_int(item[0])
+        number = _positive_int(item[1])
+        if season is None or number is None:
+            return None
+        keys.add((season, number))
+    return keys
+
+
+def candidate_file_state(target_episodes, cand, expected_series_id=None):
+    if not validate_episode_response_for_cleanup(target_episodes, expected_series_id=expected_series_id):
+        return 'uncertain'
+    required = _candidate_key_set(cand)
+    if not required:
+        return 'uncertain'
+    by_key = {}
+    for ep in target_episodes:
+        key = episode_key(ep)
+        if key in required:
+            if key in by_key:
+                return 'uncertain'
+            by_key[key] = ep
+    if set(by_key.keys()) != required:
+        return 'uncertain'
+    candidate_file_id = int(cand.episode_file_id)
+    active_candidate = False
+    replaced = False
+    for ep in by_key.values():
+        file_id = _positive_int(ep.get('episodeFileId'))
+        if ep.get('hasFile') is True and file_id == candidate_file_id:
+            active_candidate = True
+        elif ep.get('hasFile') is True and file_id is not None and file_id != candidate_file_id:
+            replaced = True
+    if active_candidate:
+        return 'active'
+    if replaced:
+        return 'replaced'
+    return 'absent'
 
 
 def _reset_candidate(cand, *, now, status=SonarrCleanupCandidate.STATUS_PENDING, keys=None, clear_error=True):
@@ -182,7 +232,7 @@ def revalidate_candidate_for_delete(*, cand, source_api, target_api, source_seri
         return 'defer', 'grace_not_elapsed'
     source_eps = source_api.get_episodes(source_series_id) if source_api and source_series_id else None
     target_eps = target_api.get_episodes(cand.target_series_id)
-    if not validate_episode_response_for_cleanup(source_eps) or not validate_episode_response_for_cleanup(target_eps):
+    if not validate_episode_response_for_cleanup(source_eps, expected_series_id=source_series_id) or not validate_episode_response_for_cleanup(target_eps, expected_series_id=cand.target_series_id):
         cand.last_error = sanitize_text('cleanup revalidation uncertain: source or target episode response invalid')
         cand.save()
         return 'uncertain', cand.last_error
@@ -195,18 +245,27 @@ def revalidate_candidate_for_delete(*, cand, source_api, target_api, source_seri
     current_keys = current_eligible.get(cand.episode_file_id)
     if current_keys == cand.linked_episode_keys:
         return 'eligible', ''
+    state = candidate_file_state(target_eps, cand, expected_series_id=cand.target_series_id)
     if current_keys:
+        if state == 'uncertain':
+            cand.last_error = sanitize_text('cleanup revalidation uncertain: linked episode records incomplete')
+            cand.save()
+            return 'uncertain', cand.last_error
         _reset_candidate(cand, now=now, keys=current_keys)
         cand.last_confirmed_at = now
         cand.save()
         return 'reset', 'linked_set_changed'
-    if file_absent(target_eps, cand.episode_file_id):
+    if state == 'absent':
         cand.status = SonarrCleanupCandidate.STATUS_ALREADY_ABSENT
         cand.ready_at = None
         cand.deleted_at = None
         cand.last_confirmed_at = now
         cand.save()
         return 'already_absent', ''
+    if state == 'uncertain':
+        cand.last_error = sanitize_text('cleanup revalidation uncertain: linked episode records incomplete')
+        cand.save()
+        return 'uncertain', cand.last_error
     return 'cancel', 'revalidation_ineligible'
 
 
@@ -218,7 +277,10 @@ def process_cleanup_for_series(*, target_instance, tvdb_id, target_series_id, so
     for cand in active:
         current_keys = eligible.get(cand.episode_file_id)
         if current_keys is None:
-            if file_absent(target_episodes, cand.episode_file_id):
+            file_state = candidate_file_state(target_episodes, cand, expected_series_id=target_series_id)
+            if file_state == 'absent':
+                if cand.status == SonarrCleanupCandidate.STATUS_DELETED:
+                    continue
                 if cand.status != SonarrCleanupCandidate.STATUS_ALREADY_ABSENT:
                     cand.status = SonarrCleanupCandidate.STATUS_ALREADY_ABSENT
                     cand.last_confirmed_at = now
@@ -227,6 +289,11 @@ def process_cleanup_for_series(*, target_instance, tvdb_id, target_series_id, so
                     cand.save()
                     counters.cleanup_files_already_absent += 1
                     counters.events.append(f'cleanup already_absent tvdb={tvdb_id} series={target_series_id} episodeFileId={cand.episode_file_id}')
+            elif file_state == 'uncertain':
+                if cand.status not in (SonarrCleanupCandidate.STATUS_DELETED, SonarrCleanupCandidate.STATUS_ALREADY_ABSENT):
+                    cand.last_error = sanitize_text('cleanup lifecycle uncertain: linked episode records incomplete')
+                    cand.save()
+                    counters.cleanup_failures += 1
             elif cand.status not in (SonarrCleanupCandidate.STATUS_CANCELLED, SonarrCleanupCandidate.STATUS_DELETED, SonarrCleanupCandidate.STATUS_ALREADY_ABSENT):
                 cand.tvdb_id = tvdb_id
                 cand.target_series_id = target_series_id
@@ -285,14 +352,22 @@ def process_cleanup_for_series(*, target_instance, tvdb_id, target_series_id, so
             counters.delete_attempts_consumed += 1
             res = target_api.delete_episode_files([cand.episode_file_id])
             fresh = target_api.get_episodes(target_series_id)
-            if not validate_episode_response_for_cleanup(fresh):
+            if not validate_episode_response_for_cleanup(fresh, expected_series_id=target_series_id):
                 cand.last_error = sanitize_text('cleanup post-delete verification uncertain: invalid target episode response')
                 cand.save()
                 counters.cleanup_failures += 1
                 counters.stop_deletes_for_run = True
                 counters.cleanup_deferred_by_limit += len(ready) - idx - 1
                 break
-            absent = file_absent(fresh, cand.episode_file_id)
+            fresh_state = candidate_file_state(fresh, cand, expected_series_id=target_series_id)
+            if fresh_state == 'uncertain':
+                cand.last_error = sanitize_text('cleanup post-delete verification uncertain: linked episode records incomplete')
+                cand.save()
+                counters.cleanup_failures += 1
+                counters.stop_deletes_for_run = True
+                counters.cleanup_deferred_by_limit += len(ready) - idx - 1
+                break
+            absent = fresh_state == 'absent'
             api_failed = isinstance(res, dict) and (res.get('error') or res.get('errorMessage'))
             if absent and not api_failed:
                 cand.status = SonarrCleanupCandidate.STATUS_DELETED
