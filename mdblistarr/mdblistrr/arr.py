@@ -139,6 +139,17 @@ class SonarrAPI():
         except Exception:
             return {'errorMessage': sanitize_text(traceback.format_exc())}
 
+    def delete_episode_files(self, episode_file_ids):
+        ids = [int(i) for i in episode_file_ids]
+        try:
+            return self.connect.delete_json(
+                f"{self.url}/api/v3/episodefile/bulk",
+                json={"episodeFileIds": ids},
+                headers=_api_headers(self.apikey),
+            )
+        except Exception:
+            return {'errorMessage': sanitize_text(traceback.format_exc())}
+
     def trigger_episode_search(self, episode_ids):
         try:
             return self.connect.post_json(

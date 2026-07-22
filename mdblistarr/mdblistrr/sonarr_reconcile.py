@@ -6,6 +6,8 @@ AIR_DATE_AIRED = 'aired'
 AIR_DATE_FUTURE = 'future'
 AIR_DATE_MALFORMED = 'malformed'
 AIR_DATE_UNSCHEDULED = 'unscheduled'
+REASON_PERMANENT_DUPLICATE = 'permanent_duplicate'
+REASON_WANTED = 'wanted'
 
 
 def _blank_air_date(value):
@@ -125,6 +127,8 @@ class ReconcileStats:
     monitor_false_ids: list = field(default_factory=list)
     search_ids: list = field(default_factory=list)
     desired_season_monitoring: dict = field(default_factory=dict)
+    desired_by_key: dict = field(default_factory=dict)
+    reason_by_key: dict = field(default_factory=dict)
 
 
 def calculate_episode_monitoring(source_episodes, target_episodes, include_specials=False, search_newly_eligible=False, now=None):
@@ -153,6 +157,7 @@ def calculate_episode_monitoring(source_episodes, target_episodes, include_speci
         ok, reason = is_relevant_episode(ep, include_specials, now)
         if not ok:
             desired = False
+            decision_reason = reason
             if reason == 'special':
                 stats.specials_ignored += 1
             elif reason == 'future':
@@ -164,8 +169,16 @@ def calculate_episode_monitoring(source_episodes, target_episodes, include_speci
                 stats.malformed_episodes += 1
                 return stats
         else:
-            desired = not permanent.get(episode_key(ep), False)
-        season = episode_key(ep)[0]
+            if permanent.get(episode_key(ep), False):
+                desired = False
+                decision_reason = REASON_PERMANENT_DUPLICATE
+            else:
+                desired = True
+                decision_reason = REASON_WANTED
+        key = episode_key(ep)
+        stats.desired_by_key[key] = desired
+        stats.reason_by_key[key] = decision_reason
+        season = key[0]
         stats.desired_season_monitoring.setdefault(season, False)
         if desired:
             stats.desired_season_monitoring[season] = True

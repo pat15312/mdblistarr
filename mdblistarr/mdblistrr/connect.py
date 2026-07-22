@@ -204,3 +204,33 @@ class Connect:
         if headers is None:
             headers = DEFAULT_HEADERS
         return self.session.put(url, data=data, json=json, params=params, headers=headers, cookies=cookies)
+
+
+    def delete_json(self, url, data=None, json=None, headers=None, params=None, cookies=None):
+        try:
+            response = self.delete(url, data=data, json=json, headers=headers, params=params, cookies=cookies)
+            success = 200 <= response.status_code < 300
+            if not (response.text or '').strip():
+                if success:
+                    return {"status": "ok", "status_code": response.status_code}
+                return {"error": "Empty response from server", "status_code": response.status_code}
+            try:
+                data = response.json()
+            except (JSONDecodeError, ValueError):
+                decoded = self._decode_response_bytes(response)
+                data = {"error": "Invalid DELETE response", "status_code": response.status_code, "raw_response": sanitize_text((decoded or response.text)[:500])}
+            if not success:
+                return self._http_error_response(response, data, default_error="HTTP DELETE request failed")
+            if isinstance(data, dict):
+                data.setdefault("status_code", response.status_code)
+            return data
+        except ConnectionError as e:
+            return {"error": "Connection failed", "exception": sanitize_text(e)}
+        except RequestException as e:
+            return {"error": "Request failed", "exception": sanitize_text(e)}
+
+    @retry(stop=stop_after_attempt(6), wait=wait_fixed(10))
+    def delete(self, url, data=None, json=None, headers=None, params=None, cookies=None):
+        if headers is None:
+            headers = DEFAULT_HEADERS
+        return self.session.delete(url, data=data, json=json, params=params, headers=headers, cookies=cookies)

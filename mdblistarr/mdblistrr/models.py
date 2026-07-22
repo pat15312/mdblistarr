@@ -214,3 +214,41 @@ class Log(models.Model):
         
     def __str__(self):
         return self.text
+class SonarrCleanupCandidate(models.Model):
+    REASON_PERMANENT_DUPLICATE = 'permanent_duplicate'
+    STATUS_PENDING = 'pending'
+    STATUS_READY = 'ready'
+    STATUS_DELETED = 'deleted'
+    STATUS_CANCELLED = 'cancelled'
+    STATUS_ALREADY_ABSENT = 'already_absent'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_READY, 'Ready'),
+        (STATUS_DELETED, 'Deleted'),
+        (STATUS_CANCELLED, 'Cancelled'),
+        (STATUS_ALREADY_ABSENT, 'Already absent'),
+    ]
+
+    target_instance = models.ForeignKey(SonarrInstance, on_delete=models.CASCADE, related_name='cleanup_candidates')
+    tvdb_id = models.IntegerField()
+    target_series_id = models.IntegerField()
+    episode_file_id = models.IntegerField()
+    linked_episode_keys = models.JSONField(default=list)
+    reason = models.CharField(max_length=64, default=REASON_PERMANENT_DUPLICATE)
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    first_eligible_at = models.DateTimeField()
+    last_confirmed_at = models.DateTimeField()
+    ready_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['target_instance', 'episode_file_id'], name='uniq_sonarr_cleanup_target_file')
+        ]
+
+    def __str__(self):
+        return f'{self.target_instance_id}:{self.episode_file_id}:{self.status}'
