@@ -82,6 +82,17 @@ def eligible_episode_file_ids(source_episodes, target_episodes, stats):
     groups = _group_target_episode_files(target_episodes)
     if source_has is None or groups is None:
         return {}
+    key_to_file = {}
+    duplicate_keys = set()
+    for file_id, episodes in groups.items():
+        for ep in episodes:
+            key = episode_key(ep)
+            if key is None:
+                continue
+            previous = key_to_file.get(key)
+            if previous is not None:
+                duplicate_keys.add(key)
+            key_to_file[key] = file_id
     eligible = {}
     for file_id, episodes in groups.items():
         keys = []
@@ -89,12 +100,12 @@ def eligible_episode_file_ids(source_episodes, target_episodes, stats):
         ok = True
         for ep in episodes:
             key = episode_key(ep)
-            if key is None or key in seen:
+            if key is None or key in seen or key in duplicate_keys:
                 ok = False; break
             seen.add(key)
             if _positive_int(ep.get('episodeFileId')) != file_id:
                 ok = False; break
-            if ep.get('hasFile') is not True or ep.get('monitored') is True:
+            if ep.get('hasFile') is not True or ep.get('monitored') is not False:
                 ok = False; break
             if source_has.get(key) is not True:
                 ok = False; break
@@ -110,6 +121,35 @@ def file_absent(target_episodes, file_id):
     if not isinstance(target_episodes, list):
         return False
     return not any(isinstance(ep, dict) and _positive_int(ep.get('episodeFileId')) == int(file_id) and ep.get('hasFile') is True for ep in target_episodes)
+
+
+def validate_episode_response_for_cleanup(episodes):
+    if not isinstance(episodes, list):
+        return False
+    seen = set()
+    for ep in episodes:
+        if not isinstance(ep, dict):
+            return False
+        if ep.get('result') or ep.get('error') or ep.get('errorMessage'):
+            return False
+        status_code = ep.get('status_code')
+        if status_code is not None:
+            try:
+                if int(status_code) < 200 or int(status_code) >= 300:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        if _positive_int(ep.get('id')) is None:
+            return False
+        key = episode_key(ep)
+        if key is None or key in seen:
+            return False
+        seen.add(key)
+        if not isinstance(ep.get('hasFile'), bool) or not isinstance(ep.get('monitored'), bool):
+            return False
+        if ep.get('hasFile') is True and _positive_int(ep.get('episodeFileId')) is None:
+            return False
+    return True
 
 
 def _reset_candidate(cand, *, now, status=SonarrCleanupCandidate.STATUS_PENDING, keys=None, clear_error=True):
@@ -142,7 +182,7 @@ def revalidate_candidate_for_delete(*, cand, source_api, target_api, source_seri
         return 'defer', 'grace_not_elapsed'
     source_eps = source_api.get_episodes(source_series_id) if source_api and source_series_id else None
     target_eps = target_api.get_episodes(cand.target_series_id)
-    if not isinstance(source_eps, list) or not isinstance(target_eps, list):
+    if not validate_episode_response_for_cleanup(source_eps) or not validate_episode_response_for_cleanup(target_eps):
         cand.last_error = sanitize_text('cleanup revalidation uncertain: source or target episode response invalid')
         cand.save()
         return 'uncertain', cand.last_error
@@ -245,7 +285,7 @@ def process_cleanup_for_series(*, target_instance, tvdb_id, target_series_id, so
             counters.delete_attempts_consumed += 1
             res = target_api.delete_episode_files([cand.episode_file_id])
             fresh = target_api.get_episodes(target_series_id)
-            if not isinstance(fresh, list):
+            if not validate_episode_response_for_cleanup(fresh):
                 cand.last_error = sanitize_text('cleanup post-delete verification uncertain: invalid target episode response')
                 cand.save()
                 counters.cleanup_failures += 1
@@ -286,7 +326,10 @@ def process_cleanup_for_series(*, target_instance, tvdb_id, target_series_id, so
             counters.events.append(f'cleanup candidate reset tvdb={tvdb_id} series={target_series_id} episodeFileId={cand.episode_file_id} reason={detail}')
         elif state == 'uncertain':
             counters.cleanup_failures += 1
+            counters.stop_deletes_for_run = True
+            counters.cleanup_deferred_by_limit += len(ready) - idx - 1
             counters.events.append(f'cleanup failure tvdb={tvdb_id} series={target_series_id} episodeFileId={cand.episode_file_id} reason={sanitize_text(detail)}')
+            break
         else:
             counters.cleanup_deferred_by_limit += 1
     return counters

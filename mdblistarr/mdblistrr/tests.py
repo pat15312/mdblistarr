@@ -1279,7 +1279,7 @@ class SonarrCleanupGlobalBudgetTests(TestCase):
                     return self.tgt[sid]
                 return [dict(ep, hasFile=False) for ep in self.tgt[sid]]
             def delete_episode_files(self, ids): deletes.append(ids); return {'status':'ok','status_code':204}
-        src = {10: [self.ep(1, file_id=0)], 11: [self.ep(2, file_id=0)], 12: [self.ep(3, file_id=0)]}
+        src = {10: [self.ep(1, file_id=901)], 11: [self.ep(2, file_id=902)], 12: [self.ep(3, file_id=903)]}
         tgt = {20: [self.ep(20, file_id=100)], 21: [self.ep(21, file_id=101)], 22: [self.ep(22, file_id=102)]}
         for file_id, series_id in [(100,20),(101,21),(102,22)]:
             self.ready(file_id, series_id)
@@ -1305,7 +1305,7 @@ class SonarrCleanupGlobalBudgetTests(TestCase):
             def delete_episode_files(self, ids): deletes.append(ids); return {'error':'failed'}
         self_outer = self
         self.ready(200, 20)
-        src = [self.ep(1, file_id=0)]
+        src = [self.ep(1, file_id=901)]
         tgt = [self.ep(2, file_id=200)]
         c = process_cleanup_for_series(target_instance=self.target, tvdb_id=20, target_series_id=20, source_episodes=src, target_episodes=tgt, stats=calculate_episode_monitoring(src, tgt), target_api=API(), source_api=API(), source_series_id=10, cleanup_enabled=True, dry_run=False, grace_hours=0, remaining_delete_budget=1)
         self.assertEqual(len(deletes), 1)
@@ -1313,3 +1313,106 @@ class SonarrCleanupGlobalBudgetTests(TestCase):
         c2 = process_cleanup_for_series(target_instance=self.target, tvdb_id=20, target_series_id=20, source_episodes=src, target_episodes=tgt, stats=calculate_episode_monitoring(src, tgt), target_api=API(), source_api=API(), source_series_id=10, cleanup_enabled=True, dry_run=False, grace_hours=0, remaining_delete_budget=0)
         self.assertEqual(len(deletes), 1)
         self.assertEqual(c2.cleanup_deferred_by_limit, 1)
+
+class SonarrCleanupFinalSafetyTests(TestCase):
+    def setUp(self):
+        os.environ['MDBLISTARR_ENCRYPTION_KEY'] = Fernet.generate_key().decode('ascii')
+        self.target = SonarrInstance.objects.create(name='target-final', url='http://target', apikey='tgt', is_ondemand_target=True, is_library_source=False)
+
+    def ep(self, sid, season=1, num=1, has=True, mon=False, file_id=10, air='2020-01-01T00:00:00Z'):
+        return {'id': sid, 'seasonNumber': season, 'episodeNumber': num, 'hasFile': has, 'monitored': mon, 'episodeFileId': file_id, 'airDateUtc': air}
+
+    def stats(self, src, tgt):
+        from .sonarr_reconcile import calculate_episode_monitoring
+        return calculate_episode_monitoring(src, tgt)
+
+    def ready(self, file_id, keys=None):
+        now = timezone.now() - timezone.timedelta(hours=2)
+        return SonarrCleanupCandidate.objects.create(target_instance=self.target, tvdb_id=1, target_series_id=20, episode_file_id=file_id, linked_episode_keys=keys or [[1,1]], reason='permanent_duplicate', status=SonarrCleanupCandidate.STATUS_READY, first_eligible_at=now, last_confirmed_at=now, ready_at=now)
+
+    def test_delete_connection_error_is_one_http_call_one_attempt_and_stops(self):
+        from .sonarr_cleanup import process_cleanup_for_series
+        from .arr import SonarrAPI
+        self.ready(300)
+        self.ready(301, [[1,2]])
+        src = [self.ep(1, num=1), self.ep(2, num=2)]
+        tgt = [self.ep(11, num=1, file_id=300), self.ep(12, num=2, file_id=301)]
+        class SourceAPI:
+            def get_episodes(self, sid): return src
+        target_api = SonarrAPI(instance_id=self.target.id)
+        target_api.get_episodes = lambda sid: tgt
+        with patch.object(target_api.connect.session, 'delete', side_effect=__import__('requests').exceptions.ConnectionError('apikey=secret')) as session_delete:
+            c = process_cleanup_for_series(target_instance=self.target, tvdb_id=1, target_series_id=20, source_episodes=src, target_episodes=tgt, stats=self.stats(src, tgt), target_api=target_api, source_api=SourceAPI(), source_series_id=10, cleanup_enabled=True, dry_run=False, grace_hours=0, remaining_delete_budget=2)
+        self.assertEqual(session_delete.call_count, 1)
+        self.assertEqual(c.delete_attempts_consumed, 1)
+        self.assertTrue(c.stop_deletes_for_run)
+        self.assertEqual(c.cleanup_deferred_by_limit, 1)
+        self.assertEqual(SonarrCleanupCandidate.objects.get(episode_file_id=300).status, SonarrCleanupCandidate.STATUS_READY)
+
+    def test_uncertain_predelete_stops_second_ready_candidate_without_delete(self):
+        from .sonarr_cleanup import process_cleanup_for_series
+        self.ready(310)
+        self.ready(311, [[1,2]])
+        src = [self.ep(1, num=1), self.ep(2, num=2)]
+        tgt = [self.ep(11, num=1, file_id=310), self.ep(12, num=2, file_id=311)]
+        deletes = []
+        class SourceAPI:
+            def get_episodes(self, sid): return [{'result': 'Error connecting to Sonarr API'}]
+        class TargetAPI:
+            def get_episodes(self, sid): return tgt
+            def delete_episode_files(self, ids): deletes.append(ids); return {'status':'ok'}
+        c = process_cleanup_for_series(target_instance=self.target, tvdb_id=1, target_series_id=20, source_episodes=src, target_episodes=tgt, stats=self.stats(src, tgt), target_api=TargetAPI(), source_api=SourceAPI(), source_series_id=10, cleanup_enabled=True, dry_run=False, grace_hours=0, remaining_delete_budget=2)
+        self.assertEqual(deletes, [])
+        self.assertTrue(c.stop_deletes_for_run)
+        self.assertEqual(c.cleanup_failures, 1)
+        self.assertEqual(c.cleanup_deferred_by_limit, 1)
+        self.assertEqual(SonarrCleanupCandidate.objects.get(episode_file_id=310).status, SonarrCleanupCandidate.STATUS_READY)
+
+    def test_post_delete_validation_shapes_and_valid_absence(self):
+        from .sonarr_cleanup import process_cleanup_for_series
+        invalid_posts = [
+            [{'result': 'Error connecting to Sonarr API'}],
+            ['not-dict'],
+            [{'id': 1, 'seasonNumber': 'bad', 'episodeNumber': 1, 'hasFile': False, 'monitored': False}],
+            [{'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'monitored': False}],
+            [{'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': True, 'monitored': False}],
+        ]
+        src = [self.ep(1)]
+        tgt = [self.ep(2, file_id=320)]
+        for post in invalid_posts:
+            SonarrCleanupCandidate.objects.all().delete()
+            self.ready(320)
+            class TargetAPI:
+                def __init__(self): self.calls = 0
+                def get_episodes(self, sid): self.calls += 1; return tgt if self.calls == 1 else post
+                def delete_episode_files(self, ids): return {'status':'ok','status_code':204}
+            class SourceAPI:
+                def get_episodes(self, sid): return src
+            c = process_cleanup_for_series(target_instance=self.target, tvdb_id=1, target_series_id=20, source_episodes=src, target_episodes=tgt, stats=self.stats(src, tgt), target_api=TargetAPI(), source_api=SourceAPI(), source_series_id=10, cleanup_enabled=True, dry_run=False, grace_hours=0, remaining_delete_budget=1)
+            self.assertEqual(c.cleanup_failures, 1)
+            self.assertTrue(c.stop_deletes_for_run)
+            self.assertEqual(SonarrCleanupCandidate.objects.get(episode_file_id=320).status, SonarrCleanupCandidate.STATUS_READY)
+        SonarrCleanupCandidate.objects.all().delete()
+        self.ready(320)
+        class ValidTargetAPI:
+            def __init__(self): self.calls = 0
+            def get_episodes(self, sid): self.calls += 1; return tgt if self.calls == 1 else [dict(tgt[0], hasFile=False, episodeFileId=0)]
+            def delete_episode_files(self, ids): return {'status':'ok','status_code':204}
+        class SourceAPI:
+            def get_episodes(self, sid): return src
+        c = process_cleanup_for_series(target_instance=self.target, tvdb_id=1, target_series_id=20, source_episodes=src, target_episodes=tgt, stats=self.stats(src, tgt), target_api=ValidTargetAPI(), source_api=SourceAPI(), source_series_id=10, cleanup_enabled=True, dry_run=False, grace_hours=0, remaining_delete_budget=1)
+        self.assertEqual(c.cleanup_files_deleted, 1)
+
+    def test_monitored_must_be_exact_false_and_duplicate_keys_block_all_files(self):
+        from .sonarr_cleanup import eligible_episode_file_ids
+        src = [self.ep(1, num=1), self.ep(2, num=2)]
+        for bad_monitored in [{}, {'monitored': None}, {'monitored': 0}]:
+            ep = self.ep(11, file_id=330)
+            ep.update(bad_monitored)
+            if bad_monitored == {}:
+                ep.pop('monitored')
+            self.assertEqual(eligible_episode_file_ids(src, [ep], self.stats(src, [ep])), {})
+        same_file = [self.ep(11, num=1, file_id=331), self.ep(12, num=1, file_id=331)]
+        self.assertEqual(eligible_episode_file_ids(src, same_file, self.stats(src, same_file)), {})
+        different_files = [self.ep(11, num=1, file_id=332), self.ep(12, num=1, file_id=333)]
+        self.assertEqual(eligible_episode_file_ids(src, different_files, self.stats(src, different_files)), {})

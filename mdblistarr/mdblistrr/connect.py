@@ -230,7 +230,6 @@ class Connect:
         except RequestException as e:
             return {"error": "Request failed", "exception": sanitize_text(e)}
 
-    @retry(stop=stop_after_attempt(6), wait=wait_fixed(10))
     def delete(self, url, data=None, json=None, headers=None, params=None, cookies=None):
         if headers is None:
             headers = DEFAULT_HEADERS
