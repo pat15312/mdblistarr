@@ -297,6 +297,10 @@ def home_view(request):
         'include_specials': Preferences.get_value('sonarr_include_specials', '0') == '1',
         'search_newly_eligible': Preferences.get_value('sonarr_search_newly_eligible', '0') == '1',
         'interval_minutes': Preferences.get_value('sonarr_reconciliation_interval_minutes', '15') or '15',
+        'cleanup_enabled': Preferences.get_value('sonarr_cleanup_enabled', '0') == '1',
+        'cleanup_dry_run': Preferences.get_value('sonarr_cleanup_dry_run', '1') != '0',
+        'cleanup_grace_hours': Preferences.get_value('sonarr_cleanup_grace_hours', '24') or '24',
+        'cleanup_max_deletions_per_run': int(Preferences.get_value('sonarr_cleanup_max_deletions_per_run', '25') or '25'),
     })
     
     active_radarr_id = request.session.get('active_radarr_id')

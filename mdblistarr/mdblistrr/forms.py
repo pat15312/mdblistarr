@@ -22,6 +22,10 @@ class SonarrReconciliationForm(forms.Form):
     include_specials = forms.BooleanField(label='Include specials in completeness checks', required=False)
     search_newly_eligible = forms.BooleanField(label='Search newly eligible On Demand episodes', required=False)
     interval_minutes = forms.ChoiceField(label='Reconciliation interval', choices=[('5','Every 5 minutes'),('15','Every 15 minutes'),('30','Every 30 minutes')])
+    cleanup_enabled = forms.BooleanField(label='Enable automatic duplicate-file cleanup', required=False)
+    cleanup_dry_run = forms.BooleanField(label='Dry-run cleanup', required=False)
+    cleanup_grace_hours = forms.ChoiceField(label='Cleanup grace period', choices=[('0','Immediately'),('1','1 hour'),('6','6 hours'),('12','12 hours'),('24','24 hours'),('48','48 hours'),('168','7 days')])
+    cleanup_max_deletions_per_run = forms.IntegerField(label='Maximum file deletions per reconciliation run', min_value=1, max_value=500)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -51,3 +55,7 @@ class SonarrReconciliationForm(forms.Form):
         Preferences.set_value('sonarr_include_specials', '1' if data.get('include_specials') else '0')
         Preferences.set_value('sonarr_search_newly_eligible', '1' if data.get('search_newly_eligible') else '0')
         Preferences.set_value('sonarr_reconciliation_interval_minutes', data.get('interval_minutes') or '15')
+        Preferences.set_value('sonarr_cleanup_enabled', '1' if data.get('cleanup_enabled') else '0')
+        Preferences.set_value('sonarr_cleanup_dry_run', '1' if data.get('cleanup_dry_run') else '0')
+        Preferences.set_value('sonarr_cleanup_grace_hours', data.get('cleanup_grace_hours') or '24')
+        Preferences.set_value('sonarr_cleanup_max_deletions_per_run', str(data.get('cleanup_max_deletions_per_run') or 25))

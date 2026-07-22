@@ -189,3 +189,29 @@ Configure native Sonarr MDBList import lists in the On Demand instance to:
 Library-state sync keeps the existing configured sync-hour behaviour. On Demand reconciliation runs on the existing scheduled-task system every five minutes and internally honors the configured reconciliation interval. A file lock prevents overlapping reconciliation runs; a second invocation exits cleanly while a run is active.
 
 Upgrades preserve encrypted API keys, existing quality profiles, root folders, authentication, and runtime secrets. Sonarr quality profile and root folder fields may be blank for read-only or reconciliation-only uses. Expected logs include counts for series inspected, complete/incomplete/no-relevant shows, exclusions, reconciliation comparisons, monitoring changes, skipped specials/future episodes, searches, and failures. Logs are sanitized and must not contain API keys or bearer tokens. Reconciliation logs distinguish matched source comparisons from target-only series and report partial failures so the next idempotent scheduled run can retry failed monitor or search batches.
+
+### Safety-first Sonarr On Demand duplicate-file cleanup
+
+MDBListarr can optionally evaluate Sonarr On Demand episode files for cleanup when the file is a confirmed duplicate of the permanent Sonarr source. This is a destructive feature and is disabled by default; upgrades keep cleanup disabled, dry-run enabled, a 24-hour grace period, and a 25-file deletion cap.
+
+The only deletion reason is `permanent_duplicate`. An On Demand episode file is eligible only when every target episode linked to the same `episodeFileId` has a season/episode identity, matches the permanent source by TVDB ID plus season and episode number, the permanent episode has `hasFile=true`, the monitoring calculation explicitly chose `desired=false` because of `permanent_duplicate`, the target has `hasFile=true`, and the target episode is actually unmonitored after reconciliation writes complete. MDBListarr never treats unmonitored, future, unscheduled, malformed, disabled-special, target-only, list-excluded, or season-unmonitored state as deletion evidence.
+
+Cleanup candidates are persistent records keyed by On Demand target instance and target `episodeFileId`. Candidates begin as `pending`, preserve `first_eligible_at` while the linked episode set is unchanged, become `ready` only after the configured grace period, then either remain dry-run would-delete entries, are deleted, are cancelled, or are marked `already_absent`. If the linked episode set changes, a cancelled candidate becomes eligible again, or Sonarr reports a replacement file ID, the grace period starts over. If the permanent source no longer has every matching file, eligibility is cancelled immediately. Malformed or uncertain data does not create, advance, or delete candidates.
+
+Deletion is performed only against the Sonarr On Demand target through Sonarr's V3 episode-file API. MDBListarr uses bounded per-series bulk requests to `DELETE /api/v3/episodefile/bulk` with `{"episodeFileIds": [...]}`; files from different target series are never mixed in one bulk request. Immediately before deletion, MDBListarr revalidates source and target episode data, the candidate episode set, unmonitored state, `permanent_duplicate` reason, grace period, dry-run state, and deletion cap. After Sonarr accepts deletion, MDBListarr re-fetches target episodes and marks the candidate deleted only if no target episode still reports the file as active. If Sonarr returns an error but the file is already absent, the candidate is safely marked `already_absent`; if Sonarr reports success but the file remains, the candidate stays retryable with a sanitized error.
+
+The reconciliation log includes cleanup counters: new, pending, ready, cancelled, would-delete, deleted, already-absent, deferred-by-limit, and failures. Individual sanitized candidate transition events are logged only when created, ready, cancelled, first observed as would-delete in dry run, deleted, already absent, or failed. Logs avoid API keys, auth headers, full filesystem paths, and raw sensitive Sonarr responses.
+
+The UI provides a prominent warning and reuses the authenticated, CSRF-protected manual reconciliation action labelled "Run cleanup evaluation now". There is no force-delete or safety-bypass action. The action respects the existing reconciliation lock, cleanup enabled state, dry-run state, grace period, and deletion cap.
+
+Recommended production dry-run rollout:
+
+1. Deploy the updated application.
+2. Leave cleanup disabled and confirm normal reconciliation remains healthy.
+3. Enable cleanup with dry run enabled, 24-hour grace period, and maximum 25 deletions per run.
+4. Review candidates and would-delete logs for at least one full grace period.
+5. Confirm examples such as SpongeBob SquarePants Season 10.
+6. Disable dry run to permit real deletion.
+7. Confirm permanent files remain, On Demand target files disappear, target episodes remain unmonitored, target season state remains correct, and reconciliation reports zero failures.
+
+Disabling cleanup stops DELETE calls. Dry-run can remain enabled indefinitely for candidate review. Sonarr remains responsible for removing target files and episode-file records; MDBListarr never directly deletes filesystem paths. NzbDAV backing-store or orphan cleanup may remain governed by NzbDAV's own maintenance behavior.

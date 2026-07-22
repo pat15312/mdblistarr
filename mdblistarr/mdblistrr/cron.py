@@ -11,6 +11,7 @@ from .services import get_mdblistarr, reset_mdblistarr
 from .arr import SonarrAPI
 from .arr import RadarrAPI
 from .sonarr_reconcile import determine_series_completeness, calculate_episode_monitoring
+from .sonarr_cleanup import process_cleanup_for_series
 import fcntl, os
 
 def save_log(provider, status, text):
@@ -742,6 +743,13 @@ def reconcile_sonarr_ondemand(force=False):
             totals.series_compared = totals.episodes_inspected = totals.episodes_unchanged = 0
             include_specials = Preferences.get_value('sonarr_include_specials', '0') == '1'
             search_enabled = Preferences.get_value('sonarr_search_newly_eligible', '0') == '1'
+            cleanup_enabled = Preferences.get_value('sonarr_cleanup_enabled', '0') == '1'
+            cleanup_dry_run = Preferences.get_value('sonarr_cleanup_dry_run', '1') != '0'
+            cleanup_grace_hours = int(Preferences.get_value('sonarr_cleanup_grace_hours', '24') or '24')
+            cleanup_max = max(1, min(500, int(Preferences.get_value('sonarr_cleanup_max_deletions_per_run', '25') or '25')))
+            cleanup_remaining_delete_attempts = cleanup_max
+            cleanup_stop_real_deletes = False
+            cleanup_totals = {'cleanup_candidates_new':0,'cleanup_candidates_pending':0,'cleanup_candidates_ready':0,'cleanup_candidates_cancelled':0,'cleanup_would_delete':0,'cleanup_files_deleted':0,'cleanup_files_already_absent':0,'cleanup_deferred_by_limit':0,'cleanup_failures':0}
             for show in target_series:
                 if not isinstance(show, dict) or not show.get('tvdbId') or not show.get('id'):
                     totals.failures += 1
@@ -786,15 +794,34 @@ def reconcile_sonarr_ondemand(force=False):
                 if season_failures:
                     totals.failures += season_failures
 
+                series_ok_for_cleanup = True
                 if search_enabled and applied_true:
                     eligible_search_ids = [episode_id for episode_id in stats.search_ids if episode_id in set(applied_true)]
                     searched, search_failed = _search_episode_batches(target_api, eligible_search_ids)
                     totals.searches_triggered += searched
                     if search_failed:
                         totals.failures += 1
+                        series_ok_for_cleanup = False
+                if season_failures:
+                    series_ok_for_cleanup = False
+                if series_ok_for_cleanup:
+                    cleanup = process_cleanup_for_series(
+                        target_instance=target, tvdb_id=show.get('tvdbId'), target_series_id=show['id'],
+                        source_episodes=src_eps, target_episodes=tgt_eps, stats=stats, target_api=target_api,
+                        source_api=source_api, source_series_id=src['id'] if src else None, include_specials=include_specials,
+                        cleanup_enabled=cleanup_enabled, dry_run=cleanup_dry_run, grace_hours=cleanup_grace_hours,
+                        remaining_delete_budget=cleanup_remaining_delete_attempts, stop_real_deletes=cleanup_stop_real_deletes)
+                    cleanup_remaining_delete_attempts = max(0, cleanup_remaining_delete_attempts - cleanup.delete_attempts_consumed)
+                    if cleanup.stop_deletes_for_run:
+                        cleanup_stop_real_deletes = True
+                    for key in cleanup_totals:
+                        cleanup_totals[key] += getattr(cleanup, key)
+                    totals.failures += cleanup.cleanup_failures
+                    for event in cleanup.events:
+                        save_log(provider, 1 if 'failure' not in event else 2, sanitize_text(event))
             status = 207 if totals.failures else 200
             log_status = 2 if totals.failures else 1
-            save_log(provider, log_status, f'Sonarr reconciliation: series compared={totals.series_compared} target_only={totals.series_target_only} episodes inspected={totals.episodes_inspected} newly_monitored={totals.episodes_newly_monitored} newly_unmonitored={totals.episodes_newly_unmonitored} unchanged={totals.episodes_unchanged} searches={totals.searches_triggered} specials_ignored={totals.specials_ignored} future_ignored={totals.future_episodes_ignored} unscheduled_ignored={totals.unscheduled_episodes_ignored} malformed={totals.malformed_episodes} seasons_newly_monitored={totals.seasons_newly_monitored} seasons_newly_unmonitored={totals.seasons_newly_unmonitored} seasons_unchanged={totals.seasons_unchanged} season_update_failures={totals.season_update_failures} failures={totals.failures}')
+            save_log(provider, log_status, f'Sonarr reconciliation: series compared={totals.series_compared} target_only={totals.series_target_only} episodes inspected={totals.episodes_inspected} newly_monitored={totals.episodes_newly_monitored} newly_unmonitored={totals.episodes_newly_unmonitored} unchanged={totals.episodes_unchanged} searches={totals.searches_triggered} specials_ignored={totals.specials_ignored} future_ignored={totals.future_episodes_ignored} unscheduled_ignored={totals.unscheduled_episodes_ignored} malformed={totals.malformed_episodes} seasons_newly_monitored={totals.seasons_newly_monitored} seasons_newly_unmonitored={totals.seasons_newly_unmonitored} seasons_unchanged={totals.seasons_unchanged} season_update_failures={totals.season_update_failures} failures={totals.failures} cleanup_candidates_new={cleanup_totals['cleanup_candidates_new']} cleanup_candidates_pending={cleanup_totals['cleanup_candidates_pending']} cleanup_candidates_ready={cleanup_totals['cleanup_candidates_ready']} cleanup_candidates_cancelled={cleanup_totals['cleanup_candidates_cancelled']} cleanup_would_delete={cleanup_totals['cleanup_would_delete']} cleanup_files_deleted={cleanup_totals['cleanup_files_deleted']} cleanup_files_already_absent={cleanup_totals['cleanup_files_already_absent']} cleanup_deferred_by_limit={cleanup_totals['cleanup_deferred_by_limit']} cleanup_failures={cleanup_totals['cleanup_failures']}')
             return {'result': status, 'failures': totals.failures, 'message': 'partial_failure' if totals.failures else 'ok'}
         except Exception:
             save_log(provider, 2, sanitize_text(traceback.format_exc()))
