@@ -761,7 +761,7 @@ class SonarrReconciliationIntegrationReviewTests(TestCase):
     def tearDown(self):
         self.env.__exit__(None, None, None)
 
-    def _run(self, source_series, target_series, episodes_by_series, monitor_res={'status':'ok','status_code':202}, search_res={'status':'ok','status_code':201}, season_res={'status':'ok','status_code':202}):
+    def _run(self, source_series, target_series, episodes_by_series, monitor_res={'status':'ok','status_code':202}, search_res={'name':'EpisodeSearch','id':123,'status_code':201}, season_res={'status':'ok','status_code':202}):
         from .cron import reconcile_sonarr_ondemand
         def init(api_self, instance_id=None, **kw): api_self.instance_id = instance_id
         def get_series(api_self): return source_series if api_self.instance_id == self.source.id else target_series
@@ -943,7 +943,7 @@ class SonarrSeriesResponseValidationTests(TestCase):
              patch('mdblistrr.cron.SonarrAPI.put_episode_monitor', return_value={'status': 'ok', 'status_code': 202}) as put, \
              patch('mdblistrr.cron.SonarrAPI.post_seasonpass', return_value={'status': 'ok', 'status_code': 202}), \
              patch('mdblistrr.cron.SonarrAPI.put_series_monitor', return_value={'status_code': 202}), \
-             patch('mdblistrr.cron.SonarrAPI.trigger_episode_search', return_value={'status': 'ok', 'status_code': 201}) as search:
+             patch('mdblistrr.cron.SonarrAPI.trigger_episode_search', return_value={'name': 'EpisodeSearch', 'id': 123, 'status_code': 201}) as search:
             res = reconcile_sonarr_ondemand(force=True)
         self.assertEqual(res['result'], 200)
         put.assert_called_once_with([1], True)
@@ -1684,7 +1684,7 @@ class SonarrSeriesMonitoringInitialSearchTests(TestCase):
         def put_episode(ids, monitored): calls.append('episode'); return {'status_code': 202}
         def seasonpass(series_id, seasons): calls.append('season'); return {'status_code': 202}
         def series_monitor(ids, monitored): calls.append('series'); return {'status_code': 202}
-        def search(ids): calls.append('search'); return {'status_code': 201}
+        def search(ids): calls.append('search'); return {'name': 'EpisodeSearch', 'id': 123, 'status_code': 201}
         with patch('mdblistrr.cron.SonarrAPI.__init__', init), \
              patch('mdblistrr.cron.SonarrAPI.get_series', get_series), \
              patch('mdblistrr.cron.SonarrAPI.get_episodes', get_episodes), \
@@ -1750,7 +1750,7 @@ class SonarrPersistentSearchCandidateTests(TestCase):
     def ep(self, sid, num=1, has=False, mon=True, air='2020-01-01T00:00:00Z', last=None):
         return {'id': sid, 'seasonNumber': 1, 'episodeNumber': num, 'hasFile': has, 'monitored': mon, 'airDateUtc': air, 'lastSearchTime': last}
 
-    def run_reconcile(self, eps, search='0', search_res={'status_code': 201}, batch_size=None):
+    def run_reconcile(self, eps, search='0', search_res={'status_code': 201, 'id': 123, 'name': 'EpisodeSearch'}, batch_size=None):
         from .cron import reconcile_sonarr_ondemand
         Preferences.set_value('sonarr_search_newly_eligible', search)
         target_series = [{'id': 20, 'tvdbId': 999, 'monitored': True, 'seasons': [{'seasonNumber': 1, 'monitored': True}]}]
@@ -1821,10 +1821,55 @@ class SonarrPersistentSearchCandidateTests(TestCase):
         search.assert_called_once_with([1])
         cleanup.assert_not_called()
         self.assertEqual(SonarrEpisodeSearchCandidate.objects.get(target_episode_id=1).status, 'pending')
-        res, search, cleanup = self.run_reconcile(eps, search='1', search_res={'status_code': 201})
+        res, search, cleanup = self.run_reconcile(eps, search='1', search_res={'status_code': 201, 'id': 123, 'name': 'EpisodeSearch'})
         self.assertEqual(res['result'], 200)
         search.assert_called_once_with([1])
         self.assertEqual(SonarrEpisodeSearchCandidate.objects.get(target_episode_id=1).status, 'submitted')
+
+    def test_legacy_success_response_recovers_pending_while_search_disabled(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        from .models import SonarrEpisodeSearchCandidate
+        queued = timezone.now()
+        first = queued - timedelta(minutes=1)
+        response = {
+            'name': 'EpisodeSearch', 'commandName': 'Episode Search',
+            'body': {'episodeIds': [1, 2], 'name': 'EpisodeSearch', 'trigger': 'manual'},
+            'status': 'queued', 'result': 'unknown', 'queued': queued.isoformat(), 'id': 22248, 'status_code': 201,
+        }
+        for eid in (1, 2, 3):
+            SonarrEpisodeSearchCandidate.objects.create(target_instance=self.target, target_series_id=20, target_episode_id=eid, tvdb_id=999, season_number=1, episode_number=eid, first_eligible_at=first, last_confirmed_at=first, last_error=str(response))
+        eps = [self.ep(1, num=1), self.ep(2, num=2), self.ep(3, num=3)]
+        res, search, cleanup = self.run_reconcile(eps, search='0')
+        self.assertEqual(res['result'], 200)
+        search.assert_not_called()
+        cleanup.assert_called()
+        submitted = set(SonarrEpisodeSearchCandidate.objects.filter(status='submitted').values_list('target_episode_id', flat=True))
+        self.assertEqual(submitted, {1, 2})
+        pending = SonarrEpisodeSearchCandidate.objects.get(target_episode_id=3)
+        self.assertEqual(pending.status, 'pending')
+        recovered = SonarrEpisodeSearchCandidate.objects.get(target_episode_id=1)
+        self.assertEqual(recovered.submitted_at, queued)
+        self.assertEqual(recovered.last_error, '')
+
+    def test_legacy_recovery_rejects_uncertain_values_and_does_not_revive_cancelled(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        from .models import SonarrEpisodeSearchCandidate
+        queued = timezone.now()
+        first = queued + timedelta(minutes=1)
+        response = {'name': 'EpisodeSearch', 'body': {'episodeIds': [1], 'name': 'EpisodeSearch'}, 'status': 'queued', 'result': 'unknown', 'queued': queued.isoformat(), 'id': 22248, 'status_code': 201}
+        old = SonarrEpisodeSearchCandidate.objects.create(target_instance=self.target, target_series_id=20, target_episode_id=1, tvdb_id=999, season_number=1, episode_number=1, first_eligible_at=first, last_confirmed_at=first, last_error=str(response))
+        bad = SonarrEpisodeSearchCandidate.objects.create(target_instance=self.target, target_series_id=20, target_episode_id=2, tvdb_id=999, season_number=1, episode_number=2, first_eligible_at=queued, last_confirmed_at=queued, last_error='not a dict')
+        cancelled = SonarrEpisodeSearchCandidate.objects.create(target_instance=self.target, target_series_id=20, target_episode_id=3, tvdb_id=999, season_number=1, episode_number=3, status='cancelled', cancelled_at=queued, first_eligible_at=queued, last_confirmed_at=queued, last_error=str({'name': 'EpisodeSearch', 'body': {'episodeIds': [3], 'name': 'EpisodeSearch'}, 'queued': queued.isoformat(), 'id': 1, 'status_code': 201}))
+        eps = [self.ep(1, num=1), self.ep(2, num=2), self.ep(3, num=3)]
+        res, search, _cleanup = self.run_reconcile(eps, search='0')
+        self.assertEqual(res['result'], 200)
+        search.assert_not_called()
+        old.refresh_from_db(); bad.refresh_from_db(); cancelled.refresh_from_db()
+        self.assertEqual(old.status, 'pending')
+        self.assertEqual(bad.status, 'pending')
+        self.assertEqual(cancelled.status, 'pending')
 
 class SonarrSearchCandidateBatchTests(TestCase):
     def setUp(self):
@@ -1846,7 +1891,7 @@ class SonarrSearchCandidateBatchTests(TestCase):
             def __init__(self): self.calls = []
             def trigger_episode_search(self, ids):
                 self.calls.append(ids)
-                return {'status_code': 500} if ids == [1, 2] else {'status_code': 201}
+                return {'status_code': 500, 'id': 9, 'name': 'EpisodeSearch'} if ids == [1, 2] else {'status_code': 201, 'id': 10, 'name': 'EpisodeSearch'}
         api = API()
         counts, _events, failed = submit_pending_search_candidates(target_api=api, target_instance=self.target, target_series_id=20, batch_size=2)
         self.assertTrue(failed)
@@ -1865,7 +1910,7 @@ class SonarrSearchCandidateBatchTests(TestCase):
             def __init__(self): self.calls = []
             def trigger_episode_search(self, ids):
                 self.calls.append(ids)
-                return {'status_code': 201} if ids == [1, 2] else {'status_code': 500}
+                return {'status_code': 201, 'id': 11, 'name': 'EpisodeSearch'} if ids == [1, 2] else {'status_code': 500, 'id': 12, 'name': 'EpisodeSearch'}
         api = API()
         counts, _events, failed = submit_pending_search_candidates(target_api=api, target_instance=self.target, target_series_id=20, batch_size=2)
         self.assertTrue(failed)
@@ -1940,7 +1985,7 @@ class SonarrSearchCandidateTimestampTests(TestCase):
         cand.refresh_from_db(); self.assertEqual(cand.status, 'pending'); self.assertEqual(cand.first_eligible_at, now)
         class API:
             def __init__(self): self.calls = []
-            def trigger_episode_search(self, ids): self.calls.append(ids); return {'status_code': 201}
+            def trigger_episode_search(self, ids): self.calls.append(ids); return {'status_code': 201, 'id': 13, 'name': 'EpisodeSearch'}
         from .sonarr_search import submit_pending_search_candidates
         api = API(); submit_pending_search_candidates(target_api=api, target_instance=self.target, target_series_id=20)
         self.assertEqual(api.calls, [[1]])
@@ -1977,13 +2022,38 @@ class SonarrSearchCandidateTimestampTests(TestCase):
 
 
 class SonarrCommandResponseValidationTests(TestCase):
-    def test_command_response_shapes(self):
+    def valid_response(self, **overrides):
+        response = {
+            'name': 'EpisodeSearch', 'commandName': 'Episode Search',
+            'body': {'episodeIds': [28657, 28658], 'name': 'EpisodeSearch', 'trigger': 'manual'},
+            'status': 'queued', 'result': 'unknown', 'queued': '2026-07-23T17:07:24Z',
+            'id': 22248, 'status_code': 201,
+        }
+        response.update(overrides)
+        return response
+
+    def test_successful_command_response_shapes(self):
+        from .sonarr_search import command_response_failed, command_response_succeeded
+        self.assertTrue(command_response_succeeded(self.valid_response()))
+        self.assertFalse(command_response_failed(self.valid_response()))
+        self.assertTrue(command_response_succeeded(self.valid_response(result=None)))
+        for status in ('queued', 'started', 'completed'):
+            self.assertTrue(command_response_succeeded(self.valid_response(status=status)), status)
+        by_body = self.valid_response(name='Other')
+        self.assertTrue(command_response_succeeded(by_body))
+
+    def test_rejected_command_response_shapes(self):
         from .sonarr_search import command_response_failed
-        failures = [None, 'ok', [], {}, {'result': 'bad'}, {'error': 'bad'}, {'errorMessage': 'bad'}, {'status_code': '202'}, {'status_code': 500}, {'foo': 'bar'}, {'id': 0}]
+        failures = [
+            None, 'ok', [], {}, {'result': 'bad'}, {'error': 'bad'}, {'errorMessage': 'bad'},
+            self.valid_response(status_code=None), self.valid_response(status_code='202'), self.valid_response(status_code=True),
+            self.valid_response(status_code=500), self.valid_response(id=None), self.valid_response(id=0),
+            self.valid_response(id=-1), self.valid_response(id=True), self.valid_response(id='22248'),
+            self.valid_response(name='Other', body={'episodeIds': [1], 'name': 'Other'}),
+            self.valid_response(name='Other', body=None), self.valid_response(name='Other', body='bad'),
+        ]
         for response in failures:
             self.assertTrue(command_response_failed(response), response)
-        for response in ({'status_code': 200}, {'status_code': 202, 'name': 'EpisodeSearch'}, {'id': 123, 'name': 'EpisodeSearch'}):
-            self.assertFalse(command_response_failed(response), response)
 
     def test_episode_search_uses_one_session_post_on_connection_error(self):
         from requests.exceptions import ConnectionError
