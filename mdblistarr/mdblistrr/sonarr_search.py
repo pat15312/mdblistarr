@@ -1,3 +1,5 @@
+import ast
+import json
 from datetime import datetime
 from django.utils import timezone
 from .connect import sanitize_text
@@ -72,18 +74,99 @@ def _mark_submitted(cand, *, submitted_at, now):
     cand.save(update_fields=['status', 'submitted_at', 'cancelled_at', 'last_error', 'last_confirmed_at', 'updated_at'])
 
 
-def command_response_failed(response):
+def command_response_succeeded(response):
     if not isinstance(response, dict) or not response:
-        return True
-    if response.get('result') or response.get('error') or response.get('errorMessage'):
-        return True
+        return False
+    if response.get('error') or response.get('errorMessage'):
+        return False
+
     status_code = response.get('status_code')
-    if status_code is not None:
-        if isinstance(status_code, bool) or not isinstance(status_code, int):
-            return True
-        return status_code < 200 or status_code >= 300
-    command_id = response.get('id')
-    return _valid_positive_int(command_id) is None
+    if isinstance(status_code, bool) or not isinstance(status_code, int):
+        return False
+    if status_code < 200 or status_code >= 300:
+        return False
+
+    if _valid_positive_int(response.get('id')) is None:
+        return False
+
+    body = response.get('body')
+    if body is not None and not isinstance(body, dict):
+        return False
+    if response.get('name') == 'EpisodeSearch':
+        return True
+    return isinstance(body, dict) and body.get('name') == 'EpisodeSearch'
+
+
+def command_response_failed(response):
+    return not command_response_succeeded(response)
+
+
+def _command_id(response):
+    return response.get('id') if command_response_succeeded(response) else None
+
+
+def _episode_search_failure_reason(response):
+    if isinstance(response, dict):
+        status_code = response.get('status_code')
+        if isinstance(status_code, int) and not isinstance(status_code, bool):
+            return f'http_{status_code}'
+        if response.get('error'):
+            return 'api_error'
+        if response.get('errorMessage'):
+            return 'api_error_message'
+        return 'invalid_command_response'
+    if isinstance(response, str):
+        return sanitize_text(response)[:120] or 'request_error'
+    return 'invalid_command_response'
+
+
+def _parse_legacy_response(value):
+    if not value or not isinstance(value, str):
+        return None
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(value)
+        except (TypeError, ValueError, SyntaxError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _parse_queued_datetime(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        dt = datetime.fromisoformat(value.strip().replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if timezone.is_naive(dt):
+        return None
+    return dt.astimezone(timezone.UTC)
+
+
+def _legacy_response_submitted_at(cand):
+    response = _parse_legacy_response(cand.last_error)
+    if not command_response_succeeded(response):
+        return None, None
+    body = response.get('body')
+    if not isinstance(body, dict):
+        return None, None
+    episode_ids = body.get('episodeIds')
+    if not isinstance(episode_ids, list):
+        return None, None
+    valid_ids = []
+    for episode_id in episode_ids:
+        if _valid_positive_int(episode_id) is None:
+            return None, None
+        valid_ids.append(episode_id)
+    if len(set(valid_ids)) != len(valid_ids) or cand.target_episode_id not in valid_ids:
+        return None, None
+    queued_at = _parse_queued_datetime(response.get('queued'))
+    first_eligible_at = _aware(cand.first_eligible_at)
+    if queued_at is None or first_eligible_at is None or queued_at < first_eligible_at:
+        return None, None
+    return queued_at, response.get('id')
 
 
 def update_search_candidates_for_series(*, target_instance, tvdb_id, target_series_id, target_episodes, stats, applied_monitor_true_ids=None, series_monitored_confirmed=False, now=None):
@@ -95,9 +178,12 @@ def update_search_candidates_for_series(*, target_instance, tvdb_id, target_seri
         'search_candidates_submitted': 0,
         'search_candidates_cancelled': 0,
         'search_candidates_deferred': 0,
+        'search_candidates_recovered': 0,
+        'search_recovery_failures': 0,
         'search_failures': 0,
     }
     events = []
+    recovered_by_command = {}
     eligible = {}
     by_id = {}
     for ep in target_episodes:
@@ -143,15 +229,21 @@ def update_search_candidates_for_series(*, target_instance, tvdb_id, target_seri
             continue
 
         if cand.status == SEARCH_STATUS_PENDING:
-            first_eligible_at = _aware(cand.first_eligible_at)
-            if last_search is not None and first_eligible_at is not None and last_search >= first_eligible_at:
-                _mark_submitted(cand, submitted_at=last_search, now=now)
-                counters['search_candidates_submitted'] += 1
-                events.append(f'search candidate submitted tvdb={tvdb_id} series={target_series_id} episode={episode_id} source=lastSearchTime')
+            submitted_at, command_id = _legacy_response_submitted_at(cand)
+            if submitted_at is not None:
+                _mark_submitted(cand, submitted_at=submitted_at, now=now)
+                counters['search_candidates_recovered'] += 1
+                recovered_by_command[command_id] = recovered_by_command.get(command_id, 0) + 1
             else:
-                cand.last_confirmed_at = now
-                cand.save(update_fields=['last_confirmed_at', 'updated_at'])
-                counters['search_candidates_pending'] += 1
+                first_eligible_at = _aware(cand.first_eligible_at)
+                if last_search is not None and first_eligible_at is not None and last_search >= first_eligible_at:
+                    _mark_submitted(cand, submitted_at=last_search, now=now)
+                    counters['search_candidates_submitted'] += 1
+                    events.append(f'search candidate submitted tvdb={tvdb_id} series={target_series_id} episode={episode_id} source=lastSearchTime')
+                else:
+                    cand.last_confirmed_at = now
+                    cand.save(update_fields=['last_confirmed_at', 'updated_at'])
+                    counters['search_candidates_pending'] += 1
             continue
 
         if cand.status == SEARCH_STATUS_CANCELLED:
@@ -170,6 +262,9 @@ def update_search_candidates_for_series(*, target_instance, tvdb_id, target_seri
             cand.last_confirmed_at = now
             cand.save(update_fields=['last_confirmed_at', 'updated_at'])
             counters['search_candidates_deferred'] += 1
+
+    for command_id, recovered_count in recovered_by_command.items():
+        events.append(f'EpisodeSearch candidate recovery series={target_series_id} command_id={command_id} recovered={recovered_count}')
 
     for episode_id, cand in existing.items():
         if episode_id in seen or cand.status != SEARCH_STATUS_PENDING:
@@ -200,14 +295,15 @@ def submit_pending_search_candidates(*, target_api, target_instance, target_seri
         ids = [c.target_episode_id for c in batch]
         res = target_api.trigger_episode_search(ids)
         if command_response_failed(res):
-            msg = sanitize_text(res if isinstance(res, str) else (res or 'EpisodeSearch failed'))
+            msg = _episode_search_failure_reason(res)
             for cand in batch:
                 cand.last_error = msg
                 cand.last_confirmed_at = now
                 cand.save(update_fields=['last_error', 'last_confirmed_at', 'updated_at'])
             counters['failures'] += 1
-            events.append(f'search candidate submission failure series={target_series_id} episodes={ids} reason={msg}')
+            events.append(f'EpisodeSearch submission failure series={target_series_id} episodes={len(ids)} reason={msg}')
             return counters, events, True
+        command_id = _command_id(res)
         for cand in batch:
             cand.status = SEARCH_STATUS_SUBMITTED
             cand.submitted_at = now
@@ -215,7 +311,7 @@ def submit_pending_search_candidates(*, target_api, target_instance, target_seri
             cand.last_error = ''
             cand.last_confirmed_at = now
             cand.save(update_fields=['status', 'submitted_at', 'cancelled_at', 'last_error', 'last_confirmed_at', 'updated_at'])
-            events.append(f'search candidate submitted tvdb={cand.tvdb_id} series={cand.target_series_id} episode={cand.target_episode_id}')
+        events.append(f'EpisodeSearch queued series={target_series_id} command_id={command_id} episodes={len(batch)}')
         counters['submitted'] += len(batch)
         counters['initial_submitted'] += len(batch)
     return counters, events, False
