@@ -252,3 +252,37 @@ class SonarrCleanupCandidate(models.Model):
 
     def __str__(self):
         return f'{self.target_instance_id}:{self.episode_file_id}:{self.status}'
+
+
+class SonarrEpisodeSearchCandidate(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_SUBMITTED = 'submitted'
+    STATUS_CANCELLED = 'cancelled'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_SUBMITTED, 'Submitted'),
+        (STATUS_CANCELLED, 'Cancelled'),
+    ]
+
+    target_instance = models.ForeignKey(SonarrInstance, on_delete=models.CASCADE, related_name='episode_search_candidates')
+    target_series_id = models.PositiveIntegerField()
+    target_episode_id = models.PositiveIntegerField()
+    tvdb_id = models.PositiveIntegerField()
+    season_number = models.PositiveIntegerField()
+    episode_number = models.PositiveIntegerField()
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    first_eligible_at = models.DateTimeField()
+    last_confirmed_at = models.DateTimeField()
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['target_instance', 'target_episode_id'], name='uniq_sonarr_search_target_episode')
+        ]
+
+    def __str__(self):
+        return f'{self.target_instance_id}:{self.target_episode_id}:{self.status}'

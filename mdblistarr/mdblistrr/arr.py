@@ -142,6 +142,8 @@ class SonarrAPI():
 
     def put_series_monitor(self, series_ids, monitored):
         try:
+            if not isinstance(monitored, bool):
+                return {'error': 'monitored must be a boolean'}
             ids = []
             for value in series_ids:
                 if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -151,7 +153,7 @@ class SonarrAPI():
                 return {'error': 'seriesIds must not be empty'}
             return self.connect.put_json(
                 f"{self.url}/api/v3/series/editor",
-                json={"seriesIds": ids, "monitored": bool(monitored)},
+                json={"seriesIds": ids, "monitored": monitored},
                 headers=_api_headers(self.apikey),
             )
         except Exception:
