@@ -336,7 +336,7 @@
             <div class="mb-3">{{ reconcile_form.source.label_tag }} {{ reconcile_form.source }}</div>
             <div class="mb-3">{{ reconcile_form.target.label_tag }} {{ reconcile_form.target }}</div>
             <div class="form-check mb-3">{{ reconcile_form.include_specials }} {{ reconcile_form.include_specials.label_tag }}</div>
-            <div class="form-check mb-3">{{ reconcile_form.search_newly_eligible }} {{ reconcile_form.search_newly_eligible.label_tag }}</div>
+            <div class="form-check mb-3">{{ reconcile_form.search_newly_eligible }} {{ reconcile_form.search_newly_eligible.label_tag }}<div class="form-text">{{ reconcile_form.search_newly_eligible.help_text }}</div></div>
             <div class="mb-3">{{ reconcile_form.interval_minutes.label_tag }} {{ reconcile_form.interval_minutes }}</div>
             <div class="alert alert-danger"><strong>Destructive safety warning:</strong> duplicate-file cleanup affects only the Sonarr On Demand target. Permanent Sonarr remains read-only. Only confirmed <code>permanent_duplicate</code> files are eligible, and multi-episode files are deleted only when every linked episode is duplicated. Review dry-run output before real deletion. Sonarr performs deletion; MDBListarr never directly deletes filesystem paths. NzbDAV backing-store/orphan cleanup may still be governed by NzbDAV maintenance.</div>
             <div class="form-check mb-3">{{ reconcile_form.cleanup_enabled }} {{ reconcile_form.cleanup_enabled.label_tag }}</div>
@@ -344,7 +344,7 @@
             <div class="mb-3">{{ reconcile_form.cleanup_grace_hours.label_tag }} {{ reconcile_form.cleanup_grace_hours }}</div>
             <div class="mb-3">{{ reconcile_form.cleanup_max_deletions_per_run.label_tag }} {{ reconcile_form.cleanup_max_deletions_per_run }}</div>
             <button type="submit" class="btn btn-success">Save Reconciliation Settings</button></form>
-            <form action="{% url 'run_sonarr_reconciliation_now' %}" method="post" class="mt-3 d-inline">{% csrf_token %}<button type="submit" class="btn btn-outline-primary">Run cleanup evaluation now</button></form>
+            <form action="{% url 'run_sonarr_reconciliation_now' %}" method="post" class="mt-3 d-inline">{% csrf_token %}<button type="submit" class="btn btn-outline-primary">Run Sonarr reconciliation now</button></form>
             <form action="{% url 'run_sonarr_library_sync_now' %}" method="post" class="mt-3 d-inline">{% csrf_token %}<button type="submit" class="btn btn-outline-secondary">Run Sonarr library sync now</button></form>
             </div></div>
         </div>

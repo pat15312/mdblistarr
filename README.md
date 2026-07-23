@@ -171,18 +171,22 @@ This means partially retained programmes remain eligible for On Demand lists. Fo
 
 ### On Demand reconciliation algorithm
 
-At the configured interval, MDBListarr matches series in the On Demand target to the permanent source by TVDB ID. Episodes are matched by stable season and episode numbers from Sonarr episode data. Target episodes with a permanent source file are set unmonitored. Aired regular target episodes without a permanent source file are set monitored. A target-only series that is absent from the permanent source is treated as having no permanent files, so its aired regular episodes are eligible while future episodes and disabled specials remain unmonitored. Existing correct states are not written again.
+At the configured interval, MDBListarr matches series in the On Demand target to the permanent source by TVDB ID. Episodes are matched by stable season and episode numbers from Sonarr episode data. Target episodes with a permanent source file are set unmonitored. Aired regular target episodes without a permanent source file are set monitored. A target-only series that is absent from the permanent source is treated as having no permanent files, so its aired regular episodes are eligible while future episodes and disabled specials remain unmonitored. MDBListarr then reconciles season monitoring and the top-level Sonarr series `monitored` flag from the calculated episode decisions: the series is monitored only while at least one wanted On Demand episode exists. Existing correct states are not written again.
 
-`Search newly eligible On Demand episodes` is disabled by default. When enabled, MDBListarr triggers episode-search commands only for episodes that changed to monitored during that reconciliation run and do not already have a file in the On Demand target. It does not run whole-series searches.
+`Search newly eligible missing episodes` is disabled by default and remains opt-in after upgrades. When enabled, MDBListarr triggers explicit EpisodeSearch commands for missing episodes that changed to monitored during that reconciliation run, and for all wanted missing episodes when MDBListarr first changes an imported series from unmonitored to monitored. Permanent duplicates, episodes that already have an On Demand file, future episodes, unscheduled episodes, malformed episodes, and disabled specials are not searched. It does not run whole-series searches.
 
 ### Required Sonarr On Demand import-list setup
 
 Configure native Sonarr MDBList import lists in the On Demand instance to:
 
-1. Add series with monitoring set to **None** or an equivalent no-episodes-monitored mode.
-2. Disable automatic **Search Missing** on the import list.
-3. Let MDBListarr reconciliation select the needed episodes after the series exists.
-4. Optionally enable `Search newly eligible On Demand episodes` only after validating monitoring results.
+1. Enable **Automatic Add**.
+2. Set **Search for Missing Episodes** to **Off**.
+3. Set **Monitor** to **None**.
+4. Set **Monitor New Seasons** to **No New Seasons**.
+5. Use the correct On Demand root folder and quality profile.
+6. Apply the appropriate import-list tags for your setup.
+
+This sequence is intentional: the import list safely adds the series with nothing monitored, MDBListarr compares it with permanent Sonarr, monitors only wanted episodes and seasons, monitors the top-level series only when something is wanted, optionally performs one safe initial episode search, and then RSS grabs can work because the top-level series is monitored. Fully duplicated series can remain unmonitored and be handled by cleanup. For automatic On Demand acquisition, enable **Search newly eligible missing episodes** after validating reconciliation; the setting remains Off by default to avoid unexpected backlog searches after upgrades.
 
 ### Scheduling, upgrade notes, and troubleshooting
 
@@ -202,7 +206,7 @@ Deletion is performed only against the Sonarr On Demand target through Sonarr's 
 
 The reconciliation log includes cleanup counters: new, pending, ready, cancelled, would-delete, deleted, already-absent, deferred-by-limit, and failures. Individual sanitized candidate transition events are logged only when created, ready, cancelled, first observed as would-delete in dry run, deleted, already absent, or failed. Logs avoid API keys, auth headers, full filesystem paths, and raw sensitive Sonarr responses.
 
-The UI provides a prominent warning and reuses the authenticated, CSRF-protected manual reconciliation action labelled "Run cleanup evaluation now". There is no force-delete or safety-bypass action. The action respects the existing reconciliation lock, cleanup enabled state, dry-run state, grace period, and deletion cap.
+The UI provides a prominent warning and reuses the authenticated, CSRF-protected manual reconciliation action labelled "Run Sonarr reconciliation now". There is no force-delete or safety-bypass action. The action respects the existing reconciliation lock, cleanup enabled state, dry-run state, grace period, and deletion cap.
 
 Recommended production dry-run rollout:
 

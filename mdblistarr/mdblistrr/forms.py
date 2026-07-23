@@ -20,7 +20,7 @@ class SonarrReconciliationForm(forms.Form):
     source = forms.ModelChoiceField(label='Permanent Sonarr source', queryset=SonarrInstance.objects.none(), required=False)
     target = forms.ModelChoiceField(label='Sonarr On Demand target', queryset=SonarrInstance.objects.none(), required=False)
     include_specials = forms.BooleanField(label='Include specials in completeness checks', required=False)
-    search_newly_eligible = forms.BooleanField(label='Search newly eligible On Demand episodes', required=False)
+    search_newly_eligible = forms.BooleanField(label='Search newly eligible missing episodes', required=False, help_text='When enabled, MDBListarr searches missing episodes when they first become eligible or when an imported series is first changed to monitored. Permanent duplicates, future episodes, unscheduled episodes and excluded specials are not searched. Top-level series monitoring is always reconciled; automatic backlog searching remains optional.')
     interval_minutes = forms.ChoiceField(label='Reconciliation interval', choices=[('5','Every 5 minutes'),('15','Every 15 minutes'),('30','Every 30 minutes')])
     cleanup_enabled = forms.BooleanField(label='Enable automatic duplicate-file cleanup', required=False)
     cleanup_dry_run = forms.BooleanField(label='Dry-run cleanup', required=False)
