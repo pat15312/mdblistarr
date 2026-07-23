@@ -139,6 +139,26 @@ class SonarrAPI():
         except Exception:
             return {'errorMessage': sanitize_text(traceback.format_exc())}
 
+
+    def put_series_monitor(self, series_ids, monitored):
+        try:
+            if not isinstance(monitored, bool):
+                return {'error': 'monitored must be a boolean'}
+            ids = []
+            for value in series_ids:
+                if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                    return {'error': 'seriesIds must be positive integers'}
+                ids.append(value)
+            if not ids:
+                return {'error': 'seriesIds must not be empty'}
+            return self.connect.put_json(
+                f"{self.url}/api/v3/series/editor",
+                json={"seriesIds": ids, "monitored": monitored},
+                headers=_api_headers(self.apikey),
+            )
+        except Exception:
+            return {'errorMessage': sanitize_text(traceback.format_exc())}
+
     def delete_episode_files(self, episode_file_ids):
         try:
             ids = [int(i) for i in episode_file_ids]
@@ -156,7 +176,7 @@ class SonarrAPI():
 
     def trigger_episode_search(self, episode_ids):
         try:
-            return self.connect.post_json(
+            return self.connect.post_json_once(
                 f"{self.url}/api/v3/command",
                 json={"name": "EpisodeSearch", "episodeIds": list(episode_ids)},
                 headers=_api_headers(self.apikey),

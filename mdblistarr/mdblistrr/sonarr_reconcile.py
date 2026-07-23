@@ -123,10 +123,17 @@ class ReconcileStats:
     seasons_newly_unmonitored: int = 0
     seasons_unchanged: int = 0
     season_update_failures: int = 0
+    series_newly_monitored: int = 0
+    series_newly_unmonitored: int = 0
+    series_unchanged: int = 0
+    series_update_failures: int = 0
+    initial_searches_triggered: int = 0
     monitor_true_ids: list = field(default_factory=list)
     monitor_false_ids: list = field(default_factory=list)
     search_ids: list = field(default_factory=list)
     desired_season_monitoring: dict = field(default_factory=dict)
+    desired_series_monitoring: bool = False
+    wanted_missing_episode_ids: list = field(default_factory=list)
     desired_by_key: dict = field(default_factory=dict)
     reason_by_key: dict = field(default_factory=dict)
 
@@ -149,7 +156,7 @@ def calculate_episode_monitoring(source_episodes, target_episodes, include_speci
             return stats
         permanent[key] = ep.get('hasFile') is True
     for ep in target_episodes:
-        if not isinstance(ep, dict) or ep.get('id') is None or episode_key(ep) is None:
+        if not isinstance(ep, dict) or _normal_int(ep.get('id')) is None or _normal_int(ep.get('id')) <= 0 or episode_key(ep) is None or not isinstance(ep.get('monitored'), bool):
             stats.failures = 1
             stats.malformed_episodes += 1
             return stats
@@ -178,11 +185,18 @@ def calculate_episode_monitoring(source_episodes, target_episodes, include_speci
         key = episode_key(ep)
         stats.desired_by_key[key] = desired
         stats.reason_by_key[key] = decision_reason
+        if ok and not isinstance(ep.get('hasFile'), bool):
+            stats.failures = 1
+            stats.malformed_episodes += 1
+            return stats
         season = key[0]
         stats.desired_season_monitoring.setdefault(season, False)
         if desired:
             stats.desired_season_monitoring[season] = True
-        current = ep.get('monitored') is True
+            stats.desired_series_monitoring = True
+            if ep.get('hasFile') is False:
+                stats.wanted_missing_episode_ids.append(ep['id'])
+        current = ep.get('monitored')
         if current == desired:
             stats.episodes_unchanged += 1
             continue
