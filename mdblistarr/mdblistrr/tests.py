@@ -1877,3 +1877,120 @@ class SonarrSearchCandidateBatchTests(TestCase):
         counts, _events, failed = submit_pending_search_candidates(target_api=api2, target_instance=self.target, target_series_id=20, batch_size=2)
         self.assertTrue(failed)
         self.assertEqual(api2.calls, [[3]])
+
+class SonarrStrictValidationRegressionTests(TestCase):
+    def ep(self, **overrides):
+        data = {'id': 1, 'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': False, 'monitored': False, 'airDateUtc': '2020-01-01T00:00:00Z'}
+        data.update(overrides)
+        return data
+
+    def test_numeric_and_missing_episode_monitored_fail_closed(self):
+        from .sonarr_reconcile import calculate_episode_monitoring
+        for value in (0, 1, 'true', None, [], {}):
+            ep = self.ep(monitored=value)
+            self.assertEqual(calculate_episode_monitoring([], [ep]).failures, 1)
+        ep = self.ep(); del ep['monitored']
+        self.assertEqual(calculate_episode_monitoring([], [ep]).failures, 1)
+
+    def test_numeric_and_missing_relevant_has_file_fail_closed(self):
+        from .sonarr_reconcile import calculate_episode_monitoring
+        for value in (0, 1, None, [], {}):
+            ep = self.ep(hasFile=value)
+            self.assertEqual(calculate_episode_monitoring([], [ep]).failures, 1)
+        ep = self.ep(); del ep['hasFile']
+        self.assertEqual(calculate_episode_monitoring([], [ep]).failures, 1)
+
+    def test_exact_season_number_and_monitored_validation(self):
+        from .cron import _season_updates_for_series
+        for value in ('1', 1.0, 1.5, True, False, -1, None, [], {}):
+            updates, unchanged, failures = _season_updates_for_series({'seasons': [{'seasonNumber': value, 'monitored': True}]}, {})
+            self.assertEqual(failures, 1, value)
+        updates, unchanged, failures = _season_updates_for_series({'seasons': [{'seasonNumber': 0, 'monitored': True}]}, {0: True})
+        self.assertEqual((updates, unchanged, failures), ([], 1, 0))
+        for value in (0, 1, 'true', None):
+            self.assertEqual(_season_updates_for_series({'seasons': [{'seasonNumber': 1, 'monitored': value}]}, {})[2], 1)
+
+
+class SonarrSearchCandidateTimestampTests(TestCase):
+    def setUp(self):
+        self.env = env(MDBLISTARR_ENCRYPTION_KEY=KEY)
+        self.env.__enter__()
+        self.target = SonarrInstance.objects.create(name='target-time', url='http://target', apikey='tgt', is_ondemand_target=True)
+
+    def tearDown(self):
+        self.env.__exit__(None, None, None)
+
+    def stats(self, episode_id=1):
+        from .sonarr_reconcile import calculate_episode_monitoring
+        ep = {'id': episode_id, 'seasonNumber': 1, 'episodeNumber': episode_id, 'hasFile': False, 'monitored': True, 'airDateUtc': '2020-01-01T00:00:00Z'}
+        return calculate_episode_monitoring([], [ep])
+
+    def ep(self, episode_id=1, last=None, num=None):
+        return {'id': episode_id, 'seasonNumber': 1, 'episodeNumber': num or episode_id, 'hasFile': False, 'monitored': True, 'airDateUtc': '2020-01-01T00:00:00Z', 'lastSearchTime': last}
+
+    def test_old_last_search_does_not_consume_pending_but_newer_manual_search_does(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        from .models import SonarrEpisodeSearchCandidate
+        from .sonarr_search import update_search_candidates_for_series
+        now = timezone.now()
+        cand = SonarrEpisodeSearchCandidate.objects.create(target_instance=self.target, target_series_id=20, target_episode_id=1, tvdb_id=1, season_number=1, episode_number=1, first_eligible_at=now, last_confirmed_at=now)
+        counts, _events, failed = update_search_candidates_for_series(target_instance=self.target, tvdb_id=1, target_series_id=20, target_episodes=[self.ep(last=(now - timedelta(hours=1)).isoformat())], stats=self.stats(), series_monitored_confirmed=True, now=now)
+        self.assertFalse(failed)
+        cand.refresh_from_db(); self.assertEqual(cand.status, 'pending'); self.assertEqual(cand.first_eligible_at, now)
+        class API:
+            def __init__(self): self.calls = []
+            def trigger_episode_search(self, ids): self.calls.append(ids); return {'status_code': 201}
+        from .sonarr_search import submit_pending_search_candidates
+        api = API(); submit_pending_search_candidates(target_api=api, target_instance=self.target, target_series_id=20)
+        self.assertEqual(api.calls, [[1]])
+        cand.status = 'pending'; cand.submitted_at = None; cand.first_eligible_at = now; cand.save()
+        update_search_candidates_for_series(target_instance=self.target, tvdb_id=1, target_series_id=20, target_episodes=[self.ep(last=(now + timedelta(hours=1)).isoformat())], stats=self.stats(), series_monitored_confirmed=True, now=now)
+        cand.refresh_from_db(); self.assertEqual(cand.status, 'submitted')
+
+    def test_cancelled_candidate_old_search_resets_newer_search_marks_submitted(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        from .models import SonarrEpisodeSearchCandidate
+        from .sonarr_search import update_search_candidates_for_series
+        now = timezone.now()
+        old_cancel = now - timedelta(hours=1)
+        cand = SonarrEpisodeSearchCandidate.objects.create(target_instance=self.target, target_series_id=20, target_episode_id=1, tvdb_id=1, season_number=1, episode_number=1, status='cancelled', first_eligible_at=old_cancel, last_confirmed_at=old_cancel, cancelled_at=now)
+        update_search_candidates_for_series(target_instance=self.target, tvdb_id=1, target_series_id=20, target_episodes=[self.ep(last=(now - timedelta(hours=2)).isoformat())], stats=self.stats(), series_monitored_confirmed=True, now=now + timedelta(minutes=1))
+        cand.refresh_from_db(); self.assertEqual(cand.status, 'pending'); self.assertIsNone(cand.cancelled_at)
+        cand.status='cancelled'; cand.cancelled_at=now; cand.save()
+        update_search_candidates_for_series(target_instance=self.target, tvdb_id=1, target_series_id=20, target_episodes=[self.ep(last=(now + timedelta(hours=2)).isoformat())], stats=self.stats(), series_monitored_confirmed=True, now=now + timedelta(hours=3))
+        cand.refresh_from_db(); self.assertEqual(cand.status, 'submitted')
+
+    def test_submitted_newly_monitored_again_and_identity_change_reset_pending(self):
+        from django.utils import timezone
+        from .models import SonarrEpisodeSearchCandidate
+        from .sonarr_search import update_search_candidates_for_series
+        now = timezone.now()
+        cand = SonarrEpisodeSearchCandidate.objects.create(target_instance=self.target, target_series_id=20, target_episode_id=1, tvdb_id=1, season_number=1, episode_number=1, status='submitted', first_eligible_at=now, last_confirmed_at=now, submitted_at=now)
+        update_search_candidates_for_series(target_instance=self.target, tvdb_id=1, target_series_id=20, target_episodes=[self.ep(last=now.isoformat())], stats=self.stats(), applied_monitor_true_ids=[1], series_monitored_confirmed=True, now=now)
+        cand.refresh_from_db(); self.assertEqual(cand.status, 'pending'); self.assertIsNone(cand.submitted_at)
+        renumbered_stats = __import__('mdblistrr.sonarr_reconcile', fromlist=['calculate_episode_monitoring']).calculate_episode_monitoring([], [dict(self.ep(num=2), episodeNumber=2)])
+        cand.status='cancelled'; cand.cancelled_at=now; cand.season_number=1; cand.episode_number=1; cand.save()
+        update_search_candidates_for_series(target_instance=self.target, tvdb_id=1, target_series_id=20, target_episodes=[self.ep(num=2)], stats=renumbered_stats, series_monitored_confirmed=True, now=now)
+        cand.refresh_from_db(); self.assertEqual((cand.status, cand.episode_number), ('pending', 2))
+
+
+class SonarrCommandResponseValidationTests(TestCase):
+    def test_command_response_shapes(self):
+        from .sonarr_search import command_response_failed
+        failures = [None, 'ok', [], {}, {'result': 'bad'}, {'error': 'bad'}, {'errorMessage': 'bad'}, {'status_code': '202'}, {'status_code': 500}, {'foo': 'bar'}, {'id': 0}]
+        for response in failures:
+            self.assertTrue(command_response_failed(response), response)
+        for response in ({'status_code': 200}, {'status_code': 202, 'name': 'EpisodeSearch'}, {'id': 123, 'name': 'EpisodeSearch'}):
+            self.assertFalse(command_response_failed(response), response)
+
+    def test_episode_search_uses_one_session_post_on_connection_error(self):
+        from requests.exceptions import ConnectionError
+        from .arr import SonarrAPI
+        sonarr = SonarrAPI(url='http://sonarr', apikey='secret')
+        with patch.object(sonarr.connect.session, 'post', side_effect=ConnectionError('abcdefghijklmnopqrstuvwxyz123456 boom')) as post:
+            result = sonarr.trigger_episode_search([1, 2])
+        self.assertEqual(post.call_count, 1)
+        self.assertIn('error', result)
+        self.assertNotIn('abcdefghijklmnopqrstuvwxyz123456', str(result))

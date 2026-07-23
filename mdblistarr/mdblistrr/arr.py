@@ -176,7 +176,7 @@ class SonarrAPI():
 
     def trigger_episode_search(self, episode_ids):
         try:
-            return self.connect.post_json(
+            return self.connect.post_json_once(
                 f"{self.url}/api/v3/command",
                 json={"name": "EpisodeSearch", "episodeIds": list(episode_ids)},
                 headers=_api_headers(self.apikey),

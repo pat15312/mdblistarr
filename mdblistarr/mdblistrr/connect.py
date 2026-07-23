@@ -173,6 +173,38 @@ class Connect:
         except RequestException as e:
             return {"error": "Request failed", "exception": sanitize_text(e)}
 
+
+    def post_json_once(self, url, data=None, json=None, headers=None, params=None, cookies=None):
+        try:
+            if headers is None:
+                headers = DEFAULT_HEADERS
+            response = self.session.post(url, data=data, json=json, params=params, headers=headers, cookies=cookies)
+            success = 200 <= response.status_code < 300
+            if not response.text.strip():
+                if success:
+                    return {"status": "ok", "status_code": response.status_code}
+                return {"error": "Empty response from server", "status_code": response.status_code}
+            try:
+                data = response.json()
+            except (JSONDecodeError, ValueError):
+                decoded = self._decode_response_bytes(response)
+                if decoded.strip():
+                    try:
+                        data = jsonlib.loads(decoded)
+                    except Exception:
+                        data = {"error": "Invalid POST response", "status_code": response.status_code, "raw_response": sanitize_text((decoded or response.text)[:500])}
+                else:
+                    data = {"error": "Invalid POST response", "status_code": response.status_code, "raw_response": sanitize_text((decoded or response.text)[:500])}
+            if isinstance(data, dict) and 'status_code' not in data:
+                data['status_code'] = response.status_code
+            if not success:
+                return self._http_error_response(response, data)
+            return data
+        except ConnectionError as e:
+            return {"error": "Connection failed", "exception": sanitize_text(e)}
+        except RequestException as e:
+            return {"error": "Request failed", "exception": sanitize_text(e)}
+
     @retry(stop=stop_after_attempt(6), wait=wait_fixed(10))
     def post(self, url, data=None, json=None, headers=None, params=None, cookies=None):
         if headers is None:

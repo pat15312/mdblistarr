@@ -675,12 +675,9 @@ def _search_episode_batches(target_api, ids, batch_size=100):
 
 
 def _season_number(value):
-    try:
-        if isinstance(value, bool):
-            return None
-        return int(value)
-    except (TypeError, ValueError):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
+    return value
 
 
 def _season_updates_for_series(show, desired_by_season):
@@ -699,7 +696,7 @@ def _season_updates_for_series(show, desired_by_season):
         if season_number is None or season_number < 0 or season_number in seen:
             return updates, unchanged, 1
         seen.add(season_number)
-        if season.get('monitored') not in (True, False):
+        if not isinstance(season.get('monitored'), bool):
             return updates, unchanged, 1
         desired = bool(desired_by_season.get(season_number, False))
         current = season.get('monitored') is True
@@ -774,7 +771,7 @@ def reconcile_sonarr_ondemand(force=False):
             cleanup_totals = {'cleanup_candidates_new':0,'cleanup_candidates_pending':0,'cleanup_candidates_ready':0,'cleanup_candidates_cancelled':0,'cleanup_would_delete':0,'cleanup_files_deleted':0,'cleanup_files_already_absent':0,'cleanup_deferred_by_limit':0,'cleanup_failures':0}
             search_candidate_totals = {'search_candidates_new':0,'search_candidates_pending':0,'search_candidates_submitted':0,'search_candidates_cancelled':0,'search_candidates_deferred':0,'search_failures':0}
             for show in target_series:
-                if not isinstance(show, dict) or _positive_int_value(show.get('tvdbId')) is None or _positive_int_value(show.get('id')) is None or show.get('monitored') not in (True, False) or _season_updates_for_series(show, {})[2]:
+                if not isinstance(show, dict) or _positive_int_value(show.get('tvdbId')) is None or _positive_int_value(show.get('id')) is None or not isinstance(show.get('monitored'), bool) or _season_updates_for_series(show, {})[2]:
                     totals.failures += 1
                     totals.series_update_failures += 1
                     continue

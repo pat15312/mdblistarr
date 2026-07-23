@@ -156,7 +156,7 @@ def calculate_episode_monitoring(source_episodes, target_episodes, include_speci
             return stats
         permanent[key] = ep.get('hasFile') is True
     for ep in target_episodes:
-        if not isinstance(ep, dict) or _normal_int(ep.get('id')) is None or _normal_int(ep.get('id')) <= 0 or episode_key(ep) is None:
+        if not isinstance(ep, dict) or _normal_int(ep.get('id')) is None or _normal_int(ep.get('id')) <= 0 or episode_key(ep) is None or not isinstance(ep.get('monitored'), bool):
             stats.failures = 1
             stats.malformed_episodes += 1
             return stats
@@ -185,7 +185,7 @@ def calculate_episode_monitoring(source_episodes, target_episodes, include_speci
         key = episode_key(ep)
         stats.desired_by_key[key] = desired
         stats.reason_by_key[key] = decision_reason
-        if ok and ep.get('hasFile') not in (True, False):
+        if ok and not isinstance(ep.get('hasFile'), bool):
             stats.failures = 1
             stats.malformed_episodes += 1
             return stats
@@ -196,7 +196,7 @@ def calculate_episode_monitoring(source_episodes, target_episodes, include_speci
             stats.desired_series_monitoring = True
             if ep.get('hasFile') is False:
                 stats.wanted_missing_episode_ids.append(ep['id'])
-        current = ep.get('monitored') is True
+        current = ep.get('monitored')
         if current == desired:
             stats.episodes_unchanged += 1
             continue
