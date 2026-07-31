@@ -1718,6 +1718,50 @@ class SonarrSeriesMonitoringInitialSearchTests(TestCase):
         self.assertEqual(res['result'], 200)
         put.assert_not_called(); season.assert_not_called(); series.assert_not_called(); search.assert_not_called()
 
+    def test_reconciliation_emits_one_dry_run_cleanup_series_summary(self):
+        from .cron import reconcile_sonarr_ondemand
+        Preferences.set_value('sonarr_cleanup_enabled', '1')
+        Preferences.set_value('sonarr_cleanup_dry_run', '1')
+        target_series = [{'id': 20, 'tvdbId': 1, 'title': 'Human Title', 'monitored': True,
+                          'seasons': [{'seasonNumber': 1, 'monitored': True}]}]
+        target_eps = [dict(self.ep(1), lastSearchTime='2020-01-02T00:00:00Z')]
+        cleanup = type('C', (), {
+            'delete_attempts_consumed': 0, 'stop_deletes_for_run': False,
+            'cleanup_failures': 0, 'events': [], 'cleanup_candidates_new': 0,
+            'cleanup_candidates_pending': 0, 'cleanup_candidates_ready': 3,
+            'cleanup_candidates_cancelled': 0, 'cleanup_would_delete': 3,
+            'cleanup_files_deleted': 0, 'cleanup_files_already_absent': 0,
+            'cleanup_deferred_by_limit': 0,
+        })()
+
+        def init(api_self, instance_id=None, **kw):
+            api_self.instance_id = instance_id
+
+        with patch('mdblistrr.cron.SonarrAPI.__init__', init), \
+             patch('mdblistrr.cron.SonarrAPI.get_series', lambda api_self: [] if api_self.instance_id == self.source.id else target_series), \
+             patch('mdblistrr.cron.SonarrAPI.get_episodes', return_value=target_eps), \
+             patch('mdblistrr.cron.SonarrAPI.put_episode_monitor'), \
+             patch('mdblistrr.cron.SonarrAPI.post_seasonpass'), \
+             patch('mdblistrr.cron.SonarrAPI.put_series_monitor'), \
+             patch('mdblistrr.cron.SonarrAPI.trigger_episode_search'), \
+             patch('mdblistrr.cron.process_cleanup_for_series', return_value=cleanup), \
+             patch('mdblistrr.cron.save_log') as save_log:
+            res = reconcile_sonarr_ondemand(force=True)
+
+        self.assertEqual(res['result'], 200)
+        summary_logs = [call for call in save_log.call_args_list
+                        if call.args[2].startswith('Sonarr cleanup series=')]
+        self.assertEqual(len(summary_logs), 1)
+        self.assertEqual(summary_logs[0].args[1], 1)
+        self.assertEqual(
+            summary_logs[0].args[2],
+            'Sonarr cleanup series="Human Title" tvdb=1 sonarr_series=20 mode=dry_run '
+            'ready=3 would_delete=3 deleted=0 already_absent=0 deferred=0 failures=0')
+        reconciliation = next(call.args[2] for call in save_log.call_args_list
+                              if call.args[2].startswith('Sonarr reconciliation:'))
+        self.assertIn('cleanup_candidates_ready=3', reconciliation)
+        self.assertIn('cleanup_would_delete=3', reconciliation)
+
     def test_malformed_series_monitored_fails_closed(self):
         from .cron import reconcile_sonarr_ondemand
         target_series = [{'id': 20, 'tvdbId': 1, 'monitored': 'false', 'seasons': [{'seasonNumber': 1, 'monitored': True}]}]

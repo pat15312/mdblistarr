@@ -16,6 +16,59 @@ from .sonarr_search import (update_search_candidates_for_series, submit_pending_
     reconcile_search_commands_for_series, poll_episode_search_commands)
 import fcntl, os
 
+MAX_CLEANUP_SERIES_SUMMARIES = 100
+MAX_CLEANUP_SERIES_TITLE_LENGTH = 200
+
+
+def _cleanup_series_title(value):
+    """Return a bounded, single-line, quoted-field-safe display title."""
+    if not isinstance(value, str) or not value.strip():
+        return 'Unknown series'
+    title = sanitize_text(value)
+    title = ' '.join(title.split()).replace('"', "'")
+    return title[:MAX_CLEANUP_SERIES_TITLE_LENGTH] or 'Unknown series'
+
+
+def build_cleanup_series_summary(show, counters, cleanup_enabled, cleanup_dry_run):
+    """Build a qualifying series summary without affecting cleanup decisions."""
+    mode = 'disabled' if not cleanup_enabled else ('dry_run' if cleanup_dry_run else 'live')
+    values = {
+        'ready': counters.cleanup_candidates_ready,
+        'would_delete': counters.cleanup_would_delete,
+        'deleted': counters.cleanup_files_deleted,
+        'already_absent': counters.cleanup_files_already_absent,
+        'deferred': counters.cleanup_deferred_by_limit,
+        'failures': counters.cleanup_failures,
+    }
+    if mode == 'disabled':
+        qualifies = values['ready'] > 0
+    elif mode == 'dry_run':
+        qualifies = values['would_delete'] > 0
+    else:
+        qualifies = any(values[key] > 0 for key in ('ready', 'deleted', 'already_absent', 'deferred', 'failures'))
+    if not qualifies:
+        return None
+    title = _cleanup_series_title(show.get('title'))
+    series_id = show.get('id')
+    message = (
+        f'Sonarr cleanup series="{title}" tvdb={show.get("tvdbId")} sonarr_series={series_id} '
+        f'mode={mode} ready={values["ready"]} would_delete={values["would_delete"]} '
+        f'deleted={values["deleted"]} already_absent={values["already_absent"]} '
+        f'deferred={values["deferred"]} failures={values["failures"]}'
+    )
+    return {'sort_key': (title.casefold(), series_id), 'message': message, 'failures': values['failures']}
+
+
+def log_cleanup_series_summaries(provider, summaries):
+    """Emit a deterministic, bounded set of already-collected summaries."""
+    ordered = sorted(summaries, key=lambda summary: summary['sort_key'])
+    reported = ordered[:MAX_CLEANUP_SERIES_SUMMARIES]
+    for summary in reported:
+        save_log(provider, 2 if summary['failures'] > 0 else 1, summary['message'])
+    additional = len(ordered) - len(reported)
+    if additional:
+        save_log(provider, 1, f'Sonarr cleanup series summaries truncated reported={len(reported)} additional={additional}')
+
 def save_log(provider, status, text):
     log = Log()
     log.date = timezone.now()
@@ -770,6 +823,7 @@ def reconcile_sonarr_ondemand(force=False):
             cleanup_remaining_delete_attempts = cleanup_max
             cleanup_stop_real_deletes = False
             cleanup_totals = {'cleanup_candidates_new':0,'cleanup_candidates_pending':0,'cleanup_candidates_ready':0,'cleanup_candidates_cancelled':0,'cleanup_would_delete':0,'cleanup_files_deleted':0,'cleanup_files_already_absent':0,'cleanup_deferred_by_limit':0,'cleanup_failures':0}
+            cleanup_series_summaries = []
             search_candidate_totals = {'search_candidates_new':0,'search_candidates_pending':0,'search_candidates_submitted':0,'search_candidates_cancelled':0,'search_candidates_deferred':0,'search_candidates_recovered':0,'search_recovery_failures':0,'search_failures':0}
             command_total_keys = ('search_commands_polled','search_commands_queued','search_commands_started','search_commands_completed','search_commands_failed','search_commands_aborted','search_commands_cancelled','search_commands_orphaned','search_commands_ambiguous','search_commands_unavailable','search_command_poll_failures','search_candidates_requeued','search_candidates_retry_exhausted','search_candidates_satisfied_by_file','search_candidates_satisfied_by_last_search')
             command_totals = {key: 0 for key in command_total_keys}
@@ -888,9 +942,13 @@ def reconcile_sonarr_ondemand(force=False):
                         cleanup_stop_real_deletes = True
                     for key in cleanup_totals:
                         cleanup_totals[key] += getattr(cleanup, key)
+                    cleanup_summary = build_cleanup_series_summary(show, cleanup, cleanup_enabled, cleanup_dry_run)
+                    if cleanup_summary:
+                        cleanup_series_summaries.append(cleanup_summary)
                     totals.failures += cleanup.cleanup_failures
                     for event in cleanup.events:
                         save_log(provider, 1 if 'failure' not in event else 2, sanitize_text(event))
+            log_cleanup_series_summaries(provider, cleanup_series_summaries)
             status = 207 if totals.failures else 200
             log_status = 2 if totals.failures else 1
             command_summary = ' '.join(f'{key}={value}' for key, value in command_totals.items())
