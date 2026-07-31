@@ -324,6 +324,7 @@ class SonarrEpisodeSearchCommand(models.Model):
     terminal_at = models.DateTimeField(null=True, blank=True)
     outcome_reconciled_at = models.DateTimeField(null=True, blank=True)
     last_checked_at = models.DateTimeField(null=True, blank=True)
+    last_fallback_checked_at = models.DateTimeField(null=True, blank=True)
     unavailable_since = models.DateTimeField(null=True, blank=True)
     retry_of = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='retries')
     attempt_number = models.PositiveSmallIntegerField(default=1)

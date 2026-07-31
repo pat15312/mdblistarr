@@ -90,6 +90,7 @@ class Migration(migrations.Migration):
                 ("terminal_at", models.DateTimeField(blank=True, null=True)),
                 ("outcome_reconciled_at", models.DateTimeField(blank=True, null=True)),
                 ("last_checked_at", models.DateTimeField(blank=True, null=True)),
+                ("last_fallback_checked_at", models.DateTimeField(blank=True, null=True)),
                 ("unavailable_since", models.DateTimeField(blank=True, null=True)),
                 ("attempt_number", models.PositiveSmallIntegerField(default=1)),
                 (

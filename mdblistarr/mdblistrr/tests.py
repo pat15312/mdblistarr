@@ -1797,6 +1797,28 @@ class SonarrPersistentSearchCandidateTests(TestCase):
         self.assertEqual(res['result'], 200)
         search.assert_not_called()
 
+    def test_invalid_retry_lineage_is_partial_failure_and_blocks_cleanup(self):
+        from .models import SonarrEpisodeSearchCandidate, SonarrEpisodeSearchCommand, Log
+        now = timezone.now()
+        completed = SonarrEpisodeSearchCommand.objects.create(
+            target_instance=self.target, target_series_id=20, sonarr_command_id=321,
+            status='completed', sonarr_status='completed', submission_attempted_at=now,
+            queued_at=now, terminal_at=now, attempt_number=1)
+        SonarrEpisodeSearchCandidate.objects.create(
+            target_instance=self.target, target_series_id=20, target_episode_id=1,
+            tvdb_id=999, season_number=1, episode_number=1, status='pending',
+            current_command=completed, attempt_count=1, first_eligible_at=now,
+            last_confirmed_at=now)
+        res, search, cleanup = self.run_reconcile([self.ep(1)], search='1')
+        self.assertEqual(res['result'], 207)
+        search.assert_not_called()
+        cleanup.assert_not_called()
+        warning = Log.objects.filter(text__contains='retry lineage failure').latest('id')
+        self.assertEqual(warning.status, 2)
+        summary = Log.objects.filter(text__startswith='Sonarr reconciliation:').latest('id')
+        self.assertIn('search_failures=1', summary.text)
+        self.assertIn('failures=1', summary.text)
+
     def test_existing_valid_last_search_time_and_manual_dropout_are_not_queued(self):
         from .models import SonarrEpisodeSearchCandidate
         eps = [self.ep(i, num=i, last='2020-02-01T00:00:00Z') for i in range(1, 9)]

@@ -1,11 +1,12 @@
 from datetime import timedelta
+from types import SimpleNamespace
 from django.test import TestCase
 from django.utils import timezone
 from .models import (SonarrInstance, SonarrEpisodeSearchCandidate as Candidate,
     SonarrEpisodeSearchCommand as Command, SonarrEpisodeSearchCommandCandidate as Link)
 from .sonarr_search import (submit_pending_search_candidates, validate_episode_search_command,
     validate_command_list, reconcile_search_commands_for_series, poll_episode_search_commands,
-    COMMAND_FALLBACK_LIMIT)
+    update_search_candidates_for_series, COMMAND_FALLBACK_LIMIT)
 
 
 class FakeAPI:
@@ -56,6 +57,9 @@ class EpisodeSearchLifecycleTests(TestCase):
             target_episodes=episodes or [{'id':1,'hasFile':False,'lastSearchTime':None}],
             eligible_episode_ids=eligible,max_retries=max_retries,retry_delay_minutes=30,now=now or self.now)
 
+    def wanted_stats(self, episode_id=1):
+        return SimpleNamespace(wanted_missing_episode_ids=[episode_id], desired_by_key={(1, episode_id): True}, reason_by_key={(1, episode_id): 'wanted'})
+
     def test_attempt_and_snapshot_exist_before_single_post(self):
         candidate=self.candidate(); outer=self
         class API(FakeAPI):
@@ -68,6 +72,36 @@ class EpisodeSearchLifecycleTests(TestCase):
         api=API(); counts,events,failed=submit_pending_search_candidates(target_api=api,target_instance=self.target,target_series_id=20,now=self.now)
         self.assertFalse(failed); self.assertEqual((len(api.posts),counts['submitted']),(1,1))
         candidate.refresh_from_db(); self.assertEqual((candidate.status,candidate.attempt_count),('submitted',1)); self.assertNotIn('[1]',events[0])
+
+    def test_remonitored_completed_candidate_starts_clean_initial_lifecycle(self):
+        completed=self.command(status='completed'); candidate=Candidate.objects.get()
+        historical_link_ids=list(candidate.command_links.values_list('id',flat=True))
+        update_search_candidates_for_series(target_instance=self.target,tvdb_id=10,target_series_id=20,
+            target_episodes=[{'id':1,'seasonNumber':1,'episodeNumber':1,'lastSearchTime':None}],
+            stats=self.wanted_stats(),applied_monitor_true_ids=[1],series_monitored_confirmed=True,now=self.now+timedelta(hours=1))
+        candidate.refresh_from_db()
+        self.assertEqual((candidate.status,candidate.attempt_count,candidate.current_command_id,candidate.retry_not_before),('pending',0,None,None))
+        self.assertEqual(list(candidate.command_links.values_list('id',flat=True)),historical_link_ids)
+        api=FakeAPI(); submit_pending_search_candidates(target_api=api,target_instance=self.target,target_series_id=20,now=self.now+timedelta(hours=1))
+        new=Command.objects.exclude(pk=completed.pk).get(); self.assertEqual((new.attempt_number,new.retry_of_id),(1,None))
+
+    def test_cancelled_historical_candidate_resets_without_deleting_history(self):
+        old=self.command(status='cancelled',processed=self.now); candidate=Candidate.objects.get()
+        candidate.status='cancelled'; candidate.cancelled_at=self.now; candidate.retry_not_before=self.now; candidate.save()
+        update_search_candidates_for_series(target_instance=self.target,tvdb_id=10,target_series_id=20,
+            target_episodes=[{'id':1,'seasonNumber':1,'episodeNumber':1,'lastSearchTime':None}],
+            stats=self.wanted_stats(),series_monitored_confirmed=True,now=self.now+timedelta(hours=1))
+        candidate.refresh_from_db(); self.assertEqual((candidate.status,candidate.attempt_count,candidate.current_command_id),('pending',0,None))
+        self.assertTrue(candidate.command_links.filter(command=old).exists())
+
+    def test_pending_retry_satisfied_by_last_search_clears_retry_state(self):
+        failed=self.command(status='failed',processed=self.now); candidate=Candidate.objects.get()
+        candidate.status='pending'; candidate.retry_not_before=self.now+timedelta(hours=2); candidate.last_error='retry scheduled'; candidate.save()
+        searched=self.now+timedelta(minutes=1)
+        update_search_candidates_for_series(target_instance=self.target,tvdb_id=10,target_series_id=20,
+            target_episodes=[{'id':1,'seasonNumber':1,'episodeNumber':1,'lastSearchTime':searched.isoformat()}],
+            stats=self.wanted_stats(),series_monitored_confirmed=True,now=self.now+timedelta(minutes=2))
+        candidate.refresh_from_db(); self.assertEqual((candidate.status,candidate.retry_not_before,candidate.last_error),('submitted',None,'')); self.assertEqual(candidate.current_command,failed)
 
     def test_queued_and_started_stay_submitted_and_log_only_transition(self):
         for status in ('queued','started'):
@@ -202,6 +236,27 @@ class EpisodeSearchLifecycleTests(TestCase):
         api=FakeAPI(); api.individual[1]=self.resource(command_id=1,ids=(1,))
         mapped,failed,count=poll_episode_search_commands(api,self.target)
         self.assertFalse(failed); self.assertIn(1,mapped); self.assertEqual(count,COMMAND_FALLBACK_LIMIT); self.assertEqual(len(api.get_calls),COMMAND_FALLBACK_LIMIT)
+
+    def test_fallback_rotates_fairly_across_twenty_five_absent_commands(self):
+        for i in range(1,26): self.command(command_id=i,episode_ids=(i,))
+        api=FakeAPI()
+        _,failed1,count1=poll_episode_search_commands(api,self.target)
+        first=list(api.get_calls); api.get_calls=[]
+        _,failed2,count2=poll_episode_search_commands(api,self.target)
+        second=list(api.get_calls); api.get_calls=[]
+        terminal=self.resource(command_id=25,status='failed',ids=(25,))
+        api.individual[25]=terminal
+        mapped,failed3,count3=poll_episode_search_commands(api,self.target)
+        third=list(api.get_calls)
+        self.assertEqual((failed1,failed2,failed3),(False,False,False))
+        self.assertEqual((count1,count2,count3),(10,10,5))
+        self.assertEqual((first,second,third),(list(range(1,11)),list(range(11,21)),list(range(21,26))))
+        self.assertEqual(set(first+second+third),set(range(1,26)))
+        counts,_,unsafe=reconcile_search_commands_for_series(target_instance=self.target,target_series_id=20,
+            command_map=mapped,poll_failed=False,target_episodes=[{'id':i,'hasFile':False,'lastSearchTime':None} for i in range(1,26)],
+            eligible_episode_ids=list(range(1,26)),now=self.now+timedelta(hours=1))
+        discovered=Command.objects.get(sonarr_command_id=25); self.assertEqual(discovered.status,'failed'); self.assertIsNotNone(discovered.outcome_reconciled_at)
+        self.assertEqual(counts['search_candidates_requeued'],1); self.assertTrue(unsafe)  # other absent commands remain fail-closed
 
     def test_malformed_list_and_polling_outage_fail_closed(self):
         api=FakeAPI(); api.list_response={'error':'down'}

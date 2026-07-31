@@ -64,17 +64,21 @@ def _reset_pending(cand, *, tvdb_id, target_series_id, key, now):
     cand.last_confirmed_at = now
     cand.submitted_at = None
     cand.cancelled_at = None
+    cand.current_command = None
+    cand.attempt_count = 0
+    cand.retry_not_before = None
     cand.last_error = ''
-    cand.save(update_fields=['target_series_id', 'tvdb_id', 'season_number', 'episode_number', 'status', 'first_eligible_at', 'last_confirmed_at', 'submitted_at', 'cancelled_at', 'last_error', 'updated_at'])
+    cand.save(update_fields=['target_series_id', 'tvdb_id', 'season_number', 'episode_number', 'status', 'first_eligible_at', 'last_confirmed_at', 'submitted_at', 'cancelled_at', 'current_command', 'attempt_count', 'retry_not_before', 'last_error', 'updated_at'])
 
 
 def _mark_submitted(cand, *, submitted_at, now):
     cand.status = SEARCH_STATUS_SUBMITTED
     cand.submitted_at = submitted_at
     cand.cancelled_at = None
+    cand.retry_not_before = None
     cand.last_error = ''
     cand.last_confirmed_at = now
-    cand.save(update_fields=['status', 'submitted_at', 'cancelled_at', 'last_error', 'last_confirmed_at', 'updated_at'])
+    cand.save(update_fields=['status', 'submitted_at', 'cancelled_at', 'retry_not_before', 'last_error', 'last_confirmed_at', 'updated_at'])
 
 
 def command_response_succeeded(response):
@@ -287,6 +291,7 @@ KNOWN_COMMAND_RESULTS = frozenset(('', 'unknown', 'successful', 'unsuccessful', 
 TERMINAL_FAILURE_STATUSES = frozenset(('failed', 'aborted', 'cancelled', 'orphaned'))
 ADOPTION_WINDOW = timedelta(minutes=10)
 COMMAND_FALLBACK_LIMIT = 10
+FALLBACK_DEFERRED = ('fallback_budget_deferred', None)
 
 
 def _strict_command_datetime(value, field, required=False):
@@ -361,17 +366,24 @@ def poll_episode_search_commands(target_api, target_instance, fallback_limit=COM
         mapped = validate_command_list(target_api.get_commands())
     except (TypeError, ValueError):
         return {}, True, 0
-    active = SonarrEpisodeSearchCommand.objects.filter(
+    active = list(SonarrEpisodeSearchCommand.objects.filter(
         target_instance=target_instance,
     ).exclude(status__in=('completed', 'superseded')).exclude(
         status__in=TERMINAL_FAILURE_STATUSES, outcome_reconciled_at__isnull=False,
-    ).filter(sonarr_command_id__isnull=False).prefetch_related('candidate_links').order_by('sonarr_command_id')
+    ).filter(sonarr_command_id__isnull=False).prefetch_related('candidate_links').order_by('last_fallback_checked_at', 'sonarr_command_id'))
     fallbacks = 0
-    for command in active:
-        if command.sonarr_command_id in mapped or fallbacks >= fallback_limit:
+    absent = [command for command in active if command.sonarr_command_id not in mapped]
+    never_checked = [command for command in absent if command.last_fallback_checked_at is None]
+    selected = (never_checked if never_checked else absent)[:fallback_limit]
+    selected_ids = {command.id for command in selected}
+    checked_at = timezone.now()
+    for command in selected:
+        if command.sonarr_command_id in mapped:
             continue
         fallbacks += 1
         resource = target_api.get_command(command.sonarr_command_id)
+        command.last_fallback_checked_at = checked_at
+        command.save(update_fields=['last_fallback_checked_at', 'updated_at'])
         status_code = resource.get('status_code') if isinstance(resource, dict) else None
         if status_code == 404:
             continue
@@ -380,6 +392,10 @@ def poll_episode_search_commands(target_api, target_instance, fallback_limit=COM
         except ValueError:
             return mapped, True, fallbacks
         mapped[command.sonarr_command_id] = (resource, parsed)
+    for command in absent:
+        if command.id in selected_ids:
+            continue
+        mapped[command.sonarr_command_id] = FALLBACK_DEFERRED
     return mapped, False, fallbacks
 
 
@@ -497,6 +513,8 @@ def reconcile_search_commands_for_series(*, target_instance, target_series_id, c
         if command.sonarr_command_id is None and command.status in ('submitting','ambiguous'):
             matches = []
             for cid, (_raw, parsed) in command_map.items():
+                if parsed is None:
+                    continue
                 queued = parsed['queued_at']
                 if cid not in tracked_ids and set(parsed['episode_ids']) == set(snapshot) and queued and abs(queued - command.submission_attempted_at) <= ADOPTION_WINDOW:
                     matches.append((cid, parsed))
@@ -511,6 +529,10 @@ def reconcile_search_commands_for_series(*, target_instance, target_series_id, c
                 counters['search_commands_ambiguous'] += 1; unsafe = True
                 continue
         if entry is not None:
+            if entry == FALLBACK_DEFERRED:
+                counters['search_commands_unavailable'] += 1
+                unsafe = True
+                continue
             try:
                 parsed = validate_episode_search_command(entry[0], snapshot, command.sonarr_command_id)
             except ValueError:
@@ -560,6 +582,7 @@ def submit_pending_search_candidates(*, target_api, target_instance, target_seri
     now = now or timezone.now()
     counters = {'submitted': 0, 'initial_submitted': 0, 'retry_submitted': 0, 'failures': 0}
     events = []
+    had_failure = False
     due = SonarrEpisodeSearchCandidate.objects.filter(
         target_instance=target_instance, target_series_id=target_series_id,
         status=SEARCH_STATUS_PENDING,
@@ -571,7 +594,8 @@ def submit_pending_search_candidates(*, target_api, target_instance, target_seri
         # A retry without an exact, processed terminal predecessor is unsafe.
         if is_retry and (previous is None or previous.status not in TERMINAL_FAILURE_STATUSES or previous.outcome_reconciled_at is None):
             counters['failures'] += 1
-            events.append(f'EpisodeSearch retry lineage invalid series={target_series_id} episodes=1')
+            had_failure = True
+            events.append(f'EpisodeSearch retry lineage failure series={target_series_id} episodes=1 reason=invalid_predecessor')
             continue
         key = (is_retry, previous.pk if previous else None, candidate.attempt_count)
         groups.setdefault(key, []).append(candidate)
@@ -627,4 +651,4 @@ def submit_pending_search_candidates(*, target_api, target_instance, target_seri
                 outcome = 'failure' if definite_rejection else 'ambiguous'
                 events.append(f'EpisodeSearch submission {outcome} series={target_series_id} episodes={len(ids)} reason={command.failure_reason}')
                 return counters, events, True
-    return counters, events, False
+    return counters, events, had_failure
