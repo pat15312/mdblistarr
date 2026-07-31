@@ -184,6 +184,21 @@ class SonarrAPI():
         except Exception:
             return {'errorMessage': sanitize_text(traceback.format_exc())}
 
+    def get_commands(self):
+        """Return Sonarr's command history/queue. Reconciliation validates the payload."""
+        try:
+            return self.connect.get_json(f"{self.url}/api/v3/command", headers=_api_headers(self.apikey))
+        except Exception:
+            return {'errorMessage': sanitize_text(traceback.format_exc())}
+
+    def get_command(self, command_id):
+        if isinstance(command_id, bool) or not isinstance(command_id, int) or command_id <= 0:
+            return {'error': 'command id must be a positive integer'}
+        try:
+            return self.connect.get_json(f"{self.url}/api/v3/command/{command_id}", headers=_api_headers(self.apikey))
+        except Exception:
+            return {'errorMessage': sanitize_text(traceback.format_exc())}
+
 class RadarrAPI():
     def __init__(self, url=None, apikey=None, instance_id=None):
         self.connect = Connect()

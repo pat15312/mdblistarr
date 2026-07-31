@@ -20,7 +20,7 @@ from django.views.decorators.http import require_http_methods, require_POST
 from .arr import MdblistAPI, RadarrAPI, SonarrAPI, MDBLIST_DEFAULT_CLIENT_ID
 from .connect import Connect
 from .connect import sanitize_text
-from .models import Preferences, RadarrInstance, SonarrInstance
+from .models import Preferences, RadarrInstance, SonarrInstance, SonarrEpisodeSearchCommand, SonarrEpisodeSearchCandidate
 from .services import get_mdblistarr, reset_mdblistarr
 from .admin_state import usable_administrator_exists
 from .forms import InitialAdminSetupForm, SonarrReconciliationForm
@@ -297,6 +297,9 @@ def home_view(request):
         'include_specials': Preferences.get_value('sonarr_include_specials', '0') == '1',
         'search_newly_eligible': Preferences.get_value('sonarr_search_newly_eligible', '0') == '1',
         'interval_minutes': Preferences.get_value('sonarr_reconciliation_interval_minutes', '15') or '15',
+        'search_max_retries': int(Preferences.get_value('sonarr_search_max_retries', '3') or '3'),
+        'search_retry_delay_minutes': int(Preferences.get_value('sonarr_search_retry_delay_minutes', '30') or '30'),
+        'search_missing_command_grace_hours': int(Preferences.get_value('sonarr_search_missing_command_grace_hours', '24') or '24'),
         'cleanup_enabled': Preferences.get_value('sonarr_cleanup_enabled', '0') == '1',
         'cleanup_dry_run': Preferences.get_value('sonarr_cleanup_dry_run', '1') != '0',
         'cleanup_grace_hours': Preferences.get_value('sonarr_cleanup_grace_hours', '24') or '24',
@@ -482,6 +485,13 @@ def home_view(request):
         'oauth_username': oauth_username,
         'oauth_name': oauth_name,
         'oauth_plan': oauth_plan,
+        'search_command_summary': {
+            'in_flight': SonarrEpisodeSearchCommand.objects.filter(status__in=('submitting','queued','started')).count(),
+            'completed': SonarrEpisodeSearchCommand.objects.filter(status='completed').count(),
+            'terminal_awaiting_retry': SonarrEpisodeSearchCandidate.objects.filter(status='pending', current_command__status__in=('failed','aborted','cancelled','orphaned')).count(),
+            'retry_exhausted': SonarrEpisodeSearchCandidate.objects.filter(status='failed').count(),
+            'ambiguous_unavailable': SonarrEpisodeSearchCommand.objects.filter(status__in=('ambiguous','unavailable')).count(),
+        },
     }
 
     return render(request, "index.html", context)
