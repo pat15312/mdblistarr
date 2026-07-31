@@ -13,7 +13,7 @@ from .arr import RadarrAPI
 from .sonarr_reconcile import determine_series_completeness, calculate_episode_monitoring
 from .sonarr_cleanup import process_cleanup_for_series
 from .sonarr_search import (update_search_candidates_for_series, submit_pending_search_candidates,
-    reconcile_search_commands_for_series, validate_command_list)
+    reconcile_search_commands_for_series, poll_episode_search_commands)
 import fcntl, os
 
 def save_log(provider, status, text):
@@ -775,11 +775,10 @@ def reconcile_sonarr_ondemand(force=False):
             command_totals = {key: 0 for key in command_total_keys}
             command_totals['search_retries_submitted'] = 0
             command_map, command_poll_failed = {}, False
-            if SonarrEpisodeSearchCommand.objects.filter(target_instance=target).exclude(status__in=('completed','superseded')).exists():
-                try:
-                    command_map = validate_command_list(target_api.get_commands())
-                except (TypeError, ValueError):
-                    command_poll_failed = True
+            if SonarrEpisodeSearchCommand.objects.filter(target_instance=target).exclude(
+                    status__in=('completed','superseded')).exclude(
+                    status__in=('failed','aborted','cancelled','orphaned'), outcome_reconciled_at__isnull=False).exists():
+                command_map, command_poll_failed, _fallback_count = poll_episode_search_commands(target_api, target)
             max_search_retries = max(0, min(10, int(Preferences.get_value('sonarr_search_max_retries', '3') or '3')))
             search_retry_delay = max(0, min(10080, int(Preferences.get_value('sonarr_search_retry_delay_minutes', '30') or '30')))
             command_missing_grace = max(1, min(720, int(Preferences.get_value('sonarr_search_missing_command_grace_hours', '24') or '24')))
@@ -863,6 +862,7 @@ def reconcile_sonarr_ondemand(force=False):
                     save_log(provider, 2 if ('failure' in event or 'ambiguous' in event or 'unavailable' in event) else 1, sanitize_text(event))
                 if command_unsafe:
                     series_ok_for_cleanup = False
+                    totals.failures += 1
 
                 if search_enabled:
                     submitted, search_events, search_failed = submit_pending_search_candidates(target_api=target_api, target_instance=target, target_series_id=show['id'])

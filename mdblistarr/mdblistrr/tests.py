@@ -1756,6 +1756,15 @@ class SonarrPersistentSearchCandidateTests(TestCase):
         target_series = [{'id': 20, 'tvdbId': 999, 'monitored': True, 'seasons': [{'seasonNumber': 1, 'monitored': True}]}]
         def init(api_self, instance_id=None, **kw): api_self.instance_id = instance_id
         def get_series(api_self): return [] if api_self.instance_id == self.source.id else target_series
+        def get_commands(api_self):
+            from .models import SonarrEpisodeSearchCommand
+            return [{
+                'id': command.sonarr_command_id, 'name': 'EpisodeSearch',
+                'status': command.sonarr_status or command.status,
+                'result': command.sonarr_result or 'unknown',
+                'queued': command.queued_at.isoformat(),
+                'body': {'name': 'EpisodeSearch', 'episodeIds': list(command.candidate_links.values_list('target_episode_id', flat=True))},
+            } for command in SonarrEpisodeSearchCommand.objects.filter(sonarr_command_id__isnull=False)]
         patches = [
             patch('mdblistrr.cron.SonarrAPI.__init__', init),
             patch('mdblistrr.cron.SonarrAPI.get_series', get_series),
@@ -1765,10 +1774,11 @@ class SonarrPersistentSearchCandidateTests(TestCase):
             patch('mdblistrr.cron.SonarrAPI.put_series_monitor', return_value={'status_code': 202}),
             patch('mdblistrr.cron.SonarrAPI.trigger_episode_search', return_value=search_res),
             patch('mdblistrr.cron.process_cleanup_for_series', return_value=type('C', (), {'delete_attempts_consumed':0,'stop_deletes_for_run':False,'cleanup_failures':0,'events':[], 'cleanup_candidates_new':0,'cleanup_candidates_pending':0,'cleanup_candidates_ready':0,'cleanup_candidates_cancelled':0,'cleanup_would_delete':0,'cleanup_files_deleted':0,'cleanup_files_already_absent':0,'cleanup_deferred_by_limit':0})()),
+            patch('mdblistrr.cron.SonarrAPI.get_commands', get_commands),
         ]
         if batch_size:
             patches.append(patch('mdblistrr.cron.submit_pending_search_candidates', wraps=__import__('mdblistrr.sonarr_search', fromlist=['submit_pending_search_candidates']).submit_pending_search_candidates))
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6] as search_mock, patches[7] as cleanup:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6] as search_mock, patches[7] as cleanup, patches[8]:
             res = reconcile_sonarr_ondemand(force=True)
         return res, search_mock, cleanup
 
