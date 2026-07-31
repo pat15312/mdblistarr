@@ -175,6 +175,25 @@ At the configured interval, MDBListarr matches series in the On Demand target to
 
 `Search newly eligible missing episodes` is disabled by default and remains opt-in after upgrades. MDBListarr still creates persistent pending search candidates for eligible, missing, unsearched episodes while searching is disabled. When enabled later, MDBListarr submits those pending candidates once through explicit EpisodeSearch commands. Valid Sonarr `lastSearchTime` values are treated as evidence of a prior manual/external search, so those episodes are not automatically searched again. Submitted candidates are persisted locally, preventing repeated asynchronous submissions while an episode remains missing or Sonarr has not yet updated `lastSearchTime`. Permanent duplicates, episodes that already have an On Demand file, future episodes, unscheduled episodes, malformed episodes, and disabled specials are not searched. It does not run whole-series searches.
 
+#### EpisodeSearch command lifecycle and retries
+
+Each newly submitted batch (at most 100 episodes) now has a persistent command record and immutable candidate/target-episode snapshots. Local states distinguish submitting, queued, started, completed, explicit terminal failure (`failed`, `aborted`, `cancelled`, or `orphaned`), ambiguous, unavailable, and superseded attempts. `attempt_count` includes the initial accepted submission. A completed search means Sonarr ran the search; it does **not** mean an acceptable release was acquired, and MDBListarr does not repeat a completed search merely because the episode remains missing. Sonarr's `result: unknown` is not a failure by itself.
+
+Queued and started batches remain protected from duplicate submission. Explicit, validated terminal failures are assessed candidate by candidate: a target file or a `lastSearchTime` at/after the command proves satisfaction; an ineligible episode is cancelled; otherwise the candidate can be retried after the configured delay. Defaults are three automatic retries after the initial attempt and a 30-minute retry delay; zero retries disables automatic retries. Exhausted candidates enter `failed` for operator attention. Each retry creates a new command record linked to its predecessor rather than overwriting audit history.
+
+Command polling continues while searching is disabled and can prepare pending retries, but no new EpisodeSearch POST is made until searching is enabled. MDBListarr normally uses one command-list request per target per reconciliation. A missing command is never treated as failed: episode evidence may prove completion, otherwise it becomes unavailable during the default 24-hour grace period and remains fail-closed/uncertain afterward. Transport errors, malformed resources, unknown states, ambiguous submissions, zero/multiple adoption matches, and missing commands all preserve candidate protection and block destructive cleanup for the affected series. Explicitly reconciled terminal failures and completed commands do not permanently block cleanup.
+
+The staff configuration page exposes the retry limit, retry delay, missing-command grace period, and compact lifecycle counts. Reconciliation summaries include command transitions, polling failures, requeues, exhausted retries, and file/last-search satisfaction counters. Logs are command-level and omit full command bodies and episode-ID arrays. Historical submitted candidates remain submitted and untracked after upgrade—no synthetic IDs are guessed and no historical search is repeated. The PR #8 accepted-response recovery remains active. All command POSTs and cleanup writes remain confined to the On Demand target; the permanent Sonarr source remains read-only.
+
+Rollout:
+
+1. Deploy normally.
+2. Existing submitted candidates remain protected.
+3. Newly submitted EpisodeSearch batches begin receiving command lifecycle tracking.
+4. Review command counters after the first reconciliation.
+5. Enable or adjust retry settings as required.
+6. No historical searches are repeated solely because they predate this feature.
+
 Troubleshooting recovery for installations affected by the PR #7 Sonarr EpisodeSearch response bug: disable `Search newly eligible missing episodes`, deploy this hotfix, and run Sonarr reconciliation once while searching remains disabled. MDBListarr will automatically recover pending candidates whose stored `last_error` proves Sonarr already accepted an `EpisodeSearch` command, report `search_candidates_recovered`, clear the stale response text, and submit no new EpisodeSearch commands during that disabled recovery run. Confirm `search_failures=0` and `failures=0` unless another unrelated issue exists, allow Sonarr's existing command queue to continue processing, then re-enable `Search newly eligible missing episodes` and reconcile again to submit only genuinely pending unrecovered episodes.
 
 ### Required Sonarr On Demand import-list setup

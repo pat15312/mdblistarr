@@ -258,10 +258,12 @@ class SonarrEpisodeSearchCandidate(models.Model):
     STATUS_PENDING = 'pending'
     STATUS_SUBMITTED = 'submitted'
     STATUS_CANCELLED = 'cancelled'
+    STATUS_FAILED = 'failed'
     STATUS_CHOICES = [
         (STATUS_PENDING, 'Pending'),
         (STATUS_SUBMITTED, 'Submitted'),
         (STATUS_CANCELLED, 'Cancelled'),
+        (STATUS_FAILED, 'Failed'),
     ]
 
     target_instance = models.ForeignKey(SonarrInstance, on_delete=models.CASCADE, related_name='episode_search_candidates')
@@ -276,6 +278,9 @@ class SonarrEpisodeSearchCandidate(models.Model):
     submitted_at = models.DateTimeField(null=True, blank=True)
     cancelled_at = models.DateTimeField(null=True, blank=True)
     last_error = models.TextField(blank=True, default='')
+    current_command = models.ForeignKey('SonarrEpisodeSearchCommand', null=True, blank=True, on_delete=models.SET_NULL, related_name='current_candidates')
+    attempt_count = models.PositiveSmallIntegerField(default=0, help_text='Total accepted submission attempts, including the initial attempt.')
+    retry_not_before = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -286,3 +291,55 @@ class SonarrEpisodeSearchCandidate(models.Model):
 
     def __str__(self):
         return f'{self.target_instance_id}:{self.target_episode_id}:{self.status}'
+
+
+class SonarrEpisodeSearchCommand(models.Model):
+    STATUS_SUBMITTING = 'submitting'
+    STATUS_QUEUED = 'queued'
+    STATUS_STARTED = 'started'
+    STATUS_COMPLETED = 'completed'
+    STATUS_FAILED = 'failed'
+    STATUS_ABORTED = 'aborted'
+    STATUS_CANCELLED = 'cancelled'
+    STATUS_ORPHANED = 'orphaned'
+    STATUS_AMBIGUOUS = 'ambiguous'
+    STATUS_UNAVAILABLE = 'unavailable'
+    STATUS_SUPERSEDED = 'superseded'
+    STATUS_CHOICES = [(value, value.title()) for value in (
+        STATUS_SUBMITTING, STATUS_QUEUED, STATUS_STARTED, STATUS_COMPLETED,
+        STATUS_FAILED, STATUS_ABORTED, STATUS_CANCELLED, STATUS_ORPHANED,
+        STATUS_AMBIGUOUS, STATUS_UNAVAILABLE, STATUS_SUPERSEDED,
+    )]
+
+    target_instance = models.ForeignKey(SonarrInstance, on_delete=models.CASCADE, related_name='episode_search_commands')
+    target_series_id = models.PositiveIntegerField()
+    sonarr_command_id = models.PositiveIntegerField(null=True, blank=True)
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default=STATUS_SUBMITTING)
+    sonarr_status = models.CharField(max_length=32, blank=True, default='')
+    sonarr_result = models.CharField(max_length=32, blank=True, default='')
+    submission_attempted_at = models.DateTimeField()
+    queued_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    terminal_at = models.DateTimeField(null=True, blank=True)
+    last_checked_at = models.DateTimeField(null=True, blank=True)
+    unavailable_since = models.DateTimeField(null=True, blank=True)
+    retry_of = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='retries')
+    attempt_number = models.PositiveSmallIntegerField(default=1)
+    failure_reason = models.CharField(max_length=255, blank=True, default='')
+    candidates = models.ManyToManyField(SonarrEpisodeSearchCandidate, through='SonarrEpisodeSearchCommandCandidate', related_name='search_commands')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['target_instance', 'sonarr_command_id'], condition=models.Q(sonarr_command_id__isnull=False), name='uniq_sonarr_search_command_per_target')]
+
+
+class SonarrEpisodeSearchCommandCandidate(models.Model):
+    command = models.ForeignKey(SonarrEpisodeSearchCommand, on_delete=models.CASCADE, related_name='candidate_links')
+    candidate = models.ForeignKey(SonarrEpisodeSearchCandidate, on_delete=models.CASCADE, related_name='command_links')
+    target_episode_id = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['command', 'candidate'], name='uniq_sonarr_search_command_candidate')]
