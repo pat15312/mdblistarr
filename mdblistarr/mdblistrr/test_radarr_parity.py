@@ -1,4 +1,6 @@
 import os
+from collections import Counter
+from html.parser import HTMLParser
 from unittest.mock import Mock, patch
 
 from cryptography.fernet import Fernet
@@ -8,12 +10,21 @@ from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase, override_settings
 
-from .cron import get_radarr_sync_instances, get_sonarr_sync_instances, post_radarr_payload
+from .cron import get_mdblist_queue_to_arr, get_radarr_sync_instances, get_sonarr_sync_instances, post_radarr_payload
 from .models import Preferences, RadarrInstance, SonarrInstance
 from .views import RadarrInstanceForm, SonarrInstanceForm
 from . import crypto
 
 TEST_KEY = Fernet.generate_key().decode()
+
+
+class ElementCollector(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.elements = []
+
+    def handle_starttag(self, tag, attrs):
+        self.elements.append((tag, dict(attrs)))
 
 
 class EncryptionKeyMixin:
@@ -147,6 +158,79 @@ class RadarrRoleAwareSyncTests(EncryptionKeyMixin, TestCase):
         self.assertFalse(any(call[0][0].startswith('post_') for call in service.mdblist.method_calls))
 
 
+class ArrQueueRuntimeParityTests(EncryptionKeyMixin, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.radarr = RadarrInstance.objects.create(
+            name='r', url='http://r', apikey='key', quality_profile='1', root_folder='/movies',
+            enable_queue_import=True,
+        )
+        self.sonarr = SonarrInstance.objects.create(
+            name='s', url='http://s', apikey='key', quality_profile='2', root_folder='/shows',
+            enable_queue_import=True,
+        )
+
+    def queue(self):
+        return [
+            {'mediatype': 'movie', 'instanceid': self.radarr.id, 'title': 'Movie', 'tmdbid': 10},
+            {'mediatype': 'show', 'instanceid': self.sonarr.id, 'title': 'Show', 'tvdbid': 20},
+        ]
+
+    def run_queue(self, queue=None):
+        service = Mock()
+        service.mdblist.get_mdblist_queue.return_value = self.queue() if queue is None else queue
+        service.get_radarr_quality_profile.return_value = '1'
+        service.get_radarr_root_folder.return_value = '/movies'
+        service.get_sonarr_quality_profile.return_value = '2'
+        service.get_sonarr_root_folder.return_value = '/shows'
+        with patch('mdblistrr.cron.time.sleep'), patch('mdblistrr.cron.reset_mdblistarr'), \
+             patch('mdblistrr.cron.get_mdblistarr', return_value=service), \
+             patch('mdblistrr.cron.RadarrAPI.post_movie', return_value={'title': 'Movie'}) as post_movie, \
+             patch('mdblistrr.cron.SonarrAPI.post_show', return_value={'title': 'Show'}) as post_show:
+            result = get_mdblist_queue_to_arr()
+        return result, post_movie, post_show
+
+    def test_valid_configuration_proceeds_for_both_products(self):
+        Preferences.set_value('enable_mdblist_queue_processing', '1')
+        result, post_movie, post_show = self.run_queue()
+        self.assertEqual(result, {'result': 200})
+        post_movie.assert_called_once()
+        post_show.assert_called_once()
+
+    def test_invalid_configuration_blocks_each_product_runtime_write(self):
+        Preferences.set_value('enable_mdblist_queue_processing', '1')
+        self.radarr.quality_profile = '   '
+        self.radarr.save(update_fields=['quality_profile'])
+        self.sonarr.root_folder = '0'
+        self.sonarr.save(update_fields=['root_folder'])
+        _, post_movie, post_show = self.run_queue()
+        post_movie.assert_not_called()
+        post_show.assert_not_called()
+
+    def test_roles_alone_and_per_instance_opt_in_do_not_authorize_writes(self):
+        Preferences.set_value('enable_mdblist_queue_processing', '1')
+        for source, target in ((True, False), (False, True), (True, True), (False, False)):
+            self.radarr.is_library_source = source
+            self.radarr.is_ondemand_target = target
+            self.radarr.enable_queue_import = False
+            self.radarr.save(update_fields=['is_library_source', 'is_ondemand_target', 'enable_queue_import'])
+            self.sonarr.is_library_source = source
+            self.sonarr.is_ondemand_target = target
+            self.sonarr.enable_queue_import = False
+            self.sonarr.save(update_fields=['is_library_source', 'is_ondemand_target', 'enable_queue_import'])
+            with self.subTest(source=source, target=target):
+                _, post_movie, post_show = self.run_queue()
+                post_movie.assert_not_called()
+                post_show.assert_not_called()
+
+    def test_global_opt_in_is_required(self):
+        Preferences.set_value('enable_mdblist_queue_processing', '0')
+        result, post_movie, post_show = self.run_queue()
+        self.assertEqual(result['message'], 'MDBList queue processing disabled')
+        post_movie.assert_not_called()
+        post_show.assert_not_called()
+
+
 @override_settings(ALLOWED_HOSTS=['testserver'])
 class ArrPurposeTemplateTests(EncryptionKeyMixin, TestCase):
     def setUp(self):
@@ -157,8 +241,12 @@ class ArrPurposeTemplateTests(EncryptionKeyMixin, TestCase):
     @patch('mdblistrr.views.get_mdblistarr')
     def test_both_products_share_purpose_partial_and_never_render_saved_secrets(self, get_service):
         get_service.return_value.mdblist = None
-        RadarrInstance.objects.create(name='r', url='http://r', apikey='radarr-secret', is_library_source=False, is_ondemand_target=True)
-        SonarrInstance.objects.create(name='s', url='http://s', apikey='sonarr-secret', is_library_source=True, is_ondemand_target=False)
+        radarr = RadarrInstance.objects.create(name='r', url='http://r', apikey='radarr-secret', is_library_source=False, is_ondemand_target=True)
+        sonarr = SonarrInstance.objects.create(name='s', url='http://s', apikey='sonarr-secret', is_library_source=True, is_ondemand_target=False)
+        session = self.client.session
+        session['active_radarr_id'] = str(radarr.id)
+        session['active_sonarr_id'] = str(sonarr.id)
+        session.save()
         response = self.client.get('/')
         self.assertEqual(response.status_code, 200)
         html = response.content.decode()
@@ -170,3 +258,23 @@ class ArrPurposeTemplateTests(EncryptionKeyMixin, TestCase):
         self.assertNotIn('sonarr-secret', html)
         self.assertNotIn('Enable Radarr reconciliation', html)
         self.assertNotIn('Run Radarr reconciliation now', html)
+
+        parser = ElementCollector()
+        parser.feed(html)
+        ids = [attrs['id'] for _, attrs in parser.elements if attrs.get('id', '').startswith(('id_radarr_', 'id_sonarr_'))]
+        self.assertTrue(ids)
+        self.assertFalse([element_id for element_id, count in Counter(ids).items() if count > 1])
+
+        elements_by_id = {attrs['id']: attrs for _, attrs in parser.elements if 'id' in attrs}
+        label_targets = {attrs['for'] for tag, attrs in parser.elements if tag == 'label' and 'for' in attrs}
+        for product in ('radarr', 'sonarr'):
+            for field in ('name', 'url', 'apikey', 'is_library_source', 'is_ondemand_target',
+                          'enable_queue_import', 'quality_profile', 'root_folder'):
+                element_id = f'id_{product}_{field}'
+                self.assertIn(element_id, elements_by_id)
+                self.assertIn(element_id, label_targets)
+
+        self.assertNotIn('checked', elements_by_id['id_radarr_is_library_source'])
+        self.assertIn('checked', elements_by_id['id_radarr_is_ondemand_target'])
+        self.assertIn('checked', elements_by_id['id_sonarr_is_library_source'])
+        self.assertNotIn('checked', elements_by_id['id_sonarr_is_ondemand_target'])

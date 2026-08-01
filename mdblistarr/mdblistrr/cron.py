@@ -574,8 +574,12 @@ def get_mdblist_queue_to_arr():
             elif mediatype == 'show':
                 provider = 2
                 instance_id = item.get('instanceid')
-                if not SonarrInstance.objects.filter(id=instance_id, enable_queue_import=True).exists():
+                instance = SonarrInstance.objects.filter(id=instance_id, enable_queue_import=True).first()
+                if instance is None:
                     save_log(provider, 2, f"Skipping Sonarr queue item because instance is not queue-import enabled: {item.get('title')}")
+                    continue
+                if not queue_import_requirements_are_valid(instance.quality_profile, instance.root_folder):
+                    save_log(provider, 2, f"Skipping Sonarr queue item because queue-import profile/root configuration is invalid: {item.get('title')}")
                     continue
                 show_request_json = {
                     "title": item['title'],

@@ -106,9 +106,13 @@ class ServerSelectionForm(forms.Form):
 class ArrInstanceFormMixin:
     """Shared presentation and safety rules for Arr instance forms."""
 
-    def configure_common_fields(self):
+    def configure_common_fields(self, product):
         self.fields['apikey'].required = not bool(self.instance and self.instance.pk)
         self.fields['apikey'].help_text = 'Leave blank to keep the saved API key.'
+        # Both product forms are rendered in the DOM together. Keep POST names
+        # unchanged while ensuring every label targets its own product's input.
+        for name, field in self.fields.items():
+            field.widget.attrs['id'] = f'id_{product}_{name}'
         for name, label in ROLE_LABELS.items():
             self.fields[name].label = label
             self.fields[name].help_text = ROLE_HELP_TEXT[name]
@@ -139,7 +143,7 @@ class RadarrInstanceForm(ArrInstanceFormMixin, forms.ModelForm):
     
     def __init__(self, *args, **kwargs):
         super(RadarrInstanceForm, self).__init__(*args, **kwargs)
-        self.configure_common_fields()
+        self.configure_common_fields('radarr')
         
         self.fields['quality_profile'].choices = [('0', 'Select Quality Profile')]
         self.fields['root_folder'].choices = [('0', 'Select Root Folder')]
@@ -182,7 +186,7 @@ class SonarrInstanceForm(ArrInstanceFormMixin, forms.ModelForm):
     
     def __init__(self, *args, **kwargs):
         super(SonarrInstanceForm, self).__init__(*args, **kwargs)
-        self.configure_common_fields()
+        self.configure_common_fields('sonarr')
         
         self.fields['quality_profile'].choices = [('0', 'Select Quality Profile')]
         self.fields['root_folder'].choices = [('0', 'Select Root Folder')]
