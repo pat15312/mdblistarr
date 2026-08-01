@@ -3,6 +3,7 @@ from django.db import models
 from .crypto import decrypt, encrypt, SECRET_PREF_NAMES
 from django.dispatch import receiver
 from django.db.models.signals import pre_save, post_save, pre_delete
+from .instance_config import queue_import_requirements_are_valid
 
 class EncryptedCharField(models.CharField):
     def from_db_value(self, value, expression, connection):
@@ -71,8 +72,10 @@ class RadarrInstance(models.Model):
     name = models.CharField(max_length=255)
     url = models.CharField(max_length=255)
     apikey = EncryptedCharField(max_length=2048)
-    quality_profile = models.CharField(max_length=255)
-    root_folder = models.CharField(max_length=255)
+    quality_profile = models.CharField(max_length=255, null=True, blank=True)
+    root_folder = models.CharField(max_length=255, null=True, blank=True)
+    is_library_source = models.BooleanField(default=True)
+    is_ondemand_target = models.BooleanField(default=False)
     enable_queue_import = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     
@@ -81,7 +84,7 @@ class RadarrInstance(models.Model):
 
     def clean(self):
         from django.core.exceptions import ValidationError
-        if self.enable_queue_import and (not self.quality_profile or self.quality_profile == '0' or not self.root_folder or self.root_folder == '0'):
+        if self.enable_queue_import and not queue_import_requirements_are_valid(self.quality_profile, self.root_folder):
             raise ValidationError('Queue-import Radarr instances require a valid quality profile and root folder.')
 
 class SonarrInstance(models.Model):
@@ -98,7 +101,7 @@ class SonarrInstance(models.Model):
 
     def clean(self):
         from django.core.exceptions import ValidationError
-        if self.enable_queue_import and (not self.quality_profile or self.quality_profile == '0' or not self.root_folder or self.root_folder == '0'):
+        if self.enable_queue_import and not queue_import_requirements_are_valid(self.quality_profile, self.root_folder):
             raise ValidationError('Queue-import Sonarr instances require a valid quality profile and root folder.')
     
     def __str__(self):

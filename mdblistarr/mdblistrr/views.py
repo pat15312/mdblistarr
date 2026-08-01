@@ -24,6 +24,7 @@ from .models import Preferences, RadarrInstance, SonarrInstance, SonarrEpisodeSe
 from .services import get_mdblistarr, reset_mdblistarr
 from .admin_state import usable_administrator_exists
 from .forms import InitialAdminSetupForm, SonarrReconciliationForm
+from .instance_config import ROLE_HELP_TEXT, ROLE_LABELS, queue_import_value_is_valid
 
 logger = logging.getLogger(__name__)
 
@@ -102,23 +103,47 @@ class ServerSelectionForm(forms.Form):
         if choices:
             self.fields['server_selection'].choices = choices
 
-class RadarrInstanceForm(forms.ModelForm):
+class ArrInstanceFormMixin:
+    """Shared presentation and safety rules for Arr instance forms."""
+
+    def configure_common_fields(self, product):
+        self.fields['apikey'].required = not bool(self.instance and self.instance.pk)
+        self.fields['apikey'].help_text = 'Leave blank to keep the saved API key.'
+        # Both product forms are rendered in the DOM together. Keep POST names
+        # unchanged while ensuring every label targets its own product's input.
+        for name, field in self.fields.items():
+            field.widget.attrs['id'] = f'id_{product}_{name}'
+        for name, label in ROLE_LABELS.items():
+            self.fields[name].label = label
+            self.fields[name].help_text = ROLE_HELP_TEXT[name]
+
+    def validate_queue_import(self, cleaned):
+        if cleaned.get('enable_queue_import'):
+            if not queue_import_value_is_valid(cleaned.get('quality_profile')):
+                self.add_error('quality_profile', 'Required when queue import is enabled.')
+            if not queue_import_value_is_valid(cleaned.get('root_folder')):
+                self.add_error('root_folder', 'Required when queue import is enabled.')
+        return cleaned
+
+
+class RadarrInstanceForm(ArrInstanceFormMixin, forms.ModelForm):
     class Meta:
         model = RadarrInstance
-        fields = ['name', 'url', 'apikey', 'enable_queue_import', 'quality_profile', 'root_folder']
+        fields = ['name', 'url', 'apikey', 'is_library_source', 'is_ondemand_target', 'enable_queue_import', 'quality_profile', 'root_folder']
         widgets = {
             'name': forms.TextInput(attrs={'placeholder': 'Instance Name', 'class': 'form-control'}),
             'url': forms.TextInput(attrs={'placeholder': 'Radarr URL', 'class': 'form-control'}),
             'apikey': forms.PasswordInput(render_value=False, attrs={'placeholder': 'Leave blank to keep saved API key', 'class': 'form-control'}),
             'quality_profile': forms.Select(attrs={'class': 'form-control'}),
             'root_folder': forms.Select(attrs={'class': 'form-control'}),
+            'is_library_source': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'is_ondemand_target': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'enable_queue_import': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
     
     def __init__(self, *args, **kwargs):
         super(RadarrInstanceForm, self).__init__(*args, **kwargs)
-        self.fields['apikey'].required = not bool(self.instance and self.instance.pk)
-        self.fields['apikey'].help_text = 'Leave blank to keep the saved API key.'
+        self.configure_common_fields('radarr')
         
         self.fields['quality_profile'].choices = [('0', 'Select Quality Profile')]
         self.fields['root_folder'].choices = [('0', 'Select Root Folder')]
@@ -142,14 +167,9 @@ class RadarrInstanceForm(forms.ModelForm):
 
     def clean(self):
         cleaned = super().clean()
-        if cleaned.get('enable_queue_import'):
-            if not cleaned.get('quality_profile') or cleaned.get('quality_profile') == '0':
-                self.add_error('quality_profile', 'Required when queue import is enabled.')
-            if not cleaned.get('root_folder') or cleaned.get('root_folder') == '0':
-                self.add_error('root_folder', 'Required when queue import is enabled.')
-        return cleaned
+        return self.validate_queue_import(cleaned)
 
-class SonarrInstanceForm(forms.ModelForm):
+class SonarrInstanceForm(ArrInstanceFormMixin, forms.ModelForm):
     class Meta:
         model = SonarrInstance
         fields = ['name', 'url', 'apikey', 'is_library_source', 'is_ondemand_target', 'enable_queue_import', 'quality_profile', 'root_folder']
@@ -166,8 +186,7 @@ class SonarrInstanceForm(forms.ModelForm):
     
     def __init__(self, *args, **kwargs):
         super(SonarrInstanceForm, self).__init__(*args, **kwargs)
-        self.fields['apikey'].required = not bool(self.instance and self.instance.pk)
-        self.fields['apikey'].help_text = 'Leave blank to keep the saved API key.'
+        self.configure_common_fields('sonarr')
         
         self.fields['quality_profile'].choices = [('0', 'Select Quality Profile')]
         self.fields['root_folder'].choices = [('0', 'Select Root Folder')]
@@ -191,12 +210,7 @@ class SonarrInstanceForm(forms.ModelForm):
 
     def clean(self):
         cleaned = super().clean()
-        if cleaned.get('enable_queue_import'):
-            if not cleaned.get('quality_profile') or cleaned.get('quality_profile') == '0':
-                self.add_error('quality_profile', 'Required when queue import is enabled.')
-            if not cleaned.get('root_folder') or cleaned.get('root_folder') == '0':
-                self.add_error('root_folder', 'Required when queue import is enabled.')
-        return cleaned
+        return self.validate_queue_import(cleaned)
 
 
 SETUP_LOCK_PATH = os.environ.get('MDBLISTARR_SETUP_LOCK_PATH', '/usr/src/db/.initial-setup.lock')

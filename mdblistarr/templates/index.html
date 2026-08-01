@@ -169,12 +169,12 @@
                             </div>
                         </div>
 
-                        <div class="fieldWrapper mb-3 form-check">{{ radarr_form.enable_queue_import }} {{ radarr_form.enable_queue_import.label_tag }}<div class="form-text">Queue import capability: explicit opt-in and requires quality profile/root folder.</div></div>
+                        {% include "includes/arr_instance_purpose.html" with instance_form=radarr_form %}
 
                         <!-- Quality Profile field -->
                         <div class="fieldWrapper mb-3">
                             {{ radarr_form.quality_profile.label_tag }}
-                            <select name="quality_profile" id="id_quality_profile" class="form-control">
+                            <select name="quality_profile" id="id_radarr_quality_profile" class="form-control">
                                 {% for value, text in radarr_form.fields.quality_profile.choices %}
                                     <option value="{{ value }}" {% if value == radarr_form.instance.quality_profile %}selected="selected"{% endif %}>
                                         {{ text }}
@@ -189,7 +189,7 @@
                         <!-- Root Folder field -->
                         <div class="fieldWrapper mb-3">
                             {{ radarr_form.root_folder.label_tag }}
-                            <select name="root_folder" id="id_root_folder" class="form-control">
+                            <select name="root_folder" id="id_radarr_root_folder" class="form-control">
                                 {% for value, text in radarr_form.fields.root_folder.choices %}
                                     <option value="{{ value }}" {% if value == radarr_form.instance.root_folder %}selected="selected"{% endif %}>
                                         {{ text }}
@@ -284,14 +284,12 @@
                         </div>
 
                         <div class="alert alert-warning">For On Demand import lists, configure Sonarr to add series with monitoring set to None and disable automatic Search Missing. MDBListarr will reconcile episode monitoring afterwards.</div>
-                        <div class="fieldWrapper mb-3 form-check">{{ sonarr_form.is_library_source }} {{ sonarr_form.is_library_source.label_tag }}<div class="form-text">Permanent library source: read-only for library state and comparison.</div></div>
-                        <div class="fieldWrapper mb-3 form-check">{{ sonarr_form.is_ondemand_target }} {{ sonarr_form.is_ondemand_target.label_tag }}<div class="form-text">On Demand target: only episode monitoring may be changed by reconciliation.</div></div>
-                        <div class="fieldWrapper mb-3 form-check">{{ sonarr_form.enable_queue_import }} {{ sonarr_form.enable_queue_import.label_tag }}<div class="form-text">Queue import capability: explicit opt-in and requires quality profile/root folder.</div></div>
+                        {% include "includes/arr_instance_purpose.html" with instance_form=sonarr_form %}
 
                         <!-- Quality Profile field -->
                         <div class="fieldWrapper mb-3">
                             {{ sonarr_form.quality_profile.label_tag }}
-                            <select name="quality_profile" id="id_quality_profile" class="form-control">
+                            <select name="quality_profile" id="id_sonarr_quality_profile" class="form-control">
                                 {% for value, text in sonarr_form.fields.quality_profile.choices %}
                                     <option value="{{ value }}" {% if value == sonarr_form.instance.quality_profile %}selected="selected"{% endif %}>
                                         {{ text }}
@@ -306,7 +304,7 @@
                         <!-- Root Folder field -->
                         <div class="fieldWrapper mb-3">
                             {{ sonarr_form.root_folder.label_tag }}
-                            <select name="root_folder" id="id_root_folder" class="form-control">
+                            <select name="root_folder" id="id_sonarr_root_folder" class="form-control">
                                 {% for value, text in sonarr_form.fields.root_folder.choices %}
                                     <option value="{{ value }}" {% if value == sonarr_form.instance.root_folder %}selected="selected"{% endif %}>
                                         {{ text }}
