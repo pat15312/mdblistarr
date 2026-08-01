@@ -50,6 +50,23 @@ Companion app for [mdblist.com](https://mdblist.com) for better Radarr and Sonar
 
 ![image](https://github.com/user-attachments/assets/cdd58b1a-4b55-464d-84dd-55246ba6a096)
 
+## Sonarr/Radarr parity foundation
+
+| Capability | Sonarr | Radarr after PR 11 |
+| --- | --- | --- |
+| Permanent library source role | Implemented | Implemented |
+| On-Demand target role | Implemented | Implemented |
+| Optional profile/root for non-import use | Implemented | Implemented |
+| Role-aware permanent-library sync | Implemented | Implemented |
+| Monitoring reconciliation | Implemented | Planned for PR 12 |
+| Persistent search lifecycle | Implemented | Planned |
+| Safe duplicate cleanup | Implemented | Planned |
+| Per-item cleanup summaries | Implemented | Planned |
+
+Instance roles describe purpose; they do not authorize writes. MDBList queue import remains a separate global and per-instance opt-in and requires a valid quality profile and root folder. Existing Radarr instances migrate as permanent library sources (`source=True`, `target=False`), while target-only Radarr instances are excluded from permanent-library MDBList sync.
+
+This foundation does not add Radarr reconciliation, automatic searching, or cleanup. Future Radarr UI and behaviour should mirror Sonarr wherever the concepts are equivalent, while media-domain differences remain explicit.
+
 ## MDBListarr
 
 ```sh

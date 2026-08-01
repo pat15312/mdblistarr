@@ -14,6 +14,7 @@ from .sonarr_reconcile import determine_series_completeness, calculate_episode_m
 from .sonarr_cleanup import process_cleanup_for_series
 from .sonarr_search import (update_search_candidates_for_series, submit_pending_search_candidates,
     reconcile_search_commands_for_series, poll_episode_search_commands)
+from .instance_config import queue_import_requirements_are_valid
 import fcntl, os
 
 MAX_CLEANUP_SERIES_SUMMARIES = 100
@@ -82,7 +83,7 @@ def get_sync_instance_scope():
     return pref.value if pref and pref.value == 'all' else 'first'
 
 def get_radarr_sync_instances():
-    instances = RadarrInstance.objects.order_by('id')
+    instances = RadarrInstance.objects.filter(is_library_source=True).order_by('id')
     if get_sync_instance_scope() == 'all':
         return list(instances)
     first_instance = instances.first()
@@ -142,8 +143,8 @@ def post_radarr_payload(force=False):
             return {"response": "Missing API key"}
         radarr_instances = get_radarr_sync_instances()
         if not radarr_instances:
-            save_log(provider, 2, "No Radarr instances configured")
-            return {"response": "No Radarr instances configured"}
+            save_log(provider, 2, "No permanent-library-source Radarr instance configured; library sync skipped")
+            return {"response": "No Radarr source instances configured"}
         records_by_tmdb = {}
 
         for instance in radarr_instances:
@@ -515,8 +516,12 @@ def get_mdblist_queue_to_arr():
             if mediatype == 'movie':
                 provider = 1
                 instance_id = item.get('instanceid')
-                if not RadarrInstance.objects.filter(id=instance_id, enable_queue_import=True).exists():
+                instance = RadarrInstance.objects.filter(id=instance_id, enable_queue_import=True).first()
+                if instance is None:
                     save_log(provider, 2, f"Skipping Radarr queue item because instance is not queue-import enabled: {item.get('title')}")
+                    continue
+                if not queue_import_requirements_are_valid(instance.quality_profile, instance.root_folder):
+                    save_log(provider, 2, f"Skipping Radarr queue item because queue-import profile/root configuration is invalid: {item.get('title')}")
                     continue
                 movie_request_json = {
                     "title": item['title'],
