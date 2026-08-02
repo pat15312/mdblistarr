@@ -348,3 +348,45 @@ class SonarrEpisodeSearchCommandCandidate(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=['command', 'candidate'], name='uniq_sonarr_search_command_candidate')]
+
+
+class RadarrMovieSearchCandidate(models.Model):
+    STATUS_PENDING = 'pending'; STATUS_SUBMITTED = 'submitted'; STATUS_CANCELLED = 'cancelled'; STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [(value, value.title()) for value in (STATUS_PENDING, STATUS_SUBMITTED, STATUS_CANCELLED, STATUS_FAILED)]
+    target_instance = models.ForeignKey(RadarrInstance, on_delete=models.CASCADE, related_name='movie_search_candidates')
+    target_movie_id = models.PositiveIntegerField()
+    tmdb_id = models.PositiveIntegerField()
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    first_eligible_at = models.DateTimeField(); last_confirmed_at = models.DateTimeField()
+    submitted_at = models.DateTimeField(null=True, blank=True); cancelled_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default='')
+    current_command = models.ForeignKey('RadarrMovieSearchCommand', null=True, blank=True, on_delete=models.SET_NULL, related_name='current_candidates')
+    attempt_count = models.PositiveSmallIntegerField(default=0, help_text='Total accepted submission attempts, including the initial attempt.')
+    retry_not_before = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True); updated_at = models.DateTimeField(auto_now=True)
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['target_instance', 'target_movie_id'], name='uniq_radarr_search_target_movie')]
+
+
+class RadarrMovieSearchCommand(models.Model):
+    STATUS_SUBMITTING='submitting'; STATUS_QUEUED='queued'; STATUS_STARTED='started'; STATUS_COMPLETED='completed'; STATUS_FAILED='failed'; STATUS_ABORTED='aborted'; STATUS_CANCELLED='cancelled'; STATUS_ORPHANED='orphaned'; STATUS_AMBIGUOUS='ambiguous'; STATUS_UNAVAILABLE='unavailable'; STATUS_SUPERSEDED='superseded'
+    STATUS_CHOICES = [(value, value.title()) for value in (STATUS_SUBMITTING, STATUS_QUEUED, STATUS_STARTED, STATUS_COMPLETED, STATUS_FAILED, STATUS_ABORTED, STATUS_CANCELLED, STATUS_ORPHANED, STATUS_AMBIGUOUS, STATUS_UNAVAILABLE, STATUS_SUPERSEDED)]
+    target_instance = models.ForeignKey(RadarrInstance, on_delete=models.CASCADE, related_name='movie_search_commands')
+    radarr_command_id = models.PositiveIntegerField(null=True, blank=True)
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default=STATUS_SUBMITTING)
+    radarr_status = models.CharField(max_length=32, blank=True, default=''); radarr_result = models.CharField(max_length=32, blank=True, default='')
+    submission_attempted_at = models.DateTimeField(); queued_at = models.DateTimeField(null=True, blank=True); started_at = models.DateTimeField(null=True, blank=True); ended_at = models.DateTimeField(null=True, blank=True); terminal_at = models.DateTimeField(null=True, blank=True); outcome_reconciled_at = models.DateTimeField(null=True, blank=True); last_checked_at = models.DateTimeField(null=True, blank=True); last_fallback_checked_at = models.DateTimeField(null=True, blank=True); unavailable_since = models.DateTimeField(null=True, blank=True)
+    retry_of = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='retries')
+    attempt_number = models.PositiveSmallIntegerField(default=1); failure_reason = models.CharField(max_length=255, blank=True, default='')
+    candidates = models.ManyToManyField(RadarrMovieSearchCandidate, through='RadarrMovieSearchCommandCandidate', related_name='search_commands')
+    created_at = models.DateTimeField(auto_now_add=True); updated_at = models.DateTimeField(auto_now=True)
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['target_instance', 'radarr_command_id'], condition=models.Q(radarr_command_id__isnull=False), name='uniq_radarr_search_command_per_target')]
+
+
+class RadarrMovieSearchCommandCandidate(models.Model):
+    command = models.ForeignKey(RadarrMovieSearchCommand, on_delete=models.CASCADE, related_name='candidate_links')
+    candidate = models.ForeignKey(RadarrMovieSearchCandidate, on_delete=models.CASCADE, related_name='command_links')
+    target_movie_id = models.PositiveIntegerField(); created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['command', 'candidate'], name='uniq_radarr_search_command_candidate')]

@@ -6,7 +6,8 @@ import time
 import json
 import random
 import traceback
-from .models import Log, InstanceChangeLog, RadarrInstance, SonarrInstance, Preferences, SonarrEpisodeSearchCommand
+from .models import (Log, InstanceChangeLog, RadarrInstance, SonarrInstance, Preferences,
+    SonarrEpisodeSearchCommand, RadarrMovieSearchCommand)
 from .services import get_mdblistarr, reset_mdblistarr
 from .arr import SonarrAPI
 from .arr import RadarrAPI
@@ -15,6 +16,9 @@ from .radarr_reconcile import calculate_movie_monitoring, validate_movie_respons
 from .sonarr_cleanup import process_cleanup_for_series
 from .sonarr_search import (update_search_candidates_for_series, submit_pending_search_candidates,
     reconcile_search_commands_for_series, poll_episode_search_commands)
+from .radarr_search import (update_movie_search_candidates,
+    submit_pending_search_candidates as submit_pending_movie_search_candidates,
+    reconcile_movie_search_commands, poll_movie_search_commands)
 from .instance_config import queue_import_requirements_are_valid
 import fcntl, os
 from dataclasses import asdict
@@ -981,6 +985,7 @@ RADARR_RECONCILE_LOCK_PATH = os.environ.get(
 
 
 def _apply_radarr_monitor_batches(target_api, ids, monitored, result, batch_size=100):
+    applied = []
     for offset in range(0, len(ids), batch_size):
         batch = ids[offset:offset + batch_size]
         response = target_api.put_movie_monitor(batch, monitored)
@@ -989,8 +994,11 @@ def _apply_radarr_monitor_batches(target_api, ids, monitored, result, batch_size
             result.failures += 1
         elif monitored:
             result.movies_newly_monitored += len(batch)
+            applied.extend(batch)
         else:
             result.movies_newly_unmonitored += len(batch)
+            applied.extend(batch)
+    return applied
 
 
 def _radarr_summary(result):
@@ -1050,13 +1058,53 @@ def reconcile_radarr_ondemand(force=False):
             save_log(provider, 2, f'Radarr reconciliation failed: On Demand target response invalid ({sanitize_text(reason)})')
             return {'result': 502, 'message': reason}
         result = calculate_movie_monitoring(source_movies, target_movies)
-        _apply_radarr_monitor_batches(target_api, result.monitor_true_ids, True, result)
+        applied_true = _apply_radarr_monitor_batches(target_api, result.monitor_true_ids, True, result)
         _apply_radarr_monitor_batches(target_api, result.monitor_false_ids, False, result)
-        save_log(provider, 2 if result.failures else 1, _radarr_summary(result))
+        eligible_ids = {movie['id'] for movie in target_movies if movie['id'] not in result.monitor_false_ids and
+            not movie['hasFile'] and movie['isAvailable'] and
+            not next((source_movie['hasFile'] for source_movie in source_movies if source_movie['tmdbId'] == movie['tmdbId']), False)}
+        confirmed = {movie['id'] for movie in target_movies if movie.get('monitored') is True and movie['id'] in eligible_ids} | set(applied_true)
+        submission_blocked_movie_ids = set()
+        search_counters, search_events, search_failed = update_movie_search_candidates(
+            target_instance=target, target_movies=target_movies, eligible_movie_ids=eligible_ids,
+            confirmed_monitored_ids=confirmed, newly_monitored_ids=applied_true,
+            submission_blocked_movie_ids=submission_blocked_movie_ids)
+        active = RadarrMovieSearchCommand.objects.filter(target_instance=target).exclude(
+            status__in=('completed','superseded')).exclude(
+            status__in=('failed','aborted','cancelled','orphaned'), outcome_reconciled_at__isnull=False).exists()
+        command_map, poll_failed = ({}, False)
+        if active:
+            command_map, poll_failed, _ = poll_movie_search_commands(target_api, target)
+        command_counters, command_events, command_failed = reconcile_movie_search_commands(
+            target_instance=target, command_map=command_map, poll_failed=poll_failed,
+            target_movies=target_movies, eligible_movie_ids=eligible_ids,
+            max_retries=max(0,min(10,int(Preferences.get_value('radarr_search_max_retries','3') or 3))),
+            retry_delay_minutes=max(0,min(10080,int(Preferences.get_value('radarr_search_retry_delay_minutes','30') or 30))),
+            missing_grace_hours=max(1,min(720,int(Preferences.get_value('radarr_search_missing_command_grace_hours','24') or 24))))
+        submission = {'submitted':0,'initial_submitted':0,'retry_submitted':0,'failures':0}
+        submission_events = []
+        if Preferences.get_value('radarr_search_newly_eligible','0') == '1':
+            submission, submission_events, submission_failed = submit_pending_movie_search_candidates(
+                target_api=target_api, target_instance=target,
+                submission_blocked_movie_ids=submission_blocked_movie_ids)
+            search_failed = search_failed or submission_failed
+        search_counters['search_candidates_submitted'] += submission['submitted']
+        search_counters['search_failures'] += submission['failures']
+        result.failures += int(bool(search_failed or command_failed))
+        all_counters = {**asdict(result), **search_counters, **command_counters,
+            'initial_searches_triggered': submission['initial_submitted'],
+            'search_retries_submitted': submission['retry_submitted']}
+        summary_counters = {**search_counters, **command_counters,
+            'initial_searches_triggered': submission['initial_submitted'],
+            'search_retries_submitted': submission['retry_submitted']}
+        summary = _radarr_summary(result) + ' ' + ' '.join(f'{key}={value}' for key,value in summary_counters.items())
+        for event in search_events + command_events + submission_events:
+            save_log(provider, 2 if 'failure' in event or 'ambiguous' in event else 1, event)
+        save_log(provider, 2 if result.failures else 1, summary)
         return {
             'result': 207 if result.failures else 200,
-            'message': _radarr_summary(result),
-            'counters': asdict(result),
+            'message': summary,
+            'counters': all_counters,
         }
 
 

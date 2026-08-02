@@ -40,6 +40,7 @@ class RadarrMonitorApiTests(SimpleTestCase):
         self.assertEqual(args[0],'http://radarr/api/v3/movie/editor'); self.assertEqual(kwargs['json'],{'movieIds':[3,1],'monitored':False})
 
 import fcntl, json, os, tempfile
+from datetime import timedelta
 os.environ.setdefault('MDBLISTARR_ENCRYPTION_KEY', 'MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=')
 from unittest.mock import patch, call
 from django.test import TestCase, Client
@@ -48,7 +49,8 @@ from django.urls import reverse
 from django.utils import timezone
 from .cron import reconcile_radarr_ondemand, reconcile_radarr_ondemand_task
 from .forms import RadarrReconciliationForm
-from .models import Preferences, RadarrInstance
+from .models import (Preferences, RadarrInstance, RadarrMovieSearchCandidate,
+    RadarrMovieSearchCommand, RadarrMovieSearchCommandCandidate)
 
 class RadarrOrchestrationTests(TestCase):
     def setUp(self):
@@ -97,6 +99,81 @@ class RadarrOrchestrationTests(TestCase):
     def test_partial_failure_207_counters_and_json(self):
         a,b=self.apis([],[movie(i,10000+i) for i in range(1,102)]); b.put_movie_monitor.side_effect=[{'error':'bad'},{}]; result=self.invoke(a,b)
         self.assertEqual(result['result'],207); self.assertEqual(result['counters']['movies_newly_monitored'],1); self.assertEqual(result['counters']['monitor_update_failures'],100); self.assertEqual(result['counters']['failures'],1); json.dumps(result)
+        self.assertEqual(RadarrMovieSearchCandidate.objects.count(), 1)
+
+    def test_production_like_candidates_then_one_controlled_search(self):
+        targets=[{**movie(i,10000+i,monitored=True),'lastSearchTime':None} for i in range(1,48)]
+        targets += [{**movie(i,10000+i,available=False),'lastSearchTime':None} for i in range(48,51)]
+        source,target_api=self.apis([],targets)
+        first=self.invoke(source,target_api)
+        self.assertEqual(first['result'],200); self.assertEqual(RadarrMovieSearchCandidate.objects.filter(status='pending').count(),47)
+        target_api.trigger_movies_search.assert_not_called()
+        Preferences.set_value('radarr_search_newly_eligible','1')
+        source,target_api=self.apis([],targets)
+        target_api.trigger_movies_search.return_value={'status_code':201,'id':77,'name':'MoviesSearch','body':{'name':'MoviesSearch','movieIds':list(range(1,48))},'status':'queued','result':'unknown'}
+        second=self.invoke(source,target_api)
+        target_api.trigger_movies_search.assert_called_once_with(list(range(1,48)))
+        self.assertEqual(second['counters']['search_candidates_submitted'],47)
+        self.assertEqual(second['counters']['initial_searches_triggered'],47)
+        self.assertEqual(RadarrMovieSearchCommandCandidate.objects.count(),47)
+        source,target_api=self.apis([],targets)
+        target_api.get_commands.return_value=[{'id':77,'name':'MoviesSearch','body':{'name':'MoviesSearch','movieIds':list(range(1,48))},'status':'queued','result':'unknown','queued':timezone.now().isoformat()}]
+        third=self.invoke(source,target_api)
+        target_api.trigger_movies_search.assert_not_called(); json.dumps(third)
+
+    def test_malformed_last_search_blocks_only_that_movie_submission(self):
+        Preferences.set_value('radarr_search_newly_eligible','1')
+        malformed=RadarrMovieSearchCandidate.objects.create(target_instance=self.target,target_movie_id=1,tmdb_id=10001,first_eligible_at=timezone.now(),last_confirmed_at=timezone.now(),retry_not_before=timezone.now())
+        safe=RadarrMovieSearchCandidate.objects.create(target_instance=self.target,target_movie_id=2,tmdb_id=10002,first_eligible_at=timezone.now(),last_confirmed_at=timezone.now())
+        targets=[{**movie(1,10001,monitored=True),'lastSearchTime':'malformed'}, {**movie(2,10002,monitored=True),'lastSearchTime':None}]
+        source,target_api=self.apis([],targets)
+        target_api.trigger_movies_search.return_value={'status_code':201,'id':88,'name':'MoviesSearch','body':{'name':'MoviesSearch','movieIds':[2]},'status':'queued','result':'unknown'}
+        result=self.invoke(source,target_api)
+        self.assertEqual(result['result'],207); self.assertEqual(result['counters']['search_candidates_deferred'],1); self.assertEqual(result['counters']['search_failures'],1)
+        target_api.trigger_movies_search.assert_called_once_with([2])
+        malformed.refresh_from_db(); safe.refresh_from_db()
+        self.assertEqual(malformed.status,'pending'); self.assertIsNone(malformed.current_command_id); self.assertIsNotNone(malformed.retry_not_before)
+        self.assertEqual(safe.status,'submitted')
+
+    def test_monitor_failure_preserves_existing_pending_candidate(self):
+        Preferences.set_value('radarr_search_newly_eligible','1'); now=timezone.now()
+        candidate=RadarrMovieSearchCandidate.objects.create(target_instance=self.target,target_movie_id=1,tmdb_id=10001,first_eligible_at=now,last_confirmed_at=now,retry_not_before=now)
+        source,target_api=self.apis([],[{**movie(1,10001,monitored=False),'lastSearchTime':None}]); target_api.put_movie_monitor.return_value={'error':'failed'}
+        result=self.invoke(source,target_api); candidate.refresh_from_db()
+        self.assertEqual(result['result'],207); self.assertEqual(candidate.status,'pending'); self.assertIsNone(candidate.current_command_id); self.assertEqual(candidate.attempt_count,0); self.assertEqual(candidate.retry_not_before,now); target_api.trigger_movies_search.assert_not_called()
+
+    def test_monitor_failure_preserves_due_retry_lineage(self):
+        Preferences.set_value('radarr_search_newly_eligible','1'); now=timezone.now()
+        predecessor=RadarrMovieSearchCommand.objects.create(target_instance=self.target,radarr_command_id=70,status='failed',submission_attempted_at=now,outcome_reconciled_at=now,attempt_number=1)
+        candidate=RadarrMovieSearchCandidate.objects.create(target_instance=self.target,target_movie_id=1,tmdb_id=10001,status='pending',first_eligible_at=now,last_confirmed_at=now,current_command=predecessor,attempt_count=1,retry_not_before=now)
+        source,target_api=self.apis([],[{**movie(1,10001,monitored=False),'lastSearchTime':None}]); target_api.put_movie_monitor.return_value={'error':'failed'}
+        self.invoke(source,target_api); candidate.refresh_from_db(); predecessor.refresh_from_db()
+        self.assertEqual(candidate.current_command_id,predecessor.id); self.assertEqual(candidate.attempt_count,1); self.assertEqual(candidate.retry_not_before,now); self.assertIsNotNone(predecessor.outcome_reconciled_at); target_api.trigger_movies_search.assert_not_called()
+
+    def test_successful_remonitor_submits_retry_without_resetting_lineage(self):
+        Preferences.set_value('radarr_search_newly_eligible','1'); now=timezone.now()
+        predecessor=RadarrMovieSearchCommand.objects.create(target_instance=self.target,radarr_command_id=71,status='failed',submission_attempted_at=now,outcome_reconciled_at=now,attempt_number=1)
+        candidate=RadarrMovieSearchCandidate.objects.create(target_instance=self.target,target_movie_id=1,tmdb_id=10001,status='pending',first_eligible_at=now,last_confirmed_at=now,current_command=predecessor,attempt_count=1,retry_not_before=now)
+        source,target_api=self.apis([],[{**movie(1,10001,monitored=False),'lastSearchTime':None}]); target_api.trigger_movies_search.return_value={'status_code':201,'id':72,'name':'MoviesSearch','body':{'name':'MoviesSearch','movieIds':[1]},'status':'queued','result':'unknown'}
+        result=self.invoke(source,target_api); candidate.refresh_from_db(); command=RadarrMovieSearchCommand.objects.get(radarr_command_id=72)
+        self.assertEqual(command.retry_of_id,predecessor.id); self.assertEqual(command.attempt_number,2); self.assertEqual(candidate.attempt_count,2); self.assertEqual(result['counters']['search_retries_submitted'],1); self.assertEqual(result['counters']['initial_searches_triggered'],0)
+
+    def test_successful_remonitor_preserves_inflight_and_ambiguous_commands(self):
+        Preferences.set_value('radarr_search_newly_eligible','1'); now=timezone.now()
+        for index,status in enumerate(('queued','ambiguous'),1):
+            RadarrMovieSearchCandidate.objects.all().delete(); RadarrMovieSearchCommand.objects.all().delete()
+            command=RadarrMovieSearchCommand.objects.create(target_instance=self.target,radarr_command_id=80 if status=='queued' else None,status=status,submission_attempted_at=now,attempt_number=1)
+            candidate=RadarrMovieSearchCandidate.objects.create(target_instance=self.target,target_movie_id=index,tmdb_id=10000+index,status='submitted',first_eligible_at=now,last_confirmed_at=now,current_command=command,attempt_count=1)
+            RadarrMovieSearchCommandCandidate.objects.create(command=command,candidate=candidate,target_movie_id=index)
+            source,target_api=self.apis([],[{**movie(index,10000+index,monitored=False),'lastSearchTime':None}])
+            target_api.get_commands.return_value=[{'id':80,'name':'MoviesSearch','body':{'name':'MoviesSearch','movieIds':[index]},'status':'queued','result':'unknown','queued':now.isoformat()}] if status=='queued' else []
+            self.invoke(source,target_api); candidate.refresh_from_db()
+            self.assertEqual(candidate.current_command_id,command.id); self.assertEqual(candidate.status,'submitted'); self.assertEqual(candidate.attempt_count,1); target_api.trigger_movies_search.assert_not_called()
+
+    def test_successful_remonitor_reactivates_genuine_cancelled_cycle(self):
+        now=timezone.now(); candidate=RadarrMovieSearchCandidate.objects.create(target_instance=self.target,target_movie_id=1,tmdb_id=10001,status='cancelled',first_eligible_at=now-timedelta(days=1),last_confirmed_at=now,cancelled_at=now)
+        source,target_api=self.apis([],[{**movie(1,10001,monitored=False),'lastSearchTime':None}]); self.invoke(source,target_api); candidate.refresh_from_db()
+        self.assertEqual(candidate.status,'pending'); self.assertIsNone(candidate.cancelled_at); self.assertEqual(candidate.attempt_count,0)
     def test_success_and_immediate_task_results_are_json_serializable(self):
         a,b=self.apis([],[movie(1,10)]); result=self.invoke(a,b); self.assertEqual(json.loads(json.dumps(result)),result)
         a,b=self.apis([],[movie(1,10)])
@@ -125,7 +202,9 @@ class RadarrFormUiManualTests(TestCase):
         service.return_value.get_radarr_quality_profile_choices.return_value=[]; service.return_value.get_radarr_root_folder_choices.return_value=[]
         Preferences.set_value('radarr_reconciliation_source_id',str(self.source.id)); Preferences.set_value('radarr_reconciliation_target_id',str(self.target.id)); self.client.force_login(self.staff); html=self.client.get('/').content.decode()
         self.assertIn('Run Radarr reconciliation now',html); self.assertIn(f'<option value="{self.source.id}" selected>Source</option>',html); self.assertIn(f'<option value="{self.target.id}" selected>Target</option>',html)
-        for absent in ('Search newly eligible missing movies','Radarr cleanup','force-delete','source-key','target-key'): self.assertNotIn(absent,html)
+        self.assertIn('Search newly eligible missing movies', html)
+        self.assertIn('MoviesSearch commands:', html)
+        for absent in ('Radarr cleanup','force-delete','source-key','target-key'): self.assertNotIn(absent,html)
         ids=[x.split('"',1)[0] for x in html.split(' id="')[1:]]; self.assertEqual(len(ids),len(set(ids)))
     def test_manual_methods_permissions_force_disabled_and_csrf(self):
         rec,sync=reverse('run_radarr_reconciliation_now'),reverse('run_radarr_library_sync_now'); self.client.force_login(self.user); self.assertEqual(self.client.post(rec, content_type='application/json').status_code,403); self.assertEqual(self.client.post(sync, content_type='application/json').status_code,403)

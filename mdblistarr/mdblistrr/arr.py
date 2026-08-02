@@ -354,6 +354,41 @@ class RadarrAPI():
             headers=_api_headers(self.apikey),
         )
 
+    def trigger_movies_search(self, movie_ids):
+        """Submit one non-retrying MoviesSearch for exact Radarr movie IDs."""
+        try:
+            ids = list(movie_ids)
+        except (TypeError, ValueError):
+            return {'error': 'movieIds must be an iterable of positive integers'}
+        if not ids or len(ids) > 100:
+            return {'error': 'movieIds must contain between 1 and 100 items'}
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in ids):
+            return {'error': 'movieIds must be positive integers'}
+        if len(ids) != len(set(ids)):
+            return {'error': 'movieIds must be unique'}
+        try:
+            return self.connect.post_json_once(
+                f"{self.url}/api/v3/command",
+                json={"name": "MoviesSearch", "movieIds": ids},
+                headers=_api_headers(self.apikey),
+            )
+        except Exception:
+            return {'errorMessage': sanitize_text(traceback.format_exc())}
+
+    def get_commands(self):
+        try:
+            return self.connect.get_json(f"{self.url}/api/v3/command", headers=_api_headers(self.apikey))
+        except Exception:
+            return {'errorMessage': sanitize_text(traceback.format_exc())}
+
+    def get_command(self, command_id):
+        if isinstance(command_id, bool) or not isinstance(command_id, int) or command_id <= 0:
+            return {'error': 'command id must be a positive integer'}
+        try:
+            return self.connect.get_json_with_status(f"{self.url}/api/v3/command/{command_id}", headers=_api_headers(self.apikey))
+        except Exception:
+            return {'errorMessage': sanitize_text(traceback.format_exc())}
+
 class MdblistAPI():
     def __init__(self, apikey=None, access_token=None, refresh_token=None, token_expires_at=None, client_id=None):
         self.connect = Connect()

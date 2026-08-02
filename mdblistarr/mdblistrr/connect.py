@@ -116,6 +116,40 @@ class Connect:
         except RequestException as e:
             return {"error": "request_failed", "exception": sanitize_text(e), "url": self._redact_url(url)}
 
+    def get_json_with_status(self, url, json=None, headers=None, params=None, cookies=None):
+        """Decode one GET while retaining HTTP status for command-history fallbacks."""
+        try:
+            response = self.get(url, json=json, headers=headers, params=params, cookies=cookies)
+            text = response.text or ""
+            if not text.strip():
+                return {
+                    "error": "empty_response",
+                    "status_code": response.status_code,
+                    "url": self._redact_url(url),
+                }
+            try:
+                data = response.json()
+            except (JSONDecodeError, ValueError):
+                return {
+                    "error": "invalid_json_response",
+                    "status_code": response.status_code,
+                    "content_type": response.headers.get("content-type"),
+                    "url": self._redact_url(url),
+                    "raw_response": sanitize_text(text[:500]),
+                }
+            if not isinstance(data, dict):
+                return {
+                    "error": "invalid_json_response",
+                    "status_code": response.status_code,
+                    "url": self._redact_url(url),
+                }
+            data["status_code"] = response.status_code
+            return data
+        except ConnectionError as e:
+            return {"error": "connection_failed", "exception": sanitize_text(e), "url": self._redact_url(url)}
+        except RequestException as e:
+            return {"error": "request_failed", "exception": sanitize_text(e), "url": self._redact_url(url)}
+
     @retry(stop=stop_after_attempt(6), wait=wait_fixed(10))
     def get(self, url, json=None, headers=None, params=None, cookies=None):
         if headers is None:

@@ -10,7 +10,11 @@ class RadarrReconciliationForm(forms.Form):
     enabled = forms.BooleanField(label='Enable On Demand reconciliation', required=False)
     source = forms.ModelChoiceField(label='Permanent Radarr source', queryset=RadarrInstance.objects.none(), required=False)
     target = forms.ModelChoiceField(label='Radarr On Demand target', queryset=RadarrInstance.objects.none(), required=False)
+    search_newly_eligible = forms.BooleanField(label='Search newly eligible missing movies', required=False, help_text='Monitoring is always reconciled and eligible unsearched movies remain pending while searching is disabled. Enabling this submits pending movies once; manual or successful searches are not repeated. Command execution failures may be retried using the controls below.')
     interval_minutes = forms.ChoiceField(label='Reconciliation interval', choices=RECONCILIATION_INTERVAL_CHOICES, initial='15')
+    search_max_retries = forms.IntegerField(label='Maximum automatic MoviesSearch retries', min_value=0, max_value=10, initial=3, required=False, help_text='Retries after the initial accepted attempt; 0 disables automatic retries.')
+    search_retry_delay_minutes = forms.IntegerField(label='MoviesSearch retry delay (minutes)', min_value=0, max_value=10080, initial=30, required=False)
+    search_missing_command_grace_hours = forms.IntegerField(label='Missing-command grace period (hours)', min_value=1, max_value=720, initial=24, required=False)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -40,6 +44,10 @@ class RadarrReconciliationForm(forms.Form):
         Preferences.set_value('radarr_reconciliation_source_id', str(data['source'].id) if data.get('source') else '')
         Preferences.set_value('radarr_reconciliation_target_id', str(data['target'].id) if data.get('target') else '')
         Preferences.set_value('radarr_reconciliation_interval_minutes', data.get('interval_minutes') or '15')
+        Preferences.set_value('radarr_search_newly_eligible', '1' if data.get('search_newly_eligible') else '0')
+        Preferences.set_value('radarr_search_max_retries', str(data.get('search_max_retries') if data.get('search_max_retries') is not None else 3))
+        Preferences.set_value('radarr_search_retry_delay_minutes', str(data.get('search_retry_delay_minutes') if data.get('search_retry_delay_minutes') is not None else 30))
+        Preferences.set_value('radarr_search_missing_command_grace_hours', str(data.get('search_missing_command_grace_hours') if data.get('search_missing_command_grace_hours') is not None else 24))
 
 class InitialAdminSetupForm(UserCreationForm):
     class Meta(UserCreationForm.Meta):
