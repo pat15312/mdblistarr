@@ -119,6 +119,20 @@ class RadarrOrchestrationTests(TestCase):
         target_api.get_commands.return_value=[{'id':77,'name':'MoviesSearch','body':{'name':'MoviesSearch','movieIds':list(range(1,48))},'status':'queued','result':'unknown','queued':timezone.now().isoformat()}]
         third=self.invoke(source,target_api)
         target_api.trigger_movies_search.assert_not_called(); json.dumps(third)
+
+    def test_malformed_last_search_blocks_only_that_movie_submission(self):
+        Preferences.set_value('radarr_search_newly_eligible','1')
+        malformed=RadarrMovieSearchCandidate.objects.create(target_instance=self.target,target_movie_id=1,tmdb_id=10001,first_eligible_at=timezone.now(),last_confirmed_at=timezone.now(),retry_not_before=timezone.now())
+        safe=RadarrMovieSearchCandidate.objects.create(target_instance=self.target,target_movie_id=2,tmdb_id=10002,first_eligible_at=timezone.now(),last_confirmed_at=timezone.now())
+        targets=[{**movie(1,10001,monitored=True),'lastSearchTime':'malformed'}, {**movie(2,10002,monitored=True),'lastSearchTime':None}]
+        source,target_api=self.apis([],targets)
+        target_api.trigger_movies_search.return_value={'status_code':201,'id':88,'name':'MoviesSearch','body':{'name':'MoviesSearch','movieIds':[2]},'status':'queued','result':'unknown'}
+        result=self.invoke(source,target_api)
+        self.assertEqual(result['result'],207); self.assertEqual(result['counters']['search_candidates_deferred'],1); self.assertEqual(result['counters']['search_failures'],1)
+        target_api.trigger_movies_search.assert_called_once_with([2])
+        malformed.refresh_from_db(); safe.refresh_from_db()
+        self.assertEqual(malformed.status,'pending'); self.assertIsNone(malformed.current_command_id); self.assertIsNotNone(malformed.retry_not_before)
+        self.assertEqual(safe.status,'submitted')
     def test_success_and_immediate_task_results_are_json_serializable(self):
         a,b=self.apis([],[movie(1,10)]); result=self.invoke(a,b); self.assertEqual(json.loads(json.dumps(result)),result)
         a,b=self.apis([],[movie(1,10)])

@@ -1064,9 +1064,11 @@ def reconcile_radarr_ondemand(force=False):
             not movie['hasFile'] and movie['isAvailable'] and
             not next((source_movie['hasFile'] for source_movie in source_movies if source_movie['tmdbId'] == movie['tmdbId']), False)}
         confirmed = {movie['id'] for movie in target_movies if movie.get('monitored') is True and movie['id'] in eligible_ids} | set(applied_true)
+        submission_blocked_movie_ids = set()
         search_counters, search_events, search_failed = update_movie_search_candidates(
             target_instance=target, target_movies=target_movies, eligible_movie_ids=eligible_ids,
-            confirmed_monitored_ids=confirmed, newly_monitored_ids=applied_true)
+            confirmed_monitored_ids=confirmed, newly_monitored_ids=applied_true,
+            submission_blocked_movie_ids=submission_blocked_movie_ids)
         active = RadarrMovieSearchCommand.objects.filter(target_instance=target).exclude(
             status__in=('completed','superseded')).exclude(
             status__in=('failed','aborted','cancelled','orphaned'), outcome_reconciled_at__isnull=False).exists()
@@ -1083,7 +1085,8 @@ def reconcile_radarr_ondemand(force=False):
         submission_events = []
         if Preferences.get_value('radarr_search_newly_eligible','0') == '1':
             submission, submission_events, submission_failed = submit_pending_movie_search_candidates(
-                target_api=target_api, target_instance=target)
+                target_api=target_api, target_instance=target,
+                submission_blocked_movie_ids=submission_blocked_movie_ids)
             search_failed = search_failed or submission_failed
         search_counters['search_candidates_submitted'] += submission['submitted']
         search_counters['search_failures'] += submission['failures']

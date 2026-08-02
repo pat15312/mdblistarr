@@ -96,14 +96,18 @@ def _movie_search_failure_reason(response):
     return sanitize_text(response)[:120] or 'request_error'
 
 
-def update_movie_search_candidates(*, target_instance, target_movies, eligible_movie_ids, confirmed_monitored_ids, newly_monitored_ids=None, now=None):
+def update_movie_search_candidates(*, target_instance, target_movies, eligible_movie_ids,
+        confirmed_monitored_ids, newly_monitored_ids=None,
+        submission_blocked_movie_ids=None, now=None):
     now=now or timezone.now(); newly=set(newly_monitored_ids or []); eligible=set(eligible_movie_ids)&set(confirmed_monitored_ids)
+    submission_blocked_movie_ids = submission_blocked_movie_ids if submission_blocked_movie_ids is not None else set()
     counters={k:0 for k in ('search_candidates_new','search_candidates_pending','search_candidates_submitted','search_candidates_cancelled','search_candidates_deferred','search_candidates_recovered','search_recovery_failures','search_failures')}; events=[]
     by_id={m['id']:m for m in target_movies}; existing={c.target_movie_id:c for c in RadarrMovieSearchCandidate.objects.filter(target_instance=target_instance)}; seen=set()
     for movie_id in sorted(eligible):
         movie=by_id.get(movie_id); last_search,error=_parse_radarr_datetime(movie.get('lastSearchTime'))
         seen.add(movie_id)
         if error:
+            submission_blocked_movie_ids.add(movie_id)
             cand = existing.get(movie_id)
             if cand is not None:
                 cand.last_confirmed_at = now
@@ -427,14 +431,19 @@ def reconcile_movie_search_commands(*, target_instance, command_map, poll_failed
     return counters, events, unsafe
 
 
-def submit_pending_search_candidates(*, target_api, target_instance, batch_size=100, now=None):
+def submit_pending_search_candidates(*, target_api, target_instance, batch_size=100,
+        submission_blocked_movie_ids=None, now=None):
     now = now or timezone.now()
     counters = {'submitted': 0, 'initial_submitted': 0, 'retry_submitted': 0, 'failures': 0}
     events = []
     had_failure = False
+    blocked = set(submission_blocked_movie_ids or [])
     due = RadarrMovieSearchCandidate.objects.filter(
         target_instance=target_instance, status=SEARCH_STATUS_PENDING,
-    ).filter(models.Q(retry_not_before__isnull=True) | models.Q(retry_not_before__lte=now)).select_related('current_command').order_by('target_movie_id')
+    ).filter(models.Q(retry_not_before__isnull=True) | models.Q(retry_not_before__lte=now))
+    if blocked:
+        due = due.exclude(target_movie_id__in=blocked)
+    due = due.select_related('current_command').order_by('target_movie_id')
     groups = {}
     for candidate in due:
         previous = candidate.current_command
@@ -485,7 +494,7 @@ def submit_pending_search_candidates(*, target_api, target_instance, batch_size=
                 counters['submitted'] += len(batch)
                 if attempt_number == 1: counters['initial_submitted'] += len(batch)
                 else: counters['retry_submitted'] += len(batch)
-                events.append(f"MoviesSearch {'retry ' if attempt_number > 1 else ''}queued command_id={command.radarr_command_id} movies={len(batch)} attempt={attempt_number}")
+                events.append(f"MoviesSearch {'retry ' if attempt_number > 1 else ''}{status} command_id={command.radarr_command_id} movies={len(batch)} attempt={attempt_number}")
             except (ValueError, TypeError) as exc:
                 status_code = response.get('status_code') if isinstance(response, dict) else None
                 definite_rejection = isinstance(status_code, int) and not isinstance(status_code, bool) and not 200 <= status_code < 300
