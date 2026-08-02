@@ -15,4 +15,6 @@ urlpatterns = [
     path('oauth/disconnect', views.oauth_disconnect, name='oauth_disconnect'),
     path('sonarr/reconcile/run', views.run_sonarr_reconciliation_now, name='run_sonarr_reconciliation_now'),
     path('sonarr/library-sync/run', views.run_sonarr_library_sync_now, name='run_sonarr_library_sync_now'),
+    path('radarr/reconcile/run', views.run_radarr_reconciliation_now, name='run_radarr_reconciliation_now'),
+    path('radarr/library-sync/run', views.run_radarr_library_sync_now, name='run_radarr_library_sync_now'),
 ]

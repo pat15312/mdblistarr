@@ -257,7 +257,7 @@ class ArrPurposeTemplateTests(EncryptionKeyMixin, TestCase):
         self.assertNotIn('radarr-secret', html)
         self.assertNotIn('sonarr-secret', html)
         self.assertNotIn('Enable Radarr reconciliation', html)
-        self.assertNotIn('Run Radarr reconciliation now', html)
+        self.assertIn('Run Radarr reconciliation now', html)
 
         parser = ElementCollector()
         parser.feed(html)

@@ -281,6 +281,27 @@ class RadarrAPI():
         except Exception:
             return {'errorMessage': sanitize_text(traceback.format_exc())}
 
+    def put_movie_monitor(self, movie_ids, monitored):
+        """Set Radarr movie monitoring via the v3 bulk editor."""
+        if not isinstance(monitored, bool):
+            return {'error': 'monitored must be a boolean'}
+        try:
+            ids = list(movie_ids)
+        except TypeError:
+            return {'error': 'movieIds must be positive integers'}
+        if not ids:
+            return {'error': 'movieIds must not be empty'}
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in ids):
+            return {'error': 'movieIds must be positive integers'}
+        try:
+            return self.connect.put_json(
+                f"{self.url}/api/v3/movie/editor",
+                json={'movieIds': ids, 'monitored': monitored},
+                headers=_api_headers(self.apikey),
+            )
+        except Exception:
+            return {'errorMessage': sanitize_text(traceback.format_exc())}
+
     def _find_movie_id_by_tmdb(self, tmdb_id):
         """
         Resolve an existing Radarr movie ID by TMDB ID.
