@@ -356,7 +356,10 @@ class RadarrAPI():
 
     def trigger_movies_search(self, movie_ids):
         """Submit one non-retrying MoviesSearch for exact Radarr movie IDs."""
-        ids = list(movie_ids)
+        try:
+            ids = list(movie_ids)
+        except (TypeError, ValueError):
+            return {'error': 'movieIds must be an iterable of positive integers'}
         if not ids or len(ids) > 100:
             return {'error': 'movieIds must contain between 1 and 100 items'}
         if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in ids):
@@ -382,7 +385,7 @@ class RadarrAPI():
         if isinstance(command_id, bool) or not isinstance(command_id, int) or command_id <= 0:
             return {'error': 'command id must be a positive integer'}
         try:
-            return self.connect.get_json(f"{self.url}/api/v3/command/{command_id}", headers=_api_headers(self.apikey))
+            return self.connect.get_json_with_status(f"{self.url}/api/v3/command/{command_id}", headers=_api_headers(self.apikey))
         except Exception:
             return {'errorMessage': sanitize_text(traceback.format_exc())}
 

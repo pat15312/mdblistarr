@@ -1085,11 +1085,16 @@ def reconcile_radarr_ondemand(force=False):
             submission, submission_events, submission_failed = submit_pending_movie_search_candidates(
                 target_api=target_api, target_instance=target)
             search_failed = search_failed or submission_failed
+        search_counters['search_candidates_submitted'] += submission['submitted']
+        search_counters['search_failures'] += submission['failures']
         result.failures += int(bool(search_failed or command_failed))
         all_counters = {**asdict(result), **search_counters, **command_counters,
             'initial_searches_triggered': submission['initial_submitted'],
             'search_retries_submitted': submission['retry_submitted']}
-        summary = _radarr_summary(result) + ' ' + ' '.join(f'{key}={value}' for key,value in {**search_counters,**command_counters}.items())
+        summary_counters = {**search_counters, **command_counters,
+            'initial_searches_triggered': submission['initial_submitted'],
+            'search_retries_submitted': submission['retry_submitted']}
+        summary = _radarr_summary(result) + ' ' + ' '.join(f'{key}={value}' for key,value in summary_counters.items())
         for event in search_events + command_events + submission_events:
             save_log(provider, 2 if 'failure' in event or 'ambiguous' in event else 1, event)
         save_log(provider, 2 if result.failures else 1, summary)

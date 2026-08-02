@@ -48,7 +48,8 @@ from django.urls import reverse
 from django.utils import timezone
 from .cron import reconcile_radarr_ondemand, reconcile_radarr_ondemand_task
 from .forms import RadarrReconciliationForm
-from .models import Preferences, RadarrInstance
+from .models import (Preferences, RadarrInstance, RadarrMovieSearchCandidate,
+    RadarrMovieSearchCommand, RadarrMovieSearchCommandCandidate)
 
 class RadarrOrchestrationTests(TestCase):
     def setUp(self):
@@ -97,6 +98,27 @@ class RadarrOrchestrationTests(TestCase):
     def test_partial_failure_207_counters_and_json(self):
         a,b=self.apis([],[movie(i,10000+i) for i in range(1,102)]); b.put_movie_monitor.side_effect=[{'error':'bad'},{}]; result=self.invoke(a,b)
         self.assertEqual(result['result'],207); self.assertEqual(result['counters']['movies_newly_monitored'],1); self.assertEqual(result['counters']['monitor_update_failures'],100); self.assertEqual(result['counters']['failures'],1); json.dumps(result)
+        self.assertEqual(RadarrMovieSearchCandidate.objects.count(), 1)
+
+    def test_production_like_candidates_then_one_controlled_search(self):
+        targets=[{**movie(i,10000+i,monitored=True),'lastSearchTime':None} for i in range(1,48)]
+        targets += [{**movie(i,10000+i,available=False),'lastSearchTime':None} for i in range(48,51)]
+        source,target_api=self.apis([],targets)
+        first=self.invoke(source,target_api)
+        self.assertEqual(first['result'],200); self.assertEqual(RadarrMovieSearchCandidate.objects.filter(status='pending').count(),47)
+        target_api.trigger_movies_search.assert_not_called()
+        Preferences.set_value('radarr_search_newly_eligible','1')
+        source,target_api=self.apis([],targets)
+        target_api.trigger_movies_search.return_value={'status_code':201,'id':77,'name':'MoviesSearch','body':{'name':'MoviesSearch','movieIds':list(range(1,48))},'status':'queued','result':'unknown'}
+        second=self.invoke(source,target_api)
+        target_api.trigger_movies_search.assert_called_once_with(list(range(1,48)))
+        self.assertEqual(second['counters']['search_candidates_submitted'],47)
+        self.assertEqual(second['counters']['initial_searches_triggered'],47)
+        self.assertEqual(RadarrMovieSearchCommandCandidate.objects.count(),47)
+        source,target_api=self.apis([],targets)
+        target_api.get_commands.return_value=[{'id':77,'name':'MoviesSearch','body':{'name':'MoviesSearch','movieIds':list(range(1,48))},'status':'queued','result':'unknown','queued':timezone.now().isoformat()}]
+        third=self.invoke(source,target_api)
+        target_api.trigger_movies_search.assert_not_called(); json.dumps(third)
     def test_success_and_immediate_task_results_are_json_serializable(self):
         a,b=self.apis([],[movie(1,10)]); result=self.invoke(a,b); self.assertEqual(json.loads(json.dumps(result)),result)
         a,b=self.apis([],[movie(1,10)])

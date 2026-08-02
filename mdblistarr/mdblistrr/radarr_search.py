@@ -102,9 +102,17 @@ def update_movie_search_candidates(*, target_instance, target_movies, eligible_m
     by_id={m['id']:m for m in target_movies}; existing={c.target_movie_id:c for c in RadarrMovieSearchCandidate.objects.filter(target_instance=target_instance)}; seen=set()
     for movie_id in sorted(eligible):
         movie=by_id.get(movie_id); last_search,error=_parse_radarr_datetime(movie.get('lastSearchTime'))
+        seen.add(movie_id)
         if error:
-            counters['search_failures']+=1; events.append(f'MoviesSearch candidate deferred movie={movie_id} reason={error}'); continue
-        seen.add(movie_id); cand=existing.get(movie_id); tmdb_id=movie['tmdbId']
+            cand = existing.get(movie_id)
+            if cand is not None:
+                cand.last_confirmed_at = now
+                cand.save(update_fields=['last_confirmed_at', 'updated_at'])
+            counters['search_candidates_deferred'] += 1
+            counters['search_failures'] += 1
+            events.append(f'MoviesSearch candidate deferred movie={movie_id} reason={sanitize_text(error)}')
+            continue
+        cand=existing.get(movie_id); tmdb_id=movie['tmdbId']
         if cand is None:
             if last_search is not None and movie_id not in newly: continue
             RadarrMovieSearchCandidate.objects.create(target_instance=target_instance,target_movie_id=movie_id,tmdb_id=tmdb_id,first_eligible_at=now,last_confirmed_at=now)
@@ -126,7 +134,7 @@ def update_movie_search_candidates(*, target_instance, target_movies, eligible_m
     for movie_id,cand in existing.items():
         if movie_id in seen or cand.status != SEARCH_STATUS_PENDING: continue
         cand.status=SEARCH_STATUS_CANCELLED; cand.cancelled_at=now; cand.last_confirmed_at=now; cand.retry_not_before=None; cand.last_error=''; cand.save(update_fields=['status','cancelled_at','last_confirmed_at','retry_not_before','last_error','updated_at']); counters['search_candidates_cancelled']+=1
-    return counters,events,False
+    return counters,events,bool(counters['search_failures'])
 
 
 KNOWN_COMMAND_STATUSES = frozenset(('queued', 'started', 'completed', 'failed', 'aborted', 'cancelled', 'orphaned'))
@@ -135,6 +143,14 @@ TERMINAL_FAILURE_STATUSES = frozenset(('failed', 'aborted', 'cancelled', 'orphan
 ADOPTION_WINDOW = timedelta(minutes=10)
 COMMAND_FALLBACK_LIMIT = 10
 FALLBACK_DEFERRED = ('fallback_budget_deferred', None)
+
+
+def _lifecycle_status(status, result):
+    if status == 'completed' and result == 'unsuccessful':
+        return 'failed', 'completed_unsuccessful'
+    if status == 'completed' and result == 'indeterminate':
+        return 'ambiguous', 'completed_indeterminate'
+    return status, ''
 
 
 def _strict_command_datetime(value, field, required=False):
@@ -262,12 +278,7 @@ def _set_candidates_submitted(command, now):
 
 def _apply_validated_command(command, parsed, now, retry_delay_minutes, max_retries, eligible_movie_ids, movie_by_id):
     old_status = command.status
-    status = parsed['status']
-    # Sonarr explicitly distinguishes a completed-but-unsuccessful command.
-    if status == 'completed' and parsed['result'] == 'unsuccessful':
-        status = 'failed'
-    elif status == 'completed' and parsed['result'] == 'indeterminate':
-        status = 'ambiguous'
+    status, mapped_reason = _lifecycle_status(parsed['status'], parsed['result'])
     command.radarr_status = parsed['status']
     command.radarr_result = parsed['result']
     command.queued_at = parsed['queued_at'] or command.queued_at
@@ -275,11 +286,7 @@ def _apply_validated_command(command, parsed, now, retry_delay_minutes, max_retr
     command.ended_at = parsed['ended_at'] or command.ended_at
     command.last_checked_at = now
     command.unavailable_since = None
-    command.failure_reason = (
-        'completed_unsuccessful' if status == 'failed' and parsed['status'] == 'completed'
-        else 'completed_indeterminate' if status == 'ambiguous' and parsed['status'] == 'completed'
-        else ''
-    )
+    command.failure_reason = mapped_reason
     command.status = status
     if status == 'completed' or status in TERMINAL_FAILURE_STATUSES or (parsed['status'] == 'completed' and status == 'ambiguous'):
         command.terminal_at = command.terminal_at or command.ended_at or now
@@ -462,15 +469,18 @@ def submit_pending_search_candidates(*, target_api, target_instance, batch_size=
                     returned_ids = response['body'].get('movieIds')
                     if returned_ids is not None and (not isinstance(returned_ids, list) or any(_valid_positive_int(value) is None for value in returned_ids) or len(returned_ids) != len(set(returned_ids)) or set(returned_ids) != set(ids)):
                         raise ValueError('mismatched_movie_ids')
-                status = str(response.get('status') or 'queued').lower()
-                if status not in KNOWN_COMMAND_STATUSES:
-                    raise ValueError('unknown_command_status')
-                result = str(response.get('result') or '').lower()
-                if result not in KNOWN_COMMAND_RESULTS:
-                    raise ValueError('unknown_command_result')
-                queued = _strict_command_datetime(response.get('queued'), 'queued') if response.get('queued') else now
-                command.radarr_command_id = _command_id(response); command.status = status; command.radarr_status = status
-                command.radarr_result = result; command.queued_at = queued; command.last_checked_at = now; command.save()
+                resource = dict(response)
+                resource.setdefault('status', 'queued')
+                resource.setdefault('result', '')
+                parsed = validate_movie_search_command(resource, ids, response['id'])
+                status, mapped_reason = _lifecycle_status(parsed['status'], parsed['result'])
+                command.radarr_command_id = parsed['id']; command.status = status; command.radarr_status = parsed['status']
+                command.radarr_result = parsed['result']; command.queued_at = parsed['queued_at'] or now
+                command.started_at = parsed['started_at']; command.ended_at = parsed['ended_at']; command.last_checked_at = now
+                command.failure_reason = mapped_reason
+                if status == 'completed' or status in TERMINAL_FAILURE_STATUSES or status == 'ambiguous':
+                    command.terminal_at = parsed['ended_at'] or now
+                command.save()
                 _set_candidates_submitted(command, now)
                 counters['submitted'] += len(batch)
                 if attempt_number == 1: counters['initial_submitted'] += len(batch)
