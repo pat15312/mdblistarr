@@ -52,20 +52,26 @@ Companion app for [mdblist.com](https://mdblist.com) for better Radarr and Sonar
 
 ## Sonarr/Radarr parity foundation
 
-| Capability | Sonarr | Radarr after PR 11 |
+| Capability | Sonarr | Radarr |
 | --- | --- | --- |
 | Permanent library source role | Implemented | Implemented |
 | On-Demand target role | Implemented | Implemented |
 | Optional profile/root for non-import use | Implemented | Implemented |
 | Role-aware permanent-library sync | Implemented | Implemented |
-| Monitoring reconciliation | Implemented | Planned for PR 12 |
+| Monitoring reconciliation | Implemented | Implemented |
 | Persistent search lifecycle | Implemented | Planned |
 | Safe duplicate cleanup | Implemented | Planned |
 | Per-item cleanup summaries | Implemented | Planned |
 
 Instance roles describe purpose; they do not authorize writes. MDBList queue import remains a separate global and per-instance opt-in and requires a valid quality profile and root folder. Existing Radarr instances migrate as permanent library sources (`source=True`, `target=False`), while target-only Radarr instances are excluded from permanent-library MDBList sync.
 
-This foundation does not add Radarr reconciliation, automatic searching, or cleanup. Future Radarr UI and behaviour should mirror Sonarr wherever the concepts are equivalent, while media-domain differences remain explicit.
+### Radarr On Demand monitoring reconciliation
+
+Radarr reconciliation matches target movies to the permanent, read-only source exclusively by TMDB ID. A target movie is monitored only when neither its matching permanent movie nor the target movie has a file and the target Radarr record reports `isAvailable=true`. Permanent files, existing target files, and unavailable target movies are unmonitored. Radarr's `isAvailable` value is authoritative; MDBListarr does not derive availability from release dates.
+
+Monitoring writes are sent only to the configured On-Demand target in deterministic batches of at most 100 through Radarr's movie editor. The permanent source is never mutated. This reconciliation does not submit `MoviesSearch`, create a search lifecycle, or perform cleanup or deletion. Monitoring may nevertheless make a movie eligible for Radarr's own RSS/indexer processing according to Radarr configuration.
+
+For the intended On-Demand workflow, configure Radarr import lists with **Monitor=None** and **Search on Add disabled**. Queue import remains an independent opt-in and is not required for reconciliation.
 
 ## MDBListarr
 

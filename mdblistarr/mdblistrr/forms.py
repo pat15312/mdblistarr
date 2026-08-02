@@ -1,7 +1,45 @@
 from django.contrib.auth import get_user_model
 from django import forms
 from django.contrib.auth.forms import UserCreationForm
-from .models import Preferences, SonarrInstance
+from .models import Preferences, SonarrInstance, RadarrInstance
+
+RECONCILIATION_INTERVAL_CHOICES = [('5', 'Every 5 minutes'), ('15', 'Every 15 minutes'), ('30', 'Every 30 minutes')]
+
+
+class RadarrReconciliationForm(forms.Form):
+    enabled = forms.BooleanField(label='Enable On Demand reconciliation', required=False)
+    source = forms.ModelChoiceField(label='Permanent Radarr source', queryset=RadarrInstance.objects.none(), required=False)
+    target = forms.ModelChoiceField(label='Radarr On Demand target', queryset=RadarrInstance.objects.none(), required=False)
+    interval_minutes = forms.ChoiceField(label='Reconciliation interval', choices=RECONCILIATION_INTERVAL_CHOICES, initial='15')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        qs = RadarrInstance.objects.order_by('name')
+        self.fields['source'].queryset = qs.filter(is_library_source=True)
+        self.fields['target'].queryset = qs.filter(is_ondemand_target=True)
+        for field in self.fields.values():
+            if isinstance(field.widget, forms.Select):
+                field.widget.attrs['class'] = 'form-select'
+            elif isinstance(field.widget, forms.CheckboxInput):
+                field.widget.attrs['class'] = 'form-check-input'
+        for name, field in self.fields.items():
+            field.widget.attrs['id'] = f'id_radarr_reconciliation_{name}'
+
+    def clean(self):
+        data = super().clean()
+        if data.get('enabled'):
+            if not data.get('source') or not data.get('target'):
+                raise forms.ValidationError('Select both a permanent Radarr source and an On Demand target.')
+            if data.get('source') == data.get('target'):
+                raise forms.ValidationError('Permanent source and On Demand target must be different Radarr instances.')
+        return data
+
+    def save_preferences(self):
+        data = self.cleaned_data
+        Preferences.set_value('radarr_reconciliation_enabled', '1' if data.get('enabled') else '0')
+        Preferences.set_value('radarr_reconciliation_source_id', str(data['source'].id) if data.get('source') else '')
+        Preferences.set_value('radarr_reconciliation_target_id', str(data['target'].id) if data.get('target') else '')
+        Preferences.set_value('radarr_reconciliation_interval_minutes', data.get('interval_minutes') or '15')
 
 class InitialAdminSetupForm(UserCreationForm):
     class Meta(UserCreationForm.Meta):
@@ -21,7 +59,7 @@ class SonarrReconciliationForm(forms.Form):
     target = forms.ModelChoiceField(label='Sonarr On Demand target', queryset=SonarrInstance.objects.none(), required=False)
     include_specials = forms.BooleanField(label='Include specials in completeness checks', required=False)
     search_newly_eligible = forms.BooleanField(label='Search newly eligible missing episodes', required=False, help_text='Monitoring is always reconciled. When searching is disabled, eligible unsearched episodes remain pending; enabling this option later submits pending episodes once. Episodes previously searched manually are not automatically searched again, and successfully submitted searches are not repeated every reconciliation.')
-    interval_minutes = forms.ChoiceField(label='Reconciliation interval', choices=[('5','Every 5 minutes'),('15','Every 15 minutes'),('30','Every 30 minutes')])
+    interval_minutes = forms.ChoiceField(label='Reconciliation interval', choices=RECONCILIATION_INTERVAL_CHOICES)
     search_max_retries = forms.IntegerField(label='Maximum automatic EpisodeSearch retries', min_value=0, max_value=10, help_text='Retries after the initial accepted attempt; 0 disables automatic retries.')
     search_retry_delay_minutes = forms.IntegerField(label='EpisodeSearch retry delay (minutes)', min_value=0, max_value=10080)
     search_missing_command_grace_hours = forms.IntegerField(label='Missing-command grace period (hours)', min_value=1, max_value=720)

@@ -23,7 +23,7 @@ from .connect import sanitize_text
 from .models import Preferences, RadarrInstance, SonarrInstance, SonarrEpisodeSearchCommand, SonarrEpisodeSearchCandidate
 from .services import get_mdblistarr, reset_mdblistarr
 from .admin_state import usable_administrator_exists
-from .forms import InitialAdminSetupForm, SonarrReconciliationForm
+from .forms import InitialAdminSetupForm, SonarrReconciliationForm, RadarrReconciliationForm
 from .instance_config import ROLE_HELP_TEXT, ROLE_LABELS, queue_import_value_is_valid
 
 logger = logging.getLogger(__name__)
@@ -319,6 +319,12 @@ def home_view(request):
         'cleanup_grace_hours': Preferences.get_value('sonarr_cleanup_grace_hours', '24') or '24',
         'cleanup_max_deletions_per_run': int(Preferences.get_value('sonarr_cleanup_max_deletions_per_run', '25') or '25'),
     })
+    radarr_reconcile_form = RadarrReconciliationForm(initial={
+        'enabled': Preferences.get_value('radarr_reconciliation_enabled', '0') == '1',
+        'source': Preferences.get_value('radarr_reconciliation_source_id', ''),
+        'target': Preferences.get_value('radarr_reconciliation_target_id', ''),
+        'interval_minutes': Preferences.get_value('radarr_reconciliation_interval_minutes', '15') or '15',
+    })
     
     active_radarr_id = request.session.get('active_radarr_id')
     active_sonarr_id = request.session.get('active_sonarr_id')
@@ -436,6 +442,13 @@ def home_view(request):
                 messages.success(request, 'Sonarr reconciliation settings saved successfully!')
                 return HttpResponseRedirect(reverse('home_view'))
 
+        elif form_type == 'radarr_reconcile':
+            radarr_reconcile_form = RadarrReconciliationForm(request.POST)
+            if radarr_reconcile_form.is_valid():
+                radarr_reconcile_form.save_preferences()
+                messages.success(request, 'Radarr reconciliation settings saved successfully!')
+                return HttpResponseRedirect(reverse('home_view'))
+
         elif form_type == 'sonarr_save':
             instance_id = request.POST.get('instance_id')
             
@@ -492,6 +505,7 @@ def home_view(request):
         'radarr_form': radarr_form,
         'sonarr_form': sonarr_form,
         'reconcile_form': reconcile_form,
+        'radarr_reconcile_form': radarr_reconcile_form,
         'active_radarr_id': active_radarr_id,
         'active_sonarr_id': active_sonarr_id,
         'active_tab': request.session.get('active_tab', 'mdblist'),
@@ -710,4 +724,27 @@ def run_sonarr_library_sync_now(request):
     from .cron import post_sonarr_payload
     res = post_sonarr_payload(force=True)
     messages.success(request, 'Sonarr library sync finished.' if res.get('response') == 'Ok' else 'Sonarr library sync did not complete; check logs.')
+    return redirect('home_view')
+
+
+@require_POST
+def run_radarr_reconciliation_now(request):
+    if not request.user.is_active or not request.user.is_staff:
+        return JsonResponse({'status': 'error', 'message': 'Forbidden'}, status=403)
+    from .cron import reconcile_radarr_ondemand
+    res = reconcile_radarr_ondemand(force=True)
+    if res.get('result') == 200:
+        messages.success(request, 'Radarr On Demand reconciliation finished.')
+    else:
+        messages.error(request, f"Radarr On Demand reconciliation failed or partially failed: {sanitize_text(res.get('message', 'unknown error'))}")
+    return redirect('home_view')
+
+
+@require_POST
+def run_radarr_library_sync_now(request):
+    if not request.user.is_active or not request.user.is_staff:
+        return JsonResponse({'status': 'error', 'message': 'Forbidden'}, status=403)
+    from .cron import post_radarr_payload
+    res = post_radarr_payload(force=True)
+    messages.success(request, 'Radarr library sync finished.' if res.get('response') == 'Ok' else 'Radarr library sync did not complete; check logs.')
     return redirect('home_view')

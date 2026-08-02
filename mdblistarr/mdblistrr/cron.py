@@ -11,6 +11,7 @@ from .services import get_mdblistarr, reset_mdblistarr
 from .arr import SonarrAPI
 from .arr import RadarrAPI
 from .sonarr_reconcile import determine_series_completeness, calculate_episode_monitoring
+from .radarr_reconcile import calculate_movie_monitoring, validate_movie_response
 from .sonarr_cleanup import process_cleanup_for_series
 from .sonarr_search import (update_search_candidates_for_series, submit_pending_search_candidates,
     reconcile_search_commands_for_series, poll_episode_search_commands)
@@ -971,3 +972,90 @@ def reconcile_sonarr_ondemand(force=False):
 @task
 def reconcile_sonarr_ondemand_task():
     return reconcile_sonarr_ondemand()
+
+
+RADARR_RECONCILE_LOCK_PATH = os.environ.get(
+    'MDBLISTARR_RADARR_RECONCILE_LOCK_PATH', '/tmp/mdblistarr-radarr-reconcile.lock'
+)
+
+
+def _apply_radarr_monitor_batches(target_api, ids, monitored, result, batch_size=100):
+    for offset in range(0, len(ids), batch_size):
+        batch = ids[offset:offset + batch_size]
+        response = target_api.put_movie_monitor(batch, monitored)
+        if arr_api_failed(response):
+            result.monitor_update_failures += len(batch)
+            result.failures += 1
+        elif monitored:
+            result.movies_newly_monitored += len(batch)
+        else:
+            result.movies_newly_unmonitored += len(batch)
+
+
+def _radarr_summary(result):
+    return (
+        f'Radarr reconciliation: movies compared={result.movies_compared} '
+        f'target_only={result.movies_target_only} inspected={result.movies_inspected} '
+        f'newly_monitored={result.movies_newly_monitored} '
+        f'newly_unmonitored={result.movies_newly_unmonitored} unchanged={result.movies_unchanged} '
+        f'permanent_file={result.permanent_files_present} target_file={result.target_files_present} '
+        f'eligible_missing={result.eligible_missing} unavailable={result.unavailable} '
+        f'update_failures={result.monitor_update_failures} failures={result.failures}'
+    )
+
+
+def reconcile_radarr_ondemand(force=False):
+    """Reconcile movie monitoring; the permanent Radarr is strictly read-only."""
+    provider = 1
+    if Preferences.get_value('radarr_reconciliation_enabled', '0') != '1':
+        return {'result': 200, 'message': 'Radarr reconciliation disabled'}
+    try:
+        interval = int(Preferences.get_value('radarr_reconciliation_interval_minutes', '15') or '15')
+    except (TypeError, ValueError):
+        interval = 15
+    if interval not in (5, 15, 30):
+        interval = 15
+    if not force and timezone.now().minute % interval:
+        return {'result': 200, 'message': 'Not scheduled interval'}
+    directory = os.path.dirname(RADARR_RECONCILE_LOCK_PATH)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(RADARR_RECONCILE_LOCK_PATH, 'a+', encoding='utf-8') as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {'result': 200, 'message': 'Radarr reconciliation already running'}
+        try:
+            source = RadarrInstance.objects.get(
+                id=Preferences.get_value('radarr_reconciliation_source_id'), is_library_source=True)
+            target = RadarrInstance.objects.get(
+                id=Preferences.get_value('radarr_reconciliation_target_id'), is_ondemand_target=True)
+        except (RadarrInstance.DoesNotExist, ValueError, TypeError):
+            save_log(provider, 2, 'Radarr reconciliation failed: configured source or target role is invalid')
+            return {'result': 400, 'message': 'invalid_source_or_target'}
+        if source.id == target.id:
+            save_log(provider, 2, 'Radarr reconciliation source and target must be different instances')
+            return {'result': 400, 'message': 'source_target_same'}
+        source_api = RadarrAPI(instance_id=source.id)
+        target_api = RadarrAPI(instance_id=target.id)
+        source_movies = source_api.get_movies()
+        target_movies = target_api.get_movies()
+        valid, reason = validate_movie_response(source_movies, label='source')
+        if not valid:
+            save_log(provider, 2, f'Radarr reconciliation failed: permanent source response invalid ({sanitize_text(reason)})')
+            return {'result': 502, 'message': reason}
+        valid, reason = validate_movie_response(target_movies, target=True, label='target')
+        if not valid:
+            save_log(provider, 2, f'Radarr reconciliation failed: On Demand target response invalid ({sanitize_text(reason)})')
+            return {'result': 502, 'message': reason}
+        result = calculate_movie_monitoring(source_movies, target_movies)
+        _apply_radarr_monitor_batches(target_api, result.monitor_true_ids, True, result)
+        _apply_radarr_monitor_batches(target_api, result.monitor_false_ids, False, result)
+        save_log(provider, 2 if result.failures else 1, _radarr_summary(result))
+        return {'result': 207 if result.failures else 200, 'message': _radarr_summary(result), 'counters': result}
+
+
+@cron_task(cron_schedule="*/5 * * * *")
+@task
+def reconcile_radarr_ondemand_task():
+    return reconcile_radarr_ondemand()

@@ -212,6 +212,18 @@
                 </div>
             </div>
             {% endif %}
+            <div class="card mb-4"><div class="card-header"><h5 class="mb-0">On Demand Reconciliation</h5></div><div class="card-body">
+            <div class="alert alert-warning">Configure On-Demand import lists with Monitor=None and Search on Add disabled. MDBListarr reconciles movie monitoring but does not submit MoviesSearch commands. Monitored movies may still be acted upon by Radarr's own RSS/indexer processing according to its configuration.</div>
+            <form action="{% url 'home_view' %}" method="post">{% csrf_token %}<input type="hidden" name="form_type" value="radarr_reconcile">
+            {% if radarr_reconcile_form.non_field_errors %}<div class="alert alert-warning">{{ radarr_reconcile_form.non_field_errors }}</div>{% endif %}
+            <div class="form-check mb-3">{{ radarr_reconcile_form.enabled }} {{ radarr_reconcile_form.enabled.label_tag }}</div>
+            <div class="mb-3">{{ radarr_reconcile_form.source.label_tag }} {{ radarr_reconcile_form.source }}</div>
+            <div class="mb-3">{{ radarr_reconcile_form.target.label_tag }} {{ radarr_reconcile_form.target }}</div>
+            <div class="mb-3">{{ radarr_reconcile_form.interval_minutes.label_tag }} {{ radarr_reconcile_form.interval_minutes }}</div>
+            <button type="submit" class="btn btn-success">Save Reconciliation Settings</button></form>
+            <form action="{% url 'run_radarr_reconciliation_now' %}" method="post" class="mt-3 d-inline">{% csrf_token %}<button type="submit" class="btn btn-outline-primary">Run Radarr reconciliation now</button></form>
+            <form action="{% url 'run_radarr_library_sync_now' %}" method="post" class="mt-3 d-inline">{% csrf_token %}<button type="submit" class="btn btn-outline-secondary">Run Radarr library sync now</button></form>
+            </div></div>
         </div>
         <div class="tab-pane fade {% if active_tab == 'sonarr' %}show active{% endif %}" id="sonarr-pane" role="tabpanel" aria-labelledby="sonarr-tab" tabindex="0">
             <!-- Sonarr Configuration -->
