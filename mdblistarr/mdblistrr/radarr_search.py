@@ -99,13 +99,19 @@ def _movie_search_failure_reason(response):
 def update_movie_search_candidates(*, target_instance, target_movies, eligible_movie_ids,
         confirmed_monitored_ids, newly_monitored_ids=None,
         submission_blocked_movie_ids=None, now=None):
-    now=now or timezone.now(); newly=set(newly_monitored_ids or []); eligible=set(eligible_movie_ids)&set(confirmed_monitored_ids)
+    now=now or timezone.now(); newly=set(newly_monitored_ids or [])
+    eligible=set(eligible_movie_ids); confirmed=set(confirmed_monitored_ids)
     submission_blocked_movie_ids = submission_blocked_movie_ids if submission_blocked_movie_ids is not None else set()
     counters={k:0 for k in ('search_candidates_new','search_candidates_pending','search_candidates_submitted','search_candidates_cancelled','search_candidates_deferred','search_candidates_recovered','search_recovery_failures','search_failures')}; events=[]
     by_id={m['id']:m for m in target_movies}; existing={c.target_movie_id:c for c in RadarrMovieSearchCandidate.objects.filter(target_instance=target_instance)}; seen=set()
     for movie_id in sorted(eligible):
-        movie=by_id.get(movie_id); last_search,error=_parse_radarr_datetime(movie.get('lastSearchTime'))
         seen.add(movie_id)
+        if movie_id not in confirmed:
+            submission_blocked_movie_ids.add(movie_id)
+            if movie_id in existing:
+                counters['search_candidates_deferred'] += 1
+            continue
+        movie=by_id.get(movie_id); last_search,error=_parse_radarr_datetime(movie.get('lastSearchTime'))
         if error:
             submission_blocked_movie_ids.add(movie_id)
             cand = existing.get(movie_id)
@@ -121,7 +127,16 @@ def update_movie_search_candidates(*, target_instance, target_movies, eligible_m
             if last_search is not None and movie_id not in newly: continue
             RadarrMovieSearchCandidate.objects.create(target_instance=target_instance,target_movie_id=movie_id,tmdb_id=tmdb_id,first_eligible_at=now,last_confirmed_at=now)
             counters['search_candidates_new']+=1; continue
-        if cand.tmdb_id != tmdb_id or movie_id in newly:
+        has_search_lineage = cand.attempt_count > 0 or cand.current_command_id is not None
+        identity_can_reset = cand.status in (SEARCH_STATUS_PENDING, SEARCH_STATUS_CANCELLED) and not has_search_lineage
+        new_cycle_can_reset = movie_id in newly and not has_search_lineage
+        if cand.tmdb_id != tmdb_id and has_search_lineage:
+            submission_blocked_movie_ids.add(movie_id)
+            counters['search_candidates_deferred'] += 1
+            counters['search_failures'] += 1
+            events.append(f'MoviesSearch candidate deferred movie={movie_id} reason=tmdb_identity_changed')
+            continue
+        if (cand.tmdb_id != tmdb_id and identity_can_reset) or new_cycle_can_reset:
             _reset_pending(cand,tmdb_id=tmdb_id,now=now); counters['search_candidates_pending']+=1; continue
         if cand.status == SEARCH_STATUS_PENDING:
             if last_search is not None and last_search >= _aware(cand.first_eligible_at):
