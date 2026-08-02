@@ -20,7 +20,8 @@ from django.views.decorators.http import require_http_methods, require_POST
 from .arr import MdblistAPI, RadarrAPI, SonarrAPI, MDBLIST_DEFAULT_CLIENT_ID
 from .connect import Connect
 from .connect import sanitize_text
-from .models import Preferences, RadarrInstance, SonarrInstance, SonarrEpisodeSearchCommand, SonarrEpisodeSearchCandidate
+from .models import (Preferences, RadarrInstance, SonarrInstance, SonarrEpisodeSearchCommand,
+    SonarrEpisodeSearchCandidate, RadarrMovieSearchCommand, RadarrMovieSearchCandidate)
 from .services import get_mdblistarr, reset_mdblistarr
 from .admin_state import usable_administrator_exists
 from .forms import InitialAdminSetupForm, SonarrReconciliationForm, RadarrReconciliationForm
@@ -324,6 +325,10 @@ def home_view(request):
         'source': Preferences.get_value('radarr_reconciliation_source_id', ''),
         'target': Preferences.get_value('radarr_reconciliation_target_id', ''),
         'interval_minutes': Preferences.get_value('radarr_reconciliation_interval_minutes', '15') or '15',
+        'search_newly_eligible': Preferences.get_value('radarr_search_newly_eligible', '0') == '1',
+        'search_max_retries': int(Preferences.get_value('radarr_search_max_retries', '3') or '3'),
+        'search_retry_delay_minutes': int(Preferences.get_value('radarr_search_retry_delay_minutes', '30') or '30'),
+        'search_missing_command_grace_hours': int(Preferences.get_value('radarr_search_missing_command_grace_hours', '24') or '24'),
     })
     
     active_radarr_id = request.session.get('active_radarr_id')
@@ -519,6 +524,13 @@ def home_view(request):
             'terminal_awaiting_retry': SonarrEpisodeSearchCandidate.objects.filter(status='pending', current_command__status__in=('failed','aborted','cancelled','orphaned')).count(),
             'retry_exhausted': SonarrEpisodeSearchCandidate.objects.filter(status='failed').count(),
             'ambiguous_unavailable': SonarrEpisodeSearchCommand.objects.filter(status__in=('ambiguous','unavailable')).count(),
+        },
+        'radarr_search_command_summary': {
+            'in_flight': RadarrMovieSearchCommand.objects.filter(status__in=('submitting','queued','started')).count(),
+            'completed': RadarrMovieSearchCommand.objects.filter(status='completed').count(),
+            'terminal_awaiting_retry': RadarrMovieSearchCandidate.objects.filter(status='pending', current_command__status__in=('failed','aborted','cancelled','orphaned')).count(),
+            'retry_exhausted': RadarrMovieSearchCandidate.objects.filter(status='failed').count(),
+            'ambiguous_unavailable': RadarrMovieSearchCommand.objects.filter(status__in=('ambiguous','unavailable')).count(),
         },
     }
 

@@ -59,7 +59,9 @@ Companion app for [mdblist.com](https://mdblist.com) for better Radarr and Sonar
 | Optional profile/root for non-import use | Implemented | Implemented |
 | Role-aware permanent-library sync | Implemented | Implemented |
 | Monitoring reconciliation | Implemented | Implemented |
-| Persistent search lifecycle | Implemented | Planned |
+| Persistent search candidates | Implemented | Implemented |
+| Command lifecycle tracking | Implemented | Implemented |
+| Automatic retry handling | Implemented | Implemented |
 | Safe duplicate cleanup | Implemented | Planned |
 | Per-item cleanup summaries | Implemented | Planned |
 
@@ -69,7 +71,7 @@ Instance roles describe purpose; they do not authorize writes. MDBList queue imp
 
 Radarr reconciliation matches target movies to the permanent, read-only source exclusively by TMDB ID. A target movie is monitored only when neither its matching permanent movie nor the target movie has a file and the target Radarr record reports `isAvailable=true`. Permanent files, existing target files, and unavailable target movies are unmonitored. Radarr's `isAvailable` value is authoritative; MDBListarr does not derive availability from release dates.
 
-Monitoring writes are sent only to the configured On-Demand target in deterministic batches of at most 100 through Radarr's movie editor. The permanent source is never mutated. This reconciliation does not submit `MoviesSearch`, create a search lifecycle, or perform cleanup or deletion. Monitoring may nevertheless make a movie eligible for Radarr's own RSS/indexer processing according to Radarr configuration.
+Monitoring writes are sent only to the configured On-Demand target in deterministic batches of at most 100 through Radarr's movie editor. The permanent source is never mutated. Eligible candidates are maintained even while search submission is disabled. When explicitly enabled, MDBListarr submits one-shot `MoviesSearch` commands in deterministic batches of at most 100 exact Radarr movie IDs, persists intent before the POST, tracks command outcomes, and retries only genuine execution failures. A successful search is not repeated merely because it found no release. Cleanup and deletion remain absent; Radarr RSS/indexer processing remains independent.
 
 For the intended On-Demand workflow, configure Radarr import lists with **Monitor=None** and **Search on Add disabled**. Queue import remains an independent opt-in and is not required for reconciliation.
 

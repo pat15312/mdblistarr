@@ -213,13 +213,18 @@
             </div>
             {% endif %}
             <div class="card mb-4"><div class="card-header"><h5 class="mb-0">On Demand Reconciliation</h5></div><div class="card-body">
-            <div class="alert alert-warning">Configure On-Demand import lists with Monitor=None and Search on Add disabled. MDBListarr reconciles movie monitoring but does not submit MoviesSearch commands. Monitored movies may still be acted upon by Radarr's own RSS/indexer processing according to its configuration.</div>
+            <div class="alert alert-warning">Configure On-Demand import lists with Monitor=None and leave Search on Add disabled. MDBListarr reconciles monitoring and, when “Search newly eligible missing movies” is enabled, performs controlled one-time MoviesSearch submissions and tracks their command lifecycle. Monitored movies may independently still be acted on by Radarr RSS/indexer processing.</div>
             <form action="{% url 'home_view' %}" method="post">{% csrf_token %}<input type="hidden" name="form_type" value="radarr_reconcile">
             {% if radarr_reconcile_form.non_field_errors %}<div class="alert alert-warning">{{ radarr_reconcile_form.non_field_errors }}</div>{% endif %}
             <div class="form-check mb-3">{{ radarr_reconcile_form.enabled }} {{ radarr_reconcile_form.enabled.label_tag }}</div>
             <div class="mb-3">{{ radarr_reconcile_form.source.label_tag }} {{ radarr_reconcile_form.source }}</div>
             <div class="mb-3">{{ radarr_reconcile_form.target.label_tag }} {{ radarr_reconcile_form.target }}</div>
+            <div class="form-check mb-3">{{ radarr_reconcile_form.search_newly_eligible }} {{ radarr_reconcile_form.search_newly_eligible.label_tag }}<div class="form-text">{{ radarr_reconcile_form.search_newly_eligible.help_text }}</div></div>
             <div class="mb-3">{{ radarr_reconcile_form.interval_minutes.label_tag }} {{ radarr_reconcile_form.interval_minutes }}</div>
+            <div class="mb-3">{{ radarr_reconcile_form.search_max_retries.label_tag }} {{ radarr_reconcile_form.search_max_retries }}</div>
+            <div class="mb-3">{{ radarr_reconcile_form.search_retry_delay_minutes.label_tag }} {{ radarr_reconcile_form.search_retry_delay_minutes }}</div>
+            <div class="mb-3">{{ radarr_reconcile_form.search_missing_command_grace_hours.label_tag }} {{ radarr_reconcile_form.search_missing_command_grace_hours }}</div>
+            <p class="small text-muted">MoviesSearch commands: in flight {{ radarr_search_command_summary.in_flight }}, completed {{ radarr_search_command_summary.completed }}, awaiting retry {{ radarr_search_command_summary.terminal_awaiting_retry }}, retry exhausted {{ radarr_search_command_summary.retry_exhausted }}, ambiguous/unavailable {{ radarr_search_command_summary.ambiguous_unavailable }}.</p>
             <button type="submit" class="btn btn-success">Save Reconciliation Settings</button></form>
             <form action="{% url 'run_radarr_reconciliation_now' %}" method="post" class="mt-3 d-inline">{% csrf_token %}<button type="submit" class="btn btn-outline-primary">Run Radarr reconciliation now</button></form>
             <form action="{% url 'run_radarr_library_sync_now' %}" method="post" class="mt-3 d-inline">{% csrf_token %}<button type="submit" class="btn btn-outline-secondary">Run Radarr library sync now</button></form>

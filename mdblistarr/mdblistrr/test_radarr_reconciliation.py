@@ -125,7 +125,9 @@ class RadarrFormUiManualTests(TestCase):
         service.return_value.get_radarr_quality_profile_choices.return_value=[]; service.return_value.get_radarr_root_folder_choices.return_value=[]
         Preferences.set_value('radarr_reconciliation_source_id',str(self.source.id)); Preferences.set_value('radarr_reconciliation_target_id',str(self.target.id)); self.client.force_login(self.staff); html=self.client.get('/').content.decode()
         self.assertIn('Run Radarr reconciliation now',html); self.assertIn(f'<option value="{self.source.id}" selected>Source</option>',html); self.assertIn(f'<option value="{self.target.id}" selected>Target</option>',html)
-        for absent in ('Search newly eligible missing movies','Radarr cleanup','force-delete','source-key','target-key'): self.assertNotIn(absent,html)
+        self.assertIn('Search newly eligible missing movies', html)
+        self.assertIn('MoviesSearch commands:', html)
+        for absent in ('Radarr cleanup','force-delete','source-key','target-key'): self.assertNotIn(absent,html)
         ids=[x.split('"',1)[0] for x in html.split(' id="')[1:]]; self.assertEqual(len(ids),len(set(ids)))
     def test_manual_methods_permissions_force_disabled_and_csrf(self):
         rec,sync=reverse('run_radarr_reconciliation_now'),reverse('run_radarr_library_sync_now'); self.client.force_login(self.user); self.assertEqual(self.client.post(rec, content_type='application/json').status_code,403); self.assertEqual(self.client.post(sync, content_type='application/json').status_code,403)
