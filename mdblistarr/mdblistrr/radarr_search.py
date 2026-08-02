@@ -45,6 +45,10 @@ def _aware(value):
     return value.astimezone(timezone.UTC)
 
 
+def _submission_time(fixed_now):
+    return fixed_now or timezone.now()
+
+
 def _reset_pending(cand, *, tmdb_id, now):
     cand.tmdb_id = tmdb_id
     cand.status = SEARCH_STATUS_PENDING
@@ -448,14 +452,15 @@ def reconcile_movie_search_commands(*, target_instance, command_map, poll_failed
 
 def submit_pending_search_candidates(*, target_api, target_instance, batch_size=100,
         submission_blocked_movie_ids=None, now=None):
-    now = now or timezone.now()
+    fixed_now = now
+    evaluation_now = _submission_time(fixed_now)
     counters = {'submitted': 0, 'initial_submitted': 0, 'retry_submitted': 0, 'failures': 0}
     events = []
     had_failure = False
     blocked = set(submission_blocked_movie_ids or [])
     due = RadarrMovieSearchCandidate.objects.filter(
         target_instance=target_instance, status=SEARCH_STATUS_PENDING,
-    ).filter(models.Q(retry_not_before__isnull=True) | models.Q(retry_not_before__lte=now))
+    ).filter(models.Q(retry_not_before__isnull=True) | models.Q(retry_not_before__lte=evaluation_now))
     if blocked:
         due = due.exclude(target_movie_id__in=blocked)
     due = due.select_related('current_command').order_by('target_movie_id')
@@ -476,13 +481,14 @@ def submit_pending_search_candidates(*, target_api, target_instance, batch_size=
         previous = compatible[0].current_command if is_retry else None
         attempt_number = accepted_attempts + 1
         for i in range(0, len(compatible), size):
+            batch_now = _submission_time(fixed_now)
             batch = compatible[i:i + size]
             ids = [c.target_movie_id for c in batch]
             with transaction.atomic():
-                command = RadarrMovieSearchCommand.objects.create(target_instance=target_instance, status='submitting', submission_attempted_at=now, attempt_number=attempt_number, retry_of=previous)
+                command = RadarrMovieSearchCommand.objects.create(target_instance=target_instance, status='submitting', submission_attempted_at=batch_now, attempt_number=attempt_number, retry_of=previous)
                 RadarrMovieSearchCommandCandidate.objects.bulk_create([RadarrMovieSearchCommandCandidate(command=command, candidate=c, target_movie_id=c.target_movie_id) for c in batch])
                 for c in batch:
-                    c.current_command = command; c.status = SEARCH_STATUS_SUBMITTED; c.last_confirmed_at = now
+                    c.current_command = command; c.status = SEARCH_STATUS_SUBMITTED; c.last_confirmed_at = batch_now
                 RadarrMovieSearchCandidate.objects.bulk_update(batch, ['current_command','status','last_confirmed_at','updated_at'])
             response = target_api.trigger_movies_search(ids)  # deliberately exactly one POST
             try:
@@ -499,13 +505,13 @@ def submit_pending_search_candidates(*, target_api, target_instance, batch_size=
                 parsed = validate_movie_search_command(resource, ids, response['id'])
                 status, mapped_reason = _lifecycle_status(parsed['status'], parsed['result'])
                 command.radarr_command_id = parsed['id']; command.status = status; command.radarr_status = parsed['status']
-                command.radarr_result = parsed['result']; command.queued_at = parsed['queued_at'] or now
-                command.started_at = parsed['started_at']; command.ended_at = parsed['ended_at']; command.last_checked_at = now
+                command.radarr_result = parsed['result']; command.queued_at = parsed['queued_at'] or batch_now
+                command.started_at = parsed['started_at']; command.ended_at = parsed['ended_at']; command.last_checked_at = batch_now
                 command.failure_reason = mapped_reason
                 if status == 'completed' or status in TERMINAL_FAILURE_STATUSES or status == 'ambiguous':
-                    command.terminal_at = parsed['ended_at'] or now
+                    command.terminal_at = parsed['ended_at'] or batch_now
                 command.save()
-                _set_candidates_submitted(command, now)
+                _set_candidates_submitted(command, batch_now)
                 counters['submitted'] += len(batch)
                 if attempt_number == 1: counters['initial_submitted'] += len(batch)
                 else: counters['retry_submitted'] += len(batch)
@@ -520,7 +526,7 @@ def submit_pending_search_candidates(*, target_api, target_instance, batch_size=
                         candidate.status = SEARCH_STATUS_PENDING
                         candidate.current_command = previous
                         candidate.last_error = command.failure_reason
-                        candidate.last_confirmed_at = now
+                        candidate.last_confirmed_at = batch_now
                     RadarrMovieSearchCandidate.objects.bulk_update(batch, ['status','current_command','last_error','last_confirmed_at','updated_at'])
                 counters['failures'] += 1
                 outcome = 'failure' if definite_rejection else 'ambiguous'
