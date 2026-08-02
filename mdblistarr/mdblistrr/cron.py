@@ -17,6 +17,7 @@ from .sonarr_search import (update_search_candidates_for_series, submit_pending_
     reconcile_search_commands_for_series, poll_episode_search_commands)
 from .instance_config import queue_import_requirements_are_valid
 import fcntl, os
+from dataclasses import asdict
 
 MAX_CLEANUP_SERIES_SUMMARIES = 100
 MAX_CLEANUP_SERIES_TITLE_LENGTH = 200
@@ -1052,7 +1053,11 @@ def reconcile_radarr_ondemand(force=False):
         _apply_radarr_monitor_batches(target_api, result.monitor_true_ids, True, result)
         _apply_radarr_monitor_batches(target_api, result.monitor_false_ids, False, result)
         save_log(provider, 2 if result.failures else 1, _radarr_summary(result))
-        return {'result': 207 if result.failures else 200, 'message': _radarr_summary(result), 'counters': result}
+        return {
+            'result': 207 if result.failures else 200,
+            'message': _radarr_summary(result),
+            'counters': asdict(result),
+        }
 
 
 @cron_task(cron_schedule="*/5 * * * *")
