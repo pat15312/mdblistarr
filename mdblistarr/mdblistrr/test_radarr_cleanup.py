@@ -114,11 +114,11 @@ class DestructiveLifecycleTests(TestCase):
         out=self.invoke(sources,targets,source_api,target_api)
         self.assertEqual(RadarrCleanupCandidate.objects.get().status,'already_absent'); self.assertEqual(out.cleanup_files_already_absent,1); self.assertEqual(target_api.delete_movie_file.call_count,1)
     def test_delete_success_file_remains_stops_later_and_counters_safety(self):
-        sources,targets=self.snapshots(2); self.ready(sources,targets); source_api,target_api,_=self.valid_apis(sources,targets)
+        sources,targets=self.snapshots(3); self.ready(sources,targets); source_api,target_api,_=self.valid_apis(sources,targets)
         target_api.get_movie_file.side_effect=lambda fid:{'id':fid,'movieId':next(m['id'] for m in targets if m['movieFileId']==fid),'edition':None,'status_code':200}
         out=self.invoke(sources,targets,source_api,target_api)
         self.assertEqual(target_api.delete_movie_file.call_count,1); self.assertTrue(out.stop_deletes_for_run); self.assertEqual(out.cleanup_failures,1)
-        self.assertEqual(out.cleanup_deferred_by_limit,0); self.assertEqual(out.cleanup_safety_deferred,2)
+        self.assertEqual(out.cleanup_deferred_by_limit,0); self.assertEqual(out.cleanup_safety_deferred,3)
     def test_malformed_post_delete_verification_stops(self):
         sources,targets=self.snapshots(2); self.ready(sources,targets); source_api,target_api,_=self.valid_apis(sources,targets)
         sequence=[{'id':3001,'movieId':101,'edition':None,'status_code':200},{'garbage':True}]
@@ -157,7 +157,7 @@ class DestructiveLifecycleTests(TestCase):
                 command=RadarrMovieSearchCommand.objects.create(target_instance=self.target,status=status,submission_attempted_at=timezone.now(),outcome_reconciled_at=None)
                 RadarrMovieSearchCandidate.objects.create(target_instance=self.target,target_movie_id=101,tmdb_id=1001,status='submitted',first_eligible_at=timezone.now(),last_confirmed_at=timezone.now(),current_command=command)
                 out=self.invoke(sources,targets,source_api,target_api)
-                target_api.delete_movie_file.assert_not_called(); self.assertGreaterEqual(out.cleanup_safety_deferred,1)
+                target_api.delete_movie_file.assert_not_called(); self.assertEqual(out.cleanup_safety_deferred,1)
         RadarrCleanupCandidate.objects.all().delete(); RadarrMovieSearchCandidate.objects.all().delete(); RadarrMovieSearchCommand.objects.all().delete()
         sources,targets=self.snapshots(); self.ready(sources,targets); source_api,target_api,_=self.valid_apis(sources,targets)
         command=RadarrMovieSearchCommand.objects.create(target_instance=self.target,status='completed',submission_attempted_at=timezone.now(),outcome_reconciled_at=timezone.now())
@@ -203,6 +203,22 @@ class TargetMovieDisappearanceTests(TestCase):
         out,api,cand=self.process_missing({'id':3001,'movieId':101,'edition':None,'status_code':200})
         self.assertEqual(cand.status,'cancelled'); self.assertEqual(out.cleanup_candidates_cancelled,1)
         api.delete_movie_file.assert_not_called()
+
+    def test_lifecycle_uncertainty_counts_each_of_three_ready_candidates_once(self):
+        sources=[movie(i,1000+i,2000+i) for i in range(1,4)]
+        targets=[movie(101+i,1001+i,3001+i) for i in range(1,3)]
+        now=timezone.now()-timezone.timedelta(days=2)
+        for index in range(3):
+            RadarrCleanupCandidate.objects.create(target_instance=self.target,tmdb_id=1001+index,
+                source_movie_id=1+index,source_movie_file_id=2001+index,target_movie_id=101+index,
+                movie_file_id=3001+index,source_edition='',target_edition='',first_eligible_at=now,
+                last_confirmed_at=now,ready_at=now,status='ready')
+        target_api=Mock(); target_api.get_movie_file.return_value={'status_code':503,'error':'unavailable'}
+        out=process_radarr_cleanup(target_instance=self.target,source_movies=sources,target_movies=targets,
+            confirmed_unmonitored_ids={102,103},monitoring_blocked_ids=set(),source_api=Mock(),target_api=target_api,
+            cleanup_enabled=True,dry_run=False,grace_hours=24,max_deletions=25)
+        self.assertTrue(out.stop_deletes_for_run); self.assertEqual(out.cleanup_safety_deferred,3)
+        target_api.delete_movie_file.assert_not_called()
     def test_missing_movie_malformed_exact_file_stops_live_deletes(self):
         out,api,cand=self.process_missing({'status_code':503,'error':'unavailable'},live=True)
         self.assertEqual(cand.status,'ready'); self.assertEqual(out.cleanup_failures,1)
