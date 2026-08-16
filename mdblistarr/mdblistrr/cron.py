@@ -1,11 +1,13 @@
+import json
+import logging
+import random
+import time
+import traceback
+
 from django.utils import timezone
 from django.tasks import task
 from django_scheduled_tasks import cron_task
 from .connect import sanitize_text, Connect
-import time
-import json
-import random
-import traceback
 from .models import (Log, InstanceChangeLog, RadarrInstance, SonarrInstance, Preferences,
     SonarrEpisodeSearchCommand, RadarrMovieSearchCommand)
 from .services import get_mdblistarr, reset_mdblistarr
@@ -26,8 +28,40 @@ from .arr_health import begin_reconciliation_status, finish_reconciliation_statu
 import fcntl, os
 from dataclasses import asdict
 
+logger = logging.getLogger(__name__)
+
 MAX_CLEANUP_SERIES_SUMMARIES = 100
 MAX_CLEANUP_SERIES_TITLE_LENGTH = 200
+
+
+def _health_warning(product, phase):
+    """Emit a bounded diagnostic without allowing logging to affect a run."""
+    try:
+        logger.warning('Arr health recorder failed product=%s phase=%s', product, phase)
+    except Exception:
+        pass
+
+
+def _try_begin_reconciliation_status(product):
+    """Record a run start as optional observability."""
+    try:
+        return begin_reconciliation_status(product)
+    except Exception:
+        _health_warning(product, 'begin')
+        return None
+
+
+def _try_finish_reconciliation_status(product, result_code, message, counters=None,
+        source_instance_id=None, target_instance_id=None, source_ok=None, target_ok=None,
+        phase='finish'):
+    """Record a terminal result without changing the reconciliation result."""
+    try:
+        return finish_reconciliation_status(
+            product, result_code, message, counters, source_instance_id,
+            target_instance_id, source_ok=source_ok, target_ok=target_ok)
+    except Exception:
+        _health_warning(product, phase)
+        return None
 
 
 def _cleanup_series_title(value):
@@ -813,14 +847,14 @@ def reconcile_sonarr_ondemand(force=False):
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {'result': 200, 'message': 'Reconciliation already running'}
-        begin_reconciliation_status('sonarr')
+        _try_begin_reconciliation_status('sonarr')
         source = target = None
         try:
             source = SonarrInstance.objects.get(id=Preferences.get_value('sonarr_reconciliation_source_id'), is_library_source=True)
             target = SonarrInstance.objects.get(id=Preferences.get_value('sonarr_reconciliation_target_id'), is_ondemand_target=True)
             if source.id == target.id:
                 save_log(provider, 2, 'Sonarr reconciliation source and target must be different instances')
-                finish_reconciliation_status('sonarr', 400, 'source_target_same',
+                _try_finish_reconciliation_status('sonarr', 400, 'source_target_same',
                     source_instance_id=source.id, target_instance_id=target.id)
                 return {'result': 400, 'message': 'source_target_same'}
             source_api, target_api = SonarrAPI(instance_id=source.id), SonarrAPI(instance_id=target.id)
@@ -828,13 +862,13 @@ def reconcile_sonarr_ondemand(force=False):
             source_ok, source_error = validate_sonarr_series_response(source_series, 'source')
             if not source_ok:
                 save_log(provider, 2, f'Sonarr reconciliation failed: permanent source series response invalid ({sanitize_text(source_error)})')
-                finish_reconciliation_status('sonarr', 502, 'source_validation_failed',
+                _try_finish_reconciliation_status('sonarr', 502, 'source_validation_failed',
                     source_instance_id=source.id, target_instance_id=target.id, source_ok=False)
                 return {'result': 502, 'message': source_error}
             target_ok, target_error = validate_sonarr_series_response(target_series, 'target')
             if not target_ok:
                 save_log(provider, 2, f'Sonarr reconciliation failed: On Demand target series response invalid ({sanitize_text(target_error)})')
-                finish_reconciliation_status('sonarr', 502, 'target_validation_failed',
+                _try_finish_reconciliation_status('sonarr', 502, 'target_validation_failed',
                     source_instance_id=source.id, target_instance_id=target.id, source_ok=True, target_ok=False)
                 return {'result': 502, 'message': target_error}
             source_by_tvdb = {s.get('tvdbId'): s for s in source_series}
@@ -989,13 +1023,14 @@ def reconcile_sonarr_ondemand(force=False):
                 if isinstance(value, (int, float, bool))}
             counters = {**monitoring_counters, **search_candidate_totals, **command_totals, **cleanup_totals}
             message = 'partial_failure' if totals.failures else 'ok'
-            finish_reconciliation_status('sonarr', status, message, counters,
+            _try_finish_reconciliation_status('sonarr', status, message, counters,
                 source.id, target.id, source_ok=True, target_ok=True)
             return {'result': status, 'failures': totals.failures, 'message': message, 'counters': counters}
         except Exception:
             save_log(provider, 2, sanitize_text(traceback.format_exc()))
-            finish_reconciliation_status('sonarr', 500, 'exception',
-                source_instance_id=getattr(source, 'id', None), target_instance_id=getattr(target, 'id', None))
+            _try_finish_reconciliation_status('sonarr', 500, 'exception',
+                source_instance_id=getattr(source, 'id', None), target_instance_id=getattr(target, 'id', None),
+                phase='exception_finish')
             return {'result': 500, 'message': 'exception'}
 
 @cron_task(cron_schedule="*/5 * * * *")
@@ -1038,8 +1073,10 @@ def _radarr_summary(result):
     )
 
 
-def _reconcile_radarr_ondemand(force=False):
+def _reconcile_radarr_ondemand(force=False, health_context=None):
     """Reconcile movie monitoring; the permanent Radarr is strictly read-only."""
+    if health_context is None:
+        health_context = {'begin_recorded': False, 'source_id': None, 'target_id': None}
     provider = 1
     if Preferences.get_value('radarr_reconciliation_enabled', '0') != '1':
         return {'result': 200, 'message': 'Radarr reconciliation disabled'}
@@ -1059,21 +1096,25 @@ def _reconcile_radarr_ondemand(force=False):
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {'result': 200, 'message': 'Radarr reconciliation already running'}
-        begin_reconciliation_status('radarr')
+        health_context['begin_recorded'] = (
+            _try_begin_reconciliation_status('radarr') is not None)
+        source_id = Preferences.get_value('radarr_reconciliation_source_id')
+        target_id = Preferences.get_value('radarr_reconciliation_target_id')
+        health_context['source_id'] = source_id
+        health_context['target_id'] = target_id
         try:
             source = RadarrInstance.objects.get(
-                id=Preferences.get_value('radarr_reconciliation_source_id'), is_library_source=True)
+                id=source_id, is_library_source=True)
             target = RadarrInstance.objects.get(
-                id=Preferences.get_value('radarr_reconciliation_target_id'), is_ondemand_target=True)
+                id=target_id, is_ondemand_target=True)
         except (RadarrInstance.DoesNotExist, ValueError, TypeError):
             save_log(provider, 2, 'Radarr reconciliation failed: configured source or target role is invalid')
-            finish_reconciliation_status('radarr', 400, 'invalid_source_or_target',
-                source_instance_id=Preferences.get_value('radarr_reconciliation_source_id'),
-                target_instance_id=Preferences.get_value('radarr_reconciliation_target_id'))
+            _try_finish_reconciliation_status('radarr', 400, 'invalid_source_or_target',
+                source_instance_id=source_id, target_instance_id=target_id)
             return {'result': 400, 'message': 'invalid_source_or_target'}
         if source.id == target.id:
             save_log(provider, 2, 'Radarr reconciliation source and target must be different instances')
-            finish_reconciliation_status('radarr', 400, 'source_target_same',
+            _try_finish_reconciliation_status('radarr', 400, 'source_target_same',
                 source_instance_id=source.id, target_instance_id=target.id)
             return {'result': 400, 'message': 'source_target_same'}
         source_api = RadarrAPI(instance_id=source.id)
@@ -1083,13 +1124,13 @@ def _reconcile_radarr_ondemand(force=False):
         valid, reason = validate_movie_response(source_movies, label='source')
         if not valid:
             save_log(provider, 2, f'Radarr reconciliation failed: permanent source response invalid ({sanitize_text(reason)})')
-            finish_reconciliation_status('radarr', 502, 'source_validation_failed',
+            _try_finish_reconciliation_status('radarr', 502, 'source_validation_failed',
                 source_instance_id=source.id, target_instance_id=target.id, source_ok=False)
             return {'result': 502, 'message': reason}
         valid, reason = validate_movie_response(target_movies, target=True, label='target')
         if not valid:
             save_log(provider, 2, f'Radarr reconciliation failed: On Demand target response invalid ({sanitize_text(reason)})')
-            finish_reconciliation_status('radarr', 502, 'target_validation_failed',
+            _try_finish_reconciliation_status('radarr', 502, 'target_validation_failed',
                 source_instance_id=source.id, target_instance_id=target.id, source_ok=True, target_ok=False)
             return {'result': 502, 'message': reason}
         result = calculate_movie_monitoring(source_movies, target_movies)
@@ -1156,7 +1197,7 @@ def _reconcile_radarr_ondemand(force=False):
             save_log(provider, 2 if 'failure' in event or 'ambiguous' in event else 1, event)
         save_log(provider, 2 if result.failures else 1, summary)
         result_code = 207 if result.failures else 200
-        finish_reconciliation_status('radarr', result_code,
+        _try_finish_reconciliation_status('radarr', result_code,
             'partial_failure' if result.failures else 'ok', all_counters,
             source.id, target.id, source_ok=True, target_ok=True)
         return {
@@ -1168,18 +1209,18 @@ def _reconcile_radarr_ondemand(force=False):
 
 def reconcile_radarr_ondemand(force=False):
     """Record unexpected failures after a run begins, then preserve propagation."""
-    from .models import ArrReconciliationStatus
-    before = ArrReconciliationStatus.objects.filter(product='radarr').values_list(
-        'last_started_at', flat=True).first()
+    health_context = {'begin_recorded': False, 'source_id': None, 'target_id': None}
     try:
-        return _reconcile_radarr_ondemand(force=force)
+        return _reconcile_radarr_ondemand(force=force, health_context=health_context)
     except Exception:
-        status = ArrReconciliationStatus.objects.filter(product='radarr').first()
-        if status and status.last_started_at and status.last_started_at != before and (
-                not status.last_completed_at or status.last_started_at > status.last_completed_at):
-            finish_reconciliation_status('radarr', 500, 'exception',
-                source_instance_id=Preferences.get_value('radarr_reconciliation_source_id'),
-                target_instance_id=Preferences.get_value('radarr_reconciliation_target_id'))
+        # A bare raise below must always preserve the original core exception.
+        # Only a begin successfully recorded by this invocation is finalized.
+        if health_context['begin_recorded']:
+            _try_finish_reconciliation_status(
+                'radarr', 500, 'exception',
+                source_instance_id=health_context['source_id'],
+                target_instance_id=health_context['target_id'],
+                phase='exception_finish')
         raise
 
 
