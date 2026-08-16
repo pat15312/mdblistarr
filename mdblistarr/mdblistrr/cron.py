@@ -19,6 +19,7 @@ from .sonarr_search import (update_search_candidates_for_series, submit_pending_
 from .radarr_search import (update_movie_search_candidates,
     submit_pending_search_candidates as submit_pending_movie_search_candidates,
     reconcile_movie_search_commands, poll_movie_search_commands)
+from .radarr_cleanup import process_radarr_cleanup
 from .instance_config import queue_import_requirements_are_valid
 import fcntl, os
 from dataclasses import asdict
@@ -1059,7 +1060,7 @@ def reconcile_radarr_ondemand(force=False):
             return {'result': 502, 'message': reason}
         result = calculate_movie_monitoring(source_movies, target_movies)
         applied_true = _apply_radarr_monitor_batches(target_api, result.monitor_true_ids, True, result)
-        _apply_radarr_monitor_batches(target_api, result.monitor_false_ids, False, result)
+        applied_false = _apply_radarr_monitor_batches(target_api, result.monitor_false_ids, False, result)
         eligible_ids = {movie['id'] for movie in target_movies if movie['id'] not in result.monitor_false_ids and
             not movie['hasFile'] and movie['isAvailable'] and
             not next((source_movie['hasFile'] for source_movie in source_movies if source_movie['tmdbId'] == movie['tmdbId']), False)}
@@ -1091,14 +1092,33 @@ def reconcile_radarr_ondemand(force=False):
         search_counters['search_candidates_submitted'] += submission['submitted']
         search_counters['search_failures'] += submission['failures']
         result.failures += int(bool(search_failed or command_failed))
+        desired_false = set(result.monitor_false_ids) | {
+            movie['id'] for movie in target_movies if movie['id'] not in result.monitor_true_ids
+        }
+        confirmed_unmonitored = {
+            movie['id'] for movie in target_movies
+            if movie.get('monitored') is False and movie['id'] in desired_false
+        } | set(applied_false)
+        monitoring_blocked = set(result.monitor_false_ids) - set(applied_false)
+        cleanup = process_radarr_cleanup(
+            target_instance=target, source_movies=source_movies, target_movies=target_movies,
+            confirmed_unmonitored_ids=confirmed_unmonitored,
+            monitoring_blocked_ids=monitoring_blocked, source_api=source_api, target_api=target_api,
+            cleanup_enabled=Preferences.get_value('radarr_cleanup_enabled','0') == '1',
+            dry_run=Preferences.get_value('radarr_cleanup_dry_run','1') != '0',
+            grace_hours=max(0,min(168,int(Preferences.get_value('radarr_cleanup_grace_hours','24') or 24))),
+            max_deletions=max(1,min(500,int(Preferences.get_value('radarr_cleanup_max_deletions_per_run','25') or 25))),
+            stop_real_deletes=bool(poll_failed or command_failed or result.monitor_update_failures),
+        )
+        result.failures += int(bool(cleanup.cleanup_failures))
         all_counters = {**asdict(result), **search_counters, **command_counters,
             'initial_searches_triggered': submission['initial_submitted'],
-            'search_retries_submitted': submission['retry_submitted']}
+            'search_retries_submitted': submission['retry_submitted'], **cleanup.json_counters()}
         summary_counters = {**search_counters, **command_counters,
             'initial_searches_triggered': submission['initial_submitted'],
-            'search_retries_submitted': submission['retry_submitted']}
+            'search_retries_submitted': submission['retry_submitted'], **cleanup.json_counters()}
         summary = _radarr_summary(result) + ' ' + ' '.join(f'{key}={value}' for key,value in summary_counters.items())
-        for event in search_events + command_events + submission_events:
+        for event in search_events + command_events + submission_events + cleanup.events:
             save_log(provider, 2 if 'failure' in event or 'ambiguous' in event else 1, event)
         save_log(provider, 2 if result.failures else 1, summary)
         return {

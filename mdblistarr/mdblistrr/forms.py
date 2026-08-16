@@ -15,6 +15,10 @@ class RadarrReconciliationForm(forms.Form):
     search_max_retries = forms.IntegerField(label='Maximum automatic MoviesSearch retries', min_value=0, max_value=10, initial=3, required=False, help_text='Retries after the initial accepted attempt; 0 disables automatic retries.')
     search_retry_delay_minutes = forms.IntegerField(label='MoviesSearch retry delay (minutes)', min_value=0, max_value=10080, initial=30, required=False)
     search_missing_command_grace_hours = forms.IntegerField(label='Missing-command grace period (hours)', min_value=1, max_value=720, initial=24, required=False)
+    cleanup_enabled = forms.BooleanField(label='Enable automatic duplicate-file cleanup', required=False)
+    cleanup_dry_run = forms.BooleanField(label='Dry-run cleanup', required=False)
+    cleanup_grace_hours = forms.ChoiceField(label='Cleanup grace period', initial='24', required=False, choices=[('0','Immediately'),('1','1 hour'),('6','6 hours'),('12','12 hours'),('24','24 hours'),('48','48 hours'),('168','7 days')])
+    cleanup_max_deletions_per_run = forms.IntegerField(label='Maximum file deletions per reconciliation run', min_value=1, max_value=500, initial=25, required=False)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -48,6 +52,10 @@ class RadarrReconciliationForm(forms.Form):
         Preferences.set_value('radarr_search_max_retries', str(data.get('search_max_retries') if data.get('search_max_retries') is not None else 3))
         Preferences.set_value('radarr_search_retry_delay_minutes', str(data.get('search_retry_delay_minutes') if data.get('search_retry_delay_minutes') is not None else 30))
         Preferences.set_value('radarr_search_missing_command_grace_hours', str(data.get('search_missing_command_grace_hours') if data.get('search_missing_command_grace_hours') is not None else 24))
+        Preferences.set_value('radarr_cleanup_enabled', '1' if data.get('cleanup_enabled') else '0')
+        Preferences.set_value('radarr_cleanup_dry_run', '1' if data.get('cleanup_dry_run') else '0')
+        Preferences.set_value('radarr_cleanup_grace_hours', data.get('cleanup_grace_hours') or '24')
+        Preferences.set_value('radarr_cleanup_max_deletions_per_run', str(data.get('cleanup_max_deletions_per_run') or 25))
 
 class InitialAdminSetupForm(UserCreationForm):
     class Meta(UserCreationForm.Meta):

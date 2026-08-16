@@ -329,6 +329,10 @@ def home_view(request):
         'search_max_retries': int(Preferences.get_value('radarr_search_max_retries', '3') or '3'),
         'search_retry_delay_minutes': int(Preferences.get_value('radarr_search_retry_delay_minutes', '30') or '30'),
         'search_missing_command_grace_hours': int(Preferences.get_value('radarr_search_missing_command_grace_hours', '24') or '24'),
+        'cleanup_enabled': Preferences.get_value('radarr_cleanup_enabled', '0') == '1',
+        'cleanup_dry_run': Preferences.get_value('radarr_cleanup_dry_run', '1') != '0',
+        'cleanup_grace_hours': Preferences.get_value('radarr_cleanup_grace_hours', '24') or '24',
+        'cleanup_max_deletions_per_run': int(Preferences.get_value('radarr_cleanup_max_deletions_per_run', '25') or '25'),
     })
     
     active_radarr_id = request.session.get('active_radarr_id')
