@@ -18,6 +18,30 @@ IN_FLIGHT_COMMAND_STATUSES = ('submitting', 'queued', 'started')
 UNCERTAIN_COMMAND_STATUSES = ('ambiguous', 'unavailable')
 TERMINAL_FAILURE_STATUSES = ('failed', 'aborted', 'cancelled', 'orphaned')
 SEVERITY = {'error': 4, 'attention': 3, 'running': 2, 'healthy': 1, 'disabled': 0}
+LATEST_ACTIVITY_FIELDS = {
+    'sonarr': (
+        ('series_compared', 'Series compared'),
+        ('series_target_only', 'Target-only series'),
+        ('episodes_inspected', 'Episodes inspected'),
+        ('episodes_newly_monitored', 'Newly monitored'),
+        ('episodes_newly_unmonitored', 'Newly unmonitored'),
+        ('malformed_episodes', 'Malformed episodes'),
+        ('season_update_failures', 'Season update failures'),
+        ('series_update_failures', 'Series update failures'),
+    ),
+    'radarr': (
+        ('movies_compared', 'Movies compared'),
+        ('movies_target_only', 'Target-only movies'),
+        ('movies_inspected', 'Movies inspected'),
+        ('permanent_files_present', 'Permanent files'),
+        ('target_files_present', 'Target files'),
+        ('eligible_missing', 'Eligible missing'),
+        ('unavailable', 'Unavailable'),
+        ('movies_newly_monitored', 'Newly monitored'),
+        ('movies_newly_unmonitored', 'Newly unmonitored'),
+        ('monitor_update_failures', 'Monitor update failures'),
+    ),
+}
 
 
 def _safe_id(value):
@@ -140,6 +164,17 @@ def reduce_overall_status(statuses):
     return max(enabled, key=lambda value: SEVERITY[value])
 
 
+def _latest_activity(product, counters):
+    """Return the small operator-facing monitoring summary, not raw counters."""
+    return [
+        {'key': key, 'label': label, 'value': counters[key]}
+        for key, label in LATEST_ACTIVITY_FIELDS[product]
+        if key in counters and (counters[key] or key in {
+            'series_compared', 'episodes_inspected', 'movies_compared', 'movies_inspected'
+        })
+    ]
+
+
 def _product_health(product, now):
     is_sonarr = product == 'sonarr'
     instance_model = SonarrInstance if is_sonarr else RadarrInstance
@@ -168,23 +203,27 @@ def _product_health(product, now):
     search = _search_metrics(candidate_model, command_model, valid_target_id)
     cleanup = _cleanup_metrics(cleanup_model, valid_target_id)
     status = ArrReconciliationStatus.objects.filter(product=product).values().first()
+    snapshot_matches_configuration = bool(status and
+        status['source_instance_id'] == source_id and status['target_instance_id'] == target_id)
     threshold_minutes = max(120, interval * 4)
     threshold = timedelta(minutes=threshold_minutes)
     running = bool(status and status['last_started_at'] and (
         not status['last_completed_at'] or status['last_started_at'] > status['last_completed_at']))
     stale = running and now - status['last_started_at'] > threshold
-    overdue = bool(enabled and status and status['last_completed_at'] and not running and
+    overdue = bool(enabled and snapshot_matches_configuration and status and status['last_completed_at'] and not running and
                    now - status['last_completed_at'] > threshold)
     counters = (status or {}).get('last_counters') or {}
     if enabled:
         issues.extend(config_errors)
-        if stale:
+        if status and not snapshot_matches_configuration and not config_errors:
+            issues.append('Configuration changed since the last reconciliation; the current source/target pair has not yet been validated.')
+        if stale and snapshot_matches_configuration:
             issues.append('Reconciliation appears incomplete/stale.')
         elif not status or not status['last_completed_at']:
             issues.append('No completed reconciliation has been recorded yet.')
-        elif status['last_outcome'] == 'failure':
+        elif snapshot_matches_configuration and status['last_outcome'] == 'failure':
             issues.append('Latest reconciliation failed.')
-        elif status['last_outcome'] == 'partial_failure':
+        elif snapshot_matches_configuration and status['last_outcome'] == 'partial_failure':
             issues.append('Latest reconciliation partially failed.')
         if overdue:
             issues.append('Reconciliation is overdue.')
@@ -198,14 +237,17 @@ def _product_health(product, now):
             issues.append(f"{search['active_errors']} active search candidates contain an error.")
         if cleanup['active_errors']:
             issues.append(f"{cleanup['active_errors']} active cleanup candidates contain an error.")
-        if counters.get('cleanup_failures', 0):
+        if snapshot_matches_configuration and counters.get('cleanup_failures', 0):
             issues.append('Latest cleanup activity contained failures.')
-        if product == 'radarr' and counters.get('stop_deletes_for_run') is True:
+        if snapshot_matches_configuration and product == 'radarr' and counters.get('stop_deletes_for_run') is True:
             issues.append('Live cleanup stopped further deletions during the latest reconciliation because destructive verification became uncertain.')
     if not enabled:
         classification = 'disabled'
-    elif config_errors or stale or (status and status['last_outcome'] == 'failure'):
+    elif config_errors or (stale and snapshot_matches_configuration) or (
+            status and snapshot_matches_configuration and status['last_outcome'] == 'failure'):
         classification = 'error'
+    elif status and not snapshot_matches_configuration:
+        classification = 'attention'
     elif running:
         classification = 'running'
     elif issues:
@@ -226,7 +268,14 @@ def _product_health(product, now):
             'cleanup_grace_hours': _safe_int(Preferences.get_value(f'{product}_cleanup_grace_hours', '24'), 24, 0, 168),
             'cleanup_max_deletions': _safe_int(Preferences.get_value(f'{product}_cleanup_max_deletions_per_run', '25'), 25, 1, 500),
         },
-        'last_run': status, 'latest_counters': counters, 'search': search, 'cleanup': cleanup,
+        'last_run': status, 'snapshot_matches_configuration': snapshot_matches_configuration,
+        'snapshot_context': ('Current configuration' if snapshot_matches_configuration else
+            'Previous configuration' if status else 'No snapshot'),
+        'source_validation': (status['source_ok'] if snapshot_matches_configuration else None),
+        'target_validation': (status['target_ok'] if snapshot_matches_configuration else None),
+        'latest_counters': counters if snapshot_matches_configuration else {},
+        'latest_activity': _latest_activity(product, counters) if snapshot_matches_configuration else [],
+        'search': search, 'cleanup': cleanup,
         'running': running, 'stale': stale, 'overdue': overdue, 'threshold_minutes': threshold_minutes,
     }
 

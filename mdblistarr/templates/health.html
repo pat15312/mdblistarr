@@ -29,18 +29,20 @@
 
           <h3 class="h6 border-top pt-3">Last reconciliation</h3>
           {% with run=product.last_run %}
+          {% if run and not product.snapshot_matches_configuration %}<div class="alert alert-warning py-2 small">This snapshot belongs to the previous source/target configuration. Its timestamps and outcome are historical and do not validate the current pair.</div>{% endif %}
           <dl class="row small">
             <dt class="col-6">Last attempt started</dt><dd class="col-6">{% if run.last_started_at %}{{ run.last_started_at|date:"Y-m-d H:i:s T" }} — {{ run.last_started_at|naturaltime }}{% else %}Never{% endif %}</dd>
             <dt class="col-6">Last attempt completed</dt><dd class="col-6">{% if run.last_completed_at %}{{ run.last_completed_at|date:"Y-m-d H:i:s T" }} — {{ run.last_completed_at|naturaltime }}{% else %}Never{% endif %}</dd>
             <dt class="col-6">Last successful run</dt><dd class="col-6">{% if run.last_success_at %}{{ run.last_success_at|date:"Y-m-d H:i:s T" }} — {{ run.last_success_at|naturaltime }}{% else %}Never{% endif %}</dd>
+            <dt class="col-6">Snapshot configuration</dt><dd class="col-6">{{ product.snapshot_context }}</dd>
             <dt class="col-6">Latest outcome / code</dt><dd class="col-6">{{ run.last_outcome|default:"never"|title }}{% if run.last_result_code %} / {{ run.last_result_code }}{% endif %}</dd>
-            <dt class="col-6">Source validated on last reconciliation</dt><dd class="col-6">{% if run.source_ok is True %}Yes{% elif run.source_ok is False %}No{% else %}Unknown{% endif %}</dd>
-            <dt class="col-6">Target validated on last reconciliation</dt><dd class="col-6">{% if run.target_ok is True %}Yes{% elif run.target_ok is False %}No{% else %}Unknown{% endif %}</dd>
+            <dt class="col-6">Source validated on last reconciliation</dt><dd class="col-6">{% if not product.snapshot_matches_configuration and run %}Not yet validated for current configuration{% elif product.source_validation is True %}Yes{% elif product.source_validation is False %}No{% else %}Unknown{% endif %}</dd>
+            <dt class="col-6">Target validated on last reconciliation</dt><dd class="col-6">{% if not product.snapshot_matches_configuration and run %}Not yet validated for current configuration{% elif product.target_validation is True %}Yes{% elif product.target_validation is False %}No{% else %}Unknown{% endif %}</dd>
           </dl>{% endwith %}
 
           <h3 class="h6 border-top pt-3">Latest reconciliation activity</h3>
           <div class="small row row-cols-2">
-            {% for key, value in product.latest_counters.items %}{% if value %}<div class="col mb-1"><span class="text-body-secondary">{{ key|cut:"_"|title }}:</span> {{ value }}</div>{% endif %}{% empty %}<p class="text-body-secondary">No structured counters recorded.</p>{% endfor %}
+            {% for metric in product.latest_activity %}<div class="col mb-1"><span class="text-body-secondary">{{ metric.label }}:</span> {{ metric.value }}</div>{% empty %}<p class="text-body-secondary">{% if product.last_run and not product.snapshot_matches_configuration %}No activity has been recorded for the current configuration.{% else %}No structured monitoring activity recorded.{% endif %}</p>{% endfor %}
           </div>
 
           <h3 class="h6 border-top pt-3">Search — current persistent state</h3>

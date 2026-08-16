@@ -1171,8 +1171,8 @@ def reconcile_radarr_ondemand(force=False):
         if status and status.last_started_at and status.last_started_at != before and (
                 not status.last_completed_at or status.last_started_at > status.last_completed_at):
             finish_reconciliation_status('radarr', 500, 'exception',
-                source_instance_id=status.source_instance_id,
-                target_instance_id=status.target_instance_id)
+                source_instance_id=Preferences.get_value('radarr_reconciliation_source_id'),
+                target_instance_id=Preferences.get_value('radarr_reconciliation_target_id'))
         raise
 
 

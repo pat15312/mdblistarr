@@ -65,7 +65,8 @@ class ClassificationTests(TestCase):
             product='sonarr', last_started_at=started or ((completed - timedelta(minutes=1)) if completed else self.now - timedelta(minutes=2)),
             last_completed_at=completed, last_success_at=completed if outcome == 'success' else None,
             last_result_code=200 if outcome == 'success' else 207,
-            last_outcome=outcome, last_counters=counters or {}, source_ok=True, target_ok=True)
+            last_outcome=outcome, last_counters=counters or {}, source_ok=True, target_ok=True,
+            source_instance_id=self.source.id, target_instance_id=self.target.id)
 
     def test_overall_reducer_precedence_and_disabled(self):
         self.assertEqual(reduce_overall_status(['disabled', 'disabled']), 'disabled')
@@ -102,6 +103,60 @@ class ClassificationTests(TestCase):
         SonarrCleanupCandidate.objects.create(target_instance=self.target, tvdb_id=1, target_series_id=1,
             episode_file_id=1, first_eligible_at=self.now, last_confirmed_at=self.now, ready_at=self.now, status='ready')
         self.assertEqual(build_arr_health(self.now)['products'][0]['classification'], 'healthy')
+
+    def test_source_target_and_both_id_changes_invalidate_snapshot(self):
+        self._status(completed=self.now - timedelta(minutes=5))
+        other_source = SonarrInstance.objects.create(name='Other source', url='http://source-2',
+            apikey='secret', is_library_source=True)
+        other_target = SonarrInstance.objects.create(name='Other target', url='http://target-2',
+            apikey='secret', is_library_source=False, is_ondemand_target=True)
+        for changes in (
+            {'sonarr_reconciliation_source_id': other_source.id},
+            {'sonarr_reconciliation_source_id': self.source.id,
+             'sonarr_reconciliation_target_id': other_target.id},
+            {'sonarr_reconciliation_source_id': other_source.id,
+             'sonarr_reconciliation_target_id': other_target.id},
+        ):
+            for name, value in changes.items():
+                Preferences.set_value(name, str(value))
+            product = build_arr_health(self.now)['products'][0]
+            self.assertEqual(product['classification'], 'attention')
+            self.assertFalse(product['snapshot_matches_configuration'])
+            self.assertIsNone(product['source_validation'])
+            self.assertIsNone(product['target_validation'])
+            self.assertEqual(product['latest_activity'], [])
+            self.assertIn('Configuration changed since the last reconciliation', product['issues'][0])
+
+    def test_name_only_change_does_not_invalidate_snapshot(self):
+        self._status(completed=self.now - timedelta(minutes=5))
+        self.target.name = 'Renamed On Demand'
+        self.target.save(update_fields=['name'])
+        product = build_arr_health(self.now)['products'][0]
+        self.assertTrue(product['snapshot_matches_configuration'])
+        self.assertEqual(product['classification'], 'healthy')
+
+    def test_new_pair_terminal_run_clears_mismatch(self):
+        self._status(completed=self.now - timedelta(minutes=5))
+        other_target = SonarrInstance.objects.create(name='Other target', url='http://target-2',
+            apikey='secret', is_library_source=False, is_ondemand_target=True)
+        Preferences.set_value('sonarr_reconciliation_target_id', str(other_target.id))
+        self.assertFalse(build_arr_health(self.now)['products'][0]['snapshot_matches_configuration'])
+        finish_reconciliation_status('sonarr', 200, 'ok', {'episodes_inspected': 2},
+            self.source.id, other_target.id, source_ok=True, target_ok=True)
+        product = build_arr_health(self.now)['products'][0]
+        self.assertTrue(product['snapshot_matches_configuration'])
+        self.assertEqual(product['classification'], 'healthy')
+
+    def test_latest_activity_is_curated_and_readable(self):
+        self._status(completed=self.now - timedelta(minutes=5), counters={
+            'series_compared': 2, 'episodes_inspected': 5,
+            'search_candidates_pending': 99, 'cleanup_candidates_ready': 10,
+        })
+        activity = build_arr_health(self.now)['products'][0]['latest_activity']
+        self.assertEqual(activity, [
+            {'key': 'series_compared', 'label': 'Series compared', 'value': 2},
+            {'key': 'episodes_inspected', 'label': 'Episodes inspected', 'value': 5},
+        ])
 
 
 class TargetScopedMetricsAndViewTests(TestCase):
