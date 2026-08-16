@@ -49,7 +49,12 @@ class EnvironmentSettingsTests(SimpleTestCase):
             "'proxy':getattr(m,'SECURE_PROXY_SSL_HEADER',None),"
             "'forwarded_host':getattr(m,'USE_X_FORWARDED_HOST',False),'tz':m.TIME_ZONE}))"
         )
-        return json.loads(subprocess.check_output([sys.executable, "-c", code], env=env, text=True))
+        return json.loads(subprocess.check_output(
+            [sys.executable, "-c", code],
+            cwd=self.settings_file.parent.parent,
+            env=env,
+            text=True,
+        ))
 
     def test_allowed_hosts_prefers_existing_fork_variable(self):
         result = self.load_values(DJANGO_ALLOWED_HOSTS="fork.example, localhost", ALLOWED_HOSTS="upstream.example")
