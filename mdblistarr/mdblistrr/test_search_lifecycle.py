@@ -2,11 +2,13 @@ from datetime import timedelta
 from types import SimpleNamespace
 from django.test import TestCase
 from django.utils import timezone
+from .arr_health import _search_metrics
 from .models import (SonarrInstance, SonarrEpisodeSearchCandidate as Candidate,
     SonarrEpisodeSearchCommand as Command, SonarrEpisodeSearchCommandCandidate as Link)
 from .sonarr_search import (submit_pending_search_candidates, validate_episode_search_command,
     validate_command_list, reconcile_search_commands_for_series, poll_episode_search_commands,
-    update_search_candidates_for_series, COMMAND_FALLBACK_LIMIT)
+    update_search_candidates_for_series, resolve_failed_candidates_for_removed_series,
+    COMMAND_FALLBACK_LIMIT)
 
 
 class FakeAPI:
@@ -93,6 +95,128 @@ class EpisodeSearchLifecycleTests(TestCase):
             stats=self.wanted_stats(),series_monitored_confirmed=True,now=self.now+timedelta(hours=1))
         candidate.refresh_from_db(); self.assertEqual((candidate.status,candidate.attempt_count,candidate.current_command_id),('pending',0,None))
         self.assertTrue(candidate.command_links.filter(command=old).exists())
+
+    def test_retry_exhausted_resolves_only_when_logically_ineligible(self):
+        candidate = self.candidate(status='failed', attempt=3,
+            due=self.now + timedelta(hours=1))
+        candidate.last_error = 'retry limit exhausted'
+        candidate.save()
+        episode = {'id': 1, 'seasonNumber': 1, 'episodeNumber': 1,
+            'lastSearchTime': None}
+
+        # Monitoring confirmation is submission safety, not logical eligibility.
+        update_search_candidates_for_series(target_instance=self.target, tvdb_id=10,
+            target_series_id=20, target_episodes=[episode], stats=self.wanted_stats(),
+            series_monitored_confirmed=False, now=self.now)
+        candidate.refresh_from_db()
+        self.assertEqual((candidate.status, candidate.last_error),
+            ('failed', 'retry limit exhausted'))
+
+        counts, events, unsafe = update_search_candidates_for_series(
+            target_instance=self.target, tvdb_id=10, target_series_id=20,
+            target_episodes=[episode],
+            stats=SimpleNamespace(wanted_missing_episode_ids=[], desired_by_key={},
+                reason_by_key={}), series_monitored_confirmed=True,
+            now=self.now + timedelta(minutes=1))
+        candidate.refresh_from_db()
+        self.assertFalse(unsafe)
+        self.assertEqual(counts['search_candidates_cancelled'], 1)
+        self.assertIn('retry-exhausted candidate resolved', events[0])
+        self.assertEqual((candidate.status, candidate.last_error,
+            candidate.retry_not_before, candidate.attempt_count),
+            ('cancelled', '', None, 3))
+
+    def test_retry_exhausted_malformed_search_and_identity_are_fail_closed(self):
+        candidate = self.candidate(status='failed', attempt=3)
+        candidate.last_error = 'retry limit exhausted'
+        candidate.save()
+        counts, _events, unsafe = update_search_candidates_for_series(
+            target_instance=self.target, tvdb_id=10, target_series_id=20,
+            target_episodes=[{'id': 1, 'seasonNumber': 1, 'episodeNumber': 1,
+                'lastSearchTime': 'malformed'}], stats=self.wanted_stats(),
+            series_monitored_confirmed=True, now=self.now)
+        candidate.refresh_from_db()
+        self.assertTrue(unsafe)
+        self.assertEqual(counts['search_candidates_cancelled'], 0)
+        self.assertEqual(candidate.status, 'failed')
+
+    def test_retry_exhausted_identity_conflicts_remain_attention(self):
+        cases = (
+            ('series_identity', 11,
+                {'id': 1, 'seasonNumber': 1, 'episodeNumber': 1}),
+            ('episode_identity', 10,
+                {'id': 1, 'seasonNumber': 2, 'episodeNumber': 3}),
+            ('malformed_identity', 10,
+                {'id': 1, 'seasonNumber': 'invalid', 'episodeNumber': 1}),
+        )
+        for label, tvdb_id, episode in cases:
+            with self.subTest(label=label):
+                Candidate.objects.all().delete()
+                candidate = self.candidate(status='failed', attempt=3,
+                    due=self.now + timedelta(hours=1))
+                candidate.last_error = 'retry limit exhausted'
+                candidate.save()
+                counts, events, unsafe = update_search_candidates_for_series(
+                    target_instance=self.target, tvdb_id=tvdb_id,
+                    target_series_id=20, target_episodes=[episode],
+                    stats=SimpleNamespace(wanted_missing_episode_ids=[],
+                        desired_by_key={}, reason_by_key={}),
+                    series_monitored_confirmed=True, now=self.now)
+                candidate.refresh_from_db()
+                metrics = _search_metrics(Candidate, Command, self.target.id)
+                self.assertFalse(unsafe)
+                self.assertEqual(counts['search_candidates_cancelled'], 0)
+                self.assertEqual(events, [])
+                self.assertEqual((candidate.status, candidate.last_error,
+                    candidate.retry_not_before, candidate.attempt_count),
+                    ('failed', 'retry limit exhausted',
+                        self.now + timedelta(hours=1), 3))
+                self.assertEqual(metrics['retry_exhausted'], 1)
+                self.assertGreaterEqual(metrics['needs_attention'], 1)
+
+    def test_retry_exhausted_exact_absence_and_same_identity_resolution(self):
+        for label, episodes in (
+                ('exact_id_absent', []),
+                ('same_identity_no_longer_wanted', [
+                    {'id': 1, 'seasonNumber': 1, 'episodeNumber': 1}])):
+            with self.subTest(label=label):
+                Candidate.objects.all().delete()
+                candidate = self.candidate(status='failed', attempt=3)
+                candidate.last_error = 'retry limit exhausted'
+                candidate.save()
+                counts, events, unsafe = update_search_candidates_for_series(
+                    target_instance=self.target, tvdb_id=10,
+                    target_series_id=20, target_episodes=episodes,
+                    stats=SimpleNamespace(wanted_missing_episode_ids=[],
+                        desired_by_key={}, reason_by_key={}),
+                    series_monitored_confirmed=True, now=self.now)
+                candidate.refresh_from_db()
+                self.assertFalse(unsafe)
+                self.assertEqual(counts['search_candidates_cancelled'], 1)
+                self.assertEqual(candidate.status, 'cancelled')
+                self.assertIn('retry-exhausted candidate resolved', events[0])
+
+    def test_removed_series_resolution_and_fresh_cycle_preserve_history(self):
+        command = self.command(status='failed', processed=self.now)
+        candidate = Candidate.objects.get()
+        candidate.status = 'failed'; candidate.attempt_count = 3
+        candidate.last_error = 'retry limit exhausted'; candidate.save()
+        count, events = resolve_failed_candidates_for_removed_series(
+            target_instance=self.target, target_series_ids=[], now=self.now)
+        candidate.refresh_from_db()
+        self.assertEqual((count, candidate.status, candidate.current_command_id),
+            (1, 'cancelled', command.id))
+        self.assertIn('no_longer_eligible', events[0])
+        update_search_candidates_for_series(target_instance=self.target, tvdb_id=10,
+            target_series_id=20,
+            target_episodes=[{'id': 1, 'seasonNumber': 1, 'episodeNumber': 1,
+                'lastSearchTime': None}], stats=self.wanted_stats(),
+            series_monitored_confirmed=True, now=self.now + timedelta(hours=1))
+        candidate.refresh_from_db()
+        self.assertEqual((candidate.status, candidate.attempt_count,
+            candidate.current_command_id, candidate.last_error),
+            ('pending', 0, None, ''))
+        self.assertTrue(candidate.command_links.filter(command=command).exists())
 
     def test_pending_retry_satisfied_by_last_search_clears_retry_state(self):
         failed=self.command(status='failed',processed=self.now); candidate=Candidate.objects.get()

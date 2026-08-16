@@ -15,7 +15,8 @@ from .sonarr_reconcile import determine_series_completeness, calculate_episode_m
 from .radarr_reconcile import calculate_movie_monitoring, validate_movie_response
 from .sonarr_cleanup import process_cleanup_for_series
 from .sonarr_search import (update_search_candidates_for_series, submit_pending_search_candidates,
-    reconcile_search_commands_for_series, poll_episode_search_commands)
+    reconcile_search_commands_for_series, poll_episode_search_commands,
+    resolve_failed_candidates_for_removed_series)
 from .radarr_search import (update_movie_search_candidates,
     submit_pending_search_candidates as submit_pending_movie_search_candidates,
     reconcile_movie_search_commands, poll_movie_search_commands)
@@ -850,6 +851,12 @@ def reconcile_sonarr_ondemand(force=False):
             cleanup_totals = {'cleanup_candidates_new':0,'cleanup_candidates_pending':0,'cleanup_candidates_ready':0,'cleanup_candidates_cancelled':0,'cleanup_would_delete':0,'cleanup_files_deleted':0,'cleanup_files_already_absent':0,'cleanup_deferred_by_limit':0,'cleanup_failures':0}
             cleanup_series_summaries = []
             search_candidate_totals = {'search_candidates_new':0,'search_candidates_pending':0,'search_candidates_submitted':0,'search_candidates_cancelled':0,'search_candidates_deferred':0,'search_candidates_recovered':0,'search_recovery_failures':0,'search_failures':0}
+            removed_count, removed_events = resolve_failed_candidates_for_removed_series(
+                target_instance=target,
+                target_series_ids=[show['id'] for show in target_series])
+            search_candidate_totals['search_candidates_cancelled'] += removed_count
+            for event in removed_events:
+                save_log(provider, 1, sanitize_text(event))
             command_total_keys = ('search_commands_polled','search_commands_queued','search_commands_started','search_commands_completed','search_commands_failed','search_commands_aborted','search_commands_cancelled','search_commands_orphaned','search_commands_ambiguous','search_commands_unavailable','search_command_poll_failures','search_candidates_requeued','search_candidates_retry_exhausted','search_candidates_satisfied_by_file','search_candidates_satisfied_by_last_search')
             command_totals = {key: 0 for key in command_total_keys}
             command_totals['search_retries_submitted'] = 0

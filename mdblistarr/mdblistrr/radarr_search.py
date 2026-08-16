@@ -107,9 +107,8 @@ def update_movie_search_candidates(*, target_instance, target_movies, eligible_m
     eligible=set(eligible_movie_ids); confirmed=set(confirmed_monitored_ids)
     submission_blocked_movie_ids = submission_blocked_movie_ids if submission_blocked_movie_ids is not None else set()
     counters={k:0 for k in ('search_candidates_new','search_candidates_pending','search_candidates_submitted','search_candidates_cancelled','search_candidates_deferred','search_candidates_recovered','search_recovery_failures','search_failures')}; events=[]
-    by_id={m['id']:m for m in target_movies}; existing={c.target_movie_id:c for c in RadarrMovieSearchCandidate.objects.filter(target_instance=target_instance)}; seen=set()
+    by_id={m['id']:m for m in target_movies}; existing={c.target_movie_id:c for c in RadarrMovieSearchCandidate.objects.filter(target_instance=target_instance)}
     for movie_id in sorted(eligible):
-        seen.add(movie_id)
         if movie_id not in confirmed:
             submission_blocked_movie_ids.add(movie_id)
             if movie_id in existing:
@@ -155,8 +154,15 @@ def update_movie_search_candidates(*, target_instance, target_movies, eligible_m
         else:
             cand.last_confirmed_at=now; cand.save(update_fields=['last_confirmed_at','updated_at'])
     for movie_id,cand in existing.items():
-        if movie_id in seen or cand.status != SEARCH_STATUS_PENDING: continue
+        if movie_id in eligible or cand.status not in (SEARCH_STATUS_PENDING, SEARCH_STATUS_FAILED): continue
+        current = by_id.get(movie_id)
+        has_search_lineage = cand.attempt_count > 0 or cand.current_command_id is not None
+        if current is not None and current.get('tmdbId') != cand.tmdb_id and has_search_lineage:
+            # Identity ambiguity is not positive evidence that the need resolved.
+            continue
+        was_failed = cand.status == SEARCH_STATUS_FAILED
         cand.status=SEARCH_STATUS_CANCELLED; cand.cancelled_at=now; cand.last_confirmed_at=now; cand.retry_not_before=None; cand.last_error=''; cand.save(update_fields=['status','cancelled_at','last_confirmed_at','retry_not_before','last_error','updated_at']); counters['search_candidates_cancelled']+=1
+        if was_failed: events.append(f'MoviesSearch retry-exhausted candidate resolved movie={movie_id} reason=no_longer_eligible')
     return counters,events,bool(counters['search_failures'])
 
 

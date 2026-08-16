@@ -81,6 +81,38 @@ def _mark_submitted(cand, *, submitted_at, now):
     cand.save(update_fields=['status', 'submitted_at', 'cancelled_at', 'retry_not_before', 'last_error', 'last_confirmed_at', 'updated_at'])
 
 
+def _cancel_retry_exhausted(cand, *, now):
+    """Retire a current failure without rewriting its search-command history."""
+    cand.status = SEARCH_STATUS_CANCELLED
+    cand.cancelled_at = now
+    cand.last_confirmed_at = now
+    cand.retry_not_before = None
+    cand.last_error = ''
+    cand.save(update_fields=['status', 'cancelled_at', 'last_confirmed_at',
+        'retry_not_before', 'last_error', 'updated_at'])
+
+
+def resolve_failed_candidates_for_removed_series(*, target_instance,
+        target_series_ids, now=None):
+    """Resolve failures whose series is absent from a validated target snapshot."""
+    now = now or timezone.now()
+    present = set(target_series_ids)
+    candidates = SonarrEpisodeSearchCandidate.objects.filter(
+        target_instance=target_instance, status=SEARCH_STATUS_FAILED)
+    count = 0
+    events = []
+    for cand in candidates:
+        if cand.target_series_id in present:
+            continue
+        _cancel_retry_exhausted(cand, now=now)
+        count += 1
+        events.append(
+            f'EpisodeSearch retry-exhausted candidate resolved tvdb={cand.tvdb_id} '
+            f'series={cand.target_series_id} episode={cand.target_episode_id} '
+            'reason=no_longer_eligible')
+    return count, events
+
+
 def command_response_succeeded(response):
     if not isinstance(response, dict) or not response:
         return False
@@ -198,10 +230,14 @@ def update_search_candidates_for_series(*, target_instance, tvdb_id, target_seri
         if episode_id is not None:
             by_id[episode_id] = ep
 
-    for episode_id in stats.wanted_missing_episode_ids if series_monitored_confirmed else []:
+    logically_eligible = set()
+    for episode_id in stats.wanted_missing_episode_ids:
         ep = by_id.get(episode_id)
         key = episode_key(ep) if isinstance(ep, dict) else None
         if ep is None or key is None or stats.desired_by_key.get(key) is not True or stats.reason_by_key.get(key) != REASON_WANTED:
+            continue
+        logically_eligible.add(episode_id)
+        if not series_monitored_confirmed:
             continue
         last_search, error = _parse_sonarr_datetime(ep.get('lastSearchTime'))
         if error:
@@ -211,9 +247,7 @@ def update_search_candidates_for_series(*, target_instance, tvdb_id, target_seri
         eligible[episode_id] = (ep, key, last_search)
 
     existing = {c.target_episode_id: c for c in SonarrEpisodeSearchCandidate.objects.filter(target_instance=target_instance, target_series_id=target_series_id)}
-    seen = set()
     for episode_id, (ep, key, last_search) in eligible.items():
-        seen.add(episode_id)
         cand = existing.get(episode_id)
         newly_monitored = episode_id in applied_monitor_true_ids
         if cand is None:
@@ -274,15 +308,24 @@ def update_search_candidates_for_series(*, target_instance, tvdb_id, target_seri
         events.append(f'EpisodeSearch candidate recovery series={target_series_id} command_id={command_id} recovered={recovered_count}')
 
     for episode_id, cand in existing.items():
-        if episode_id in seen or cand.status != SEARCH_STATUS_PENDING:
+        if episode_id in logically_eligible or cand.status not in (SEARCH_STATUS_PENDING, SEARCH_STATUS_FAILED):
             continue
-        cand.status = SEARCH_STATUS_CANCELLED
-        cand.cancelled_at = now
-        cand.last_confirmed_at = now
-        cand.last_error = ''
-        cand.save(update_fields=['status', 'cancelled_at', 'last_confirmed_at', 'last_error', 'updated_at'])
+        current_episode = by_id.get(episode_id)
+        has_search_lineage = cand.attempt_count > 0 or cand.current_command_id is not None
+        if cand.status == SEARCH_STATUS_FAILED and has_search_lineage and current_episode is not None:
+            current_key = episode_key(current_episode)
+            if current_key is None or _identity_changed(
+                    cand, current_key, tvdb_id, target_series_id):
+                # A reused or malformed episode identity is not evidence that the
+                # retry-exhausted acquisition need was resolved. Fail closed.
+                continue
+        was_failed = cand.status == SEARCH_STATUS_FAILED
+        _cancel_retry_exhausted(cand, now=now)
         counters['search_candidates_cancelled'] += 1
-        events.append(f'search candidate cancelled tvdb={cand.tvdb_id} series={cand.target_series_id} episode={episode_id}')
+        if was_failed:
+            events.append(f'EpisodeSearch retry-exhausted candidate resolved tvdb={cand.tvdb_id} series={cand.target_series_id} episode={episode_id} reason=no_longer_eligible')
+        else:
+            events.append(f'search candidate cancelled tvdb={cand.tvdb_id} series={cand.target_series_id} episode={episode_id}')
 
     return counters, events, False
 
