@@ -108,13 +108,44 @@ def _terminal(cand, status, now):
     cand.deleted_at=now if status == cand.STATUS_DELETED else None
     cand.last_error=''; cand.save()
 
+def _destructive_uncertainty(counters, cand, reason):
+    cand.last_error = sanitize_text(reason)
+    cand.save(update_fields=['last_error', 'updated_at'])
+    counters.cleanup_failures += 1
+    counters.cleanup_safety_deferred += 1
+    counters.stop_deletes_for_run = True
+    counters.events.append(_event('failure', cand, reason=reason))
+
+def _retire_inactive_exact_file(cand, target_api, counters, now, title=''):
+    """Resolve an old immutable file identity after the movie references another file."""
+    exact = target_api.get_movie_file(cand.movie_file_id)
+    if _absent(exact):
+        _terminal(cand, cand.STATUS_ALREADY_ABSENT, now)
+        counters.cleanup_files_already_absent += 1
+        counters.events.append(_event('already_absent', cand, title))
+        return 'absent'
+    ok, _ = validate_movie_file(
+        exact, expected_file_id=cand.movie_file_id, expected_movie_id=cand.target_movie_id)
+    if ok:
+        # The old file still exists, but is no longer the movie's active file.  It
+        # must never be treated as the replacement or remain destructively ready.
+        _terminal(cand, cand.STATUS_CANCELLED, now)
+        counters.cleanup_candidates_cancelled += 1
+        counters.events.append(_event('cancelled', cand, title, 'target_file_no_longer_active'))
+        return 'cancelled'
+    cand.last_error = sanitize_text('cleanup lifecycle uncertain: exact old target file state invalid')
+    cand.save(update_fields=['last_error', 'updated_at'])
+    counters.cleanup_failures += 1
+    counters.cleanup_safety_deferred += 1
+    return 'uncertain'
+
 def process_radarr_cleanup(*, target_instance, source_movies, target_movies, confirmed_unmonitored_ids,
         monitoring_blocked_ids, source_api, target_api, cleanup_enabled=False, dry_run=True,
         grace_hours=24, max_deletions=25, stop_real_deletes=False):
     now=timezone.now(); counters=RadarrCleanupCounters(stop_deletes_for_run=bool(stop_real_deletes))
     source_by_tmdb={m.get('tmdbId'):m for m in source_movies if isinstance(m,dict)}
     target_by_id={m.get('id'):m for m in target_movies if isinstance(m,dict)}
-    eligible_ids=set(); uncertain_ids=set()
+    eligible_ids=set(); uncertain_ids=set(); lifecycle_blocked_candidate_ids=set()
     for target in sorted(target_movies, key=lambda m:m.get('id',0)):
         source=source_by_tmdb.get(target.get('tmdbId'))
         if source is None: continue
@@ -143,38 +174,78 @@ def process_radarr_cleanup(*, target_instance, source_movies, target_movies, con
             counters.cleanup_candidates_ready+=1
         else: counters.cleanup_candidates_pending+=1
         cand.save()
-    # Definite loss of eligibility cancels; uncertainty/monitor/search deferral preserves.
+    # Resolve candidates by immutable target file identity.  A replacement gets
+    # its own candidate above and can never inherit the old file's grace clock.
     for cand in RadarrCleanupCandidate.objects.filter(target_instance=target_instance).exclude(status__in=('deleted','already_absent','cancelled')):
-        if cand.target_movie_id not in target_by_id: continue
+        current = target_by_id.get(cand.target_movie_id)
+        if current is None:
+            continue
+        current_file_id = positive_int(current.get('movieFileId')) if current.get('hasFile') is True else None
+        if current_file_id != cand.movie_file_id:
+            if _retire_inactive_exact_file(cand, target_api, counters, now, current.get('title')) == 'uncertain':
+                lifecycle_blocked_candidate_ids.add(cand.id)
+                if cleanup_enabled and not dry_run:
+                    counters.stop_deletes_for_run = True
+            continue
         if cand.target_movie_id not in eligible_ids and cand.target_movie_id not in uncertain_ids:
             _terminal(cand,cand.STATUS_CANCELLED,now); counters.cleanup_candidates_cancelled+=1
     ready=list(RadarrCleanupCandidate.objects.filter(target_instance=target_instance,status='ready').order_by('ready_at','id'))
     if not cleanup_enabled: return counters
     if dry_run:
         for cand in ready:
-            if cand.target_movie_id in confirmed_unmonitored_ids and not search_lifecycle_unsafe(target_instance,cand.target_movie_id):
-                counters.cleanup_would_delete+=1; counters.events.append(_event('would_delete',cand,target_by_id.get(cand.target_movie_id,{}).get('title')))
+            if cand.id not in lifecycle_blocked_candidate_ids and cand.target_movie_id in confirmed_unmonitored_ids and not search_lifecycle_unsafe(target_instance,cand.target_movie_id):
+                counters.cleanup_would_delete+=1
         return counters
     for index,cand in enumerate(ready):
-        if counters.stop_deletes_for_run or counters.delete_attempts_consumed >= max_deletions:
-            counters.cleanup_deferred_by_limit += 1; continue
+        if counters.stop_deletes_for_run:
+            counters.cleanup_safety_deferred += 1
+            continue
+        if cand.id in lifecycle_blocked_candidate_ids:
+            counters.cleanup_safety_deferred += 1
+            continue
+        if counters.delete_attempts_consumed >= max_deletions:
+            counters.cleanup_deferred_by_limit += 1
+            continue
         if cand.target_movie_id not in confirmed_unmonitored_ids or cand.target_movie_id in monitoring_blocked_ids or search_lifecycle_unsafe(target_instance,cand.target_movie_id):
             counters.cleanup_safety_deferred+=1; continue
-        sm=source_api.get_movie(cand.source_movie_id); tm=target_api.get_movie(cand.target_movie_id)
-        if _absent(sm): _terminal(cand,cand.STATUS_CANCELLED,timezone.now()); counters.cleanup_candidates_cancelled+=1; continue
-        tf=target_api.get_movie_file(cand.movie_file_id)
-        if _absent(tf): _terminal(cand,cand.STATUS_ALREADY_ABSENT,timezone.now()); counters.cleanup_files_already_absent+=1; continue
+        sm=source_api.get_movie(cand.source_movie_id)
+        tm=target_api.get_movie(cand.target_movie_id)
+        if _absent(sm):
+            _terminal(cand,cand.STATUS_CANCELLED,timezone.now()); counters.cleanup_candidates_cancelled+=1; continue
+        if _absent(tm):
+            tf=target_api.get_movie_file(cand.movie_file_id)
+            if _absent(tf):
+                _terminal(cand,cand.STATUS_ALREADY_ABSENT,timezone.now()); counters.cleanup_files_already_absent+=1
+            else:
+                _destructive_uncertainty(counters,cand,'revalidation uncertain: target movie absent but exact file absence unproven')
+            continue
         ok_s,rs=validate_movie_for_cleanup(sm,expected_movie_id=cand.source_movie_id,expected_tmdb_id=cand.tmdb_id)
         ok_t,rt=validate_movie_for_cleanup(tm,target=True,expected_movie_id=cand.target_movie_id,expected_tmdb_id=cand.tmdb_id)
-        if not ok_s or not ok_t or not sm.get('hasFile') or not tm.get('hasFile') or tm.get('movieFileId')!=cand.movie_file_id or tm.get('monitored') is not False:
-            cand.last_error=sanitize_text(f'revalidation unsafe: {rs or rt or "duplicate changed"}'); cand.save(); counters.cleanup_safety_deferred+=1; continue
+        if not ok_s or not ok_t:
+            _destructive_uncertainty(counters,cand,f'revalidation uncertain: {rs or rt}'); continue
+        if not sm.get('hasFile'):
+            _terminal(cand,cand.STATUS_CANCELLED,timezone.now()); counters.cleanup_candidates_cancelled+=1; continue
+        tf=target_api.get_movie_file(cand.movie_file_id)
+        if _absent(tf):
+            _terminal(cand,cand.STATUS_ALREADY_ABSENT,timezone.now()); counters.cleanup_files_already_absent+=1; continue
+        if not tm.get('hasFile') or tm.get('movieFileId')!=cand.movie_file_id:
+            ok_tf,_=validate_movie_file(tf,expected_file_id=cand.movie_file_id,expected_movie_id=cand.target_movie_id)
+            if ok_tf:
+                _terminal(cand,cand.STATUS_CANCELLED,timezone.now()); counters.cleanup_candidates_cancelled+=1
+            else:
+                _destructive_uncertainty(counters,cand,'revalidation uncertain: target replacement state invalid')
+            continue
+        if tm.get('monitored') is not False:
+            counters.cleanup_safety_deferred+=1; continue
         new_sf=sm['movieFileId']; sf=source_api.get_movie_file(new_sf)
         ok_sf,_=validate_movie_file(sf,expected_file_id=new_sf,expected_movie_id=cand.source_movie_id)
         ok_tf,_=validate_movie_file(tf,expected_file_id=cand.movie_file_id,expected_movie_id=cand.target_movie_id)
-        if not ok_sf or not ok_tf: cand.last_error='revalidation unsafe: malformed movie file'; cand.save(); counters.cleanup_safety_deferred+=1; continue
+        if not ok_sf or not ok_tf:
+            _destructive_uncertainty(counters,cand,'revalidation uncertain: malformed movie file'); continue
         estate,se,te=editions_compatible(sf.get('edition'),tf.get('edition'))
         if estate=='conflict': _terminal(cand,cand.STATUS_CANCELLED,timezone.now()); counters.cleanup_edition_conflicts+=1; counters.cleanup_candidates_cancelled+=1; continue
-        if estate=='malformed': counters.cleanup_safety_deferred+=1; continue
+        if estate=='malformed':
+            _destructive_uncertainty(counters,cand,'revalidation uncertain: malformed edition'); continue
         if new_sf!=cand.source_movie_file_id or se!=cand.source_edition or te!=cand.target_edition:
             cand.source_movie_file_id=new_sf; cand.source_edition=se; cand.target_edition=te; cand.first_eligible_at=timezone.now(); cand.status='pending'; cand.ready_at=None; cand.save(); counters.cleanup_candidates_pending+=1; continue
         if timezone.now() < cand.first_eligible_at+timedelta(hours=int(grace_hours)) or cand.reason!=REASON_PERMANENT_DUPLICATE: counters.cleanup_safety_deferred+=1; continue
@@ -187,5 +258,5 @@ def process_radarr_cleanup(*, target_instance, source_movies, target_movies, con
             else: counters.cleanup_files_deleted+=1; counters.events.append(_event('deleted',cand))
         else:
             cand.last_error='post-delete verification could not prove exact file absent'; cand.save(); counters.cleanup_failures+=1; counters.stop_deletes_for_run=True
-            counters.cleanup_deferred_by_limit += len(ready)-index-1; counters.events.append(_event('failure',cand,reason='post_delete_uncertain')); break
+            counters.cleanup_safety_deferred += 1 + len(ready)-index-1; counters.events.append(_event('failure',cand,reason='post_delete_uncertain')); break
     return counters
