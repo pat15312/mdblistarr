@@ -264,6 +264,34 @@ class RadarrAPI():
         except Exception as e:
             return [{'result': f'Error connecting to Radarr API: {sanitize_text(e)}'}]
 
+    def get_movie(self, movie_id):
+        if isinstance(movie_id, bool) or not isinstance(movie_id, int) or movie_id <= 0:
+            return {'error': 'movie id must be a positive integer'}
+        try:
+            return self.connect.get_json_with_status(
+                f"{self.url}/api/v3/movie/{movie_id}", headers=_api_headers(self.apikey))
+        except Exception as exc:
+            return {'errorMessage': _safe_error('Radarr movie request failed', exc)}
+
+    def get_movie_file(self, movie_file_id):
+        if isinstance(movie_file_id, bool) or not isinstance(movie_file_id, int) or movie_file_id <= 0:
+            return {'error': 'movie file id must be a positive integer'}
+        try:
+            return self.connect.get_json_with_status(
+                f"{self.url}/api/v3/moviefile/{movie_file_id}", headers=_api_headers(self.apikey))
+        except Exception as exc:
+            return {'errorMessage': _safe_error('Radarr movie-file request failed', exc)}
+
+    def delete_movie_file(self, movie_file_id):
+        """Delete exactly one target MovieFileResource; Connect DELETE is non-retrying."""
+        if isinstance(movie_file_id, bool) or not isinstance(movie_file_id, int) or movie_file_id <= 0:
+            return {'error': 'movie file id must be a positive integer'}
+        try:
+            return self.connect.delete_json(
+                f"{self.url}/api/v3/moviefile/{movie_file_id}", headers=_api_headers(self.apikey))
+        except Exception as exc:
+            return {'errorMessage': _safe_error('Radarr movie-file delete failed', exc)}
+
     def get_exclusions(self):
         """
         Import List Exclusions (Settings -> Import Lists -> List Exclusions).

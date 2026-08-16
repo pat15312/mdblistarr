@@ -62,8 +62,8 @@ Companion app for [mdblist.com](https://mdblist.com) for better Radarr and Sonar
 | Persistent search candidates | Implemented | Implemented |
 | Command lifecycle tracking | Implemented | Implemented |
 | Automatic retry handling | Implemented | Implemented |
-| Safe duplicate cleanup | Implemented | Planned |
-| Per-item cleanup summaries | Implemented | Planned |
+| Safe duplicate cleanup | Implemented | Implemented |
+| Per-item cleanup summaries | Implemented | Implemented |
 
 Instance roles describe purpose; they do not authorize writes. MDBList queue import remains a separate global and per-instance opt-in and requires a valid quality profile and root folder. Existing Radarr instances migrate as permanent library sources (`source=True`, `target=False`), while target-only Radarr instances are excluded from permanent-library MDBList sync.
 
@@ -71,7 +71,9 @@ Instance roles describe purpose; they do not authorize writes. MDBList queue imp
 
 Radarr reconciliation matches target movies to the permanent, read-only source exclusively by TMDB ID. A target movie is monitored only when neither its matching permanent movie nor the target movie has a file and the target Radarr record reports `isAvailable=true`. Permanent files, existing target files, and unavailable target movies are unmonitored. Radarr's `isAvailable` value is authoritative; MDBListarr does not derive availability from release dates.
 
-Monitoring writes are sent only to the configured On-Demand target in deterministic batches of at most 100 through Radarr's movie editor. The permanent source is never mutated. Eligible candidates are maintained even while search submission is disabled. When explicitly enabled, MDBListarr submits one-shot `MoviesSearch` commands in deterministic batches of at most 100 exact Radarr movie IDs, persists intent before the POST, tracks command outcomes, and retries only genuine execution failures. A successful search is not repeated merely because it found no release. Cleanup and deletion remain absent; Radarr RSS/indexer processing remains independent.
+Monitoring writes are sent only to the configured On-Demand target in deterministic batches of at most 100 through Radarr's movie editor. The permanent source is never mutated. Eligible candidates are maintained even while search submission is disabled. When explicitly enabled, MDBListarr submits one-shot `MoviesSearch` commands in deterministic batches of at most 100 exact Radarr movie IDs, persists intent before the POST, tracks command outcomes, and retries only genuine execution failures. A successful search is not repeated merely because it found no release. Radarr duplicate cleanup uses persistent candidates keyed by the exact target movie-file ID and matches movies only by TMDB ID. Editions are trimmed, whitespace-collapsed, and compared case-insensitively; blank/non-blank, different, or malformed edition evidence fails closed. Cleanup deletes only the target `/moviefile/{id}` through Radarr after exact source/target revalidation and grace. It never deletes movie records or filesystem/NzbDAV paths. Radarr RSS/indexer processing remains independent.
+
+Safe rollout: deploy and confirm monitoring/search health, then enable cleanup with dry-run on, the 24-hour grace, and the 25-file cap. Review would-delete and edition-conflict output for at least one full grace period before disabling dry-run. Confirm permanent files remain untouched, the target movie record remains after its file disappears, and validate Jellyfin/NzbDAV behaviour independently.
 
 For the intended On-Demand workflow, configure Radarr import lists with **Monitor=None** and **Search on Add disabled**. Queue import remains an independent opt-in and is not required for reconciliation.
 

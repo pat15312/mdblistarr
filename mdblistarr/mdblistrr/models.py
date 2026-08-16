@@ -350,6 +350,33 @@ class SonarrEpisodeSearchCommandCandidate(models.Model):
         constraints = [models.UniqueConstraint(fields=['command', 'candidate'], name='uniq_sonarr_search_command_candidate')]
 
 
+class RadarrCleanupCandidate(models.Model):
+    REASON_PERMANENT_DUPLICATE = 'permanent_duplicate'
+    STATUS_PENDING = 'pending'; STATUS_READY = 'ready'; STATUS_DELETED = 'deleted'
+    STATUS_CANCELLED = 'cancelled'; STATUS_ALREADY_ABSENT = 'already_absent'
+    STATUS_CHOICES = [(v, v.replace('_', ' ').title()) for v in (
+        STATUS_PENDING, STATUS_READY, STATUS_DELETED, STATUS_CANCELLED, STATUS_ALREADY_ABSENT)]
+    target_instance = models.ForeignKey(RadarrInstance, on_delete=models.CASCADE, related_name='cleanup_candidates')
+    tmdb_id = models.PositiveIntegerField()
+    source_movie_id = models.PositiveIntegerField()
+    source_movie_file_id = models.PositiveIntegerField()
+    target_movie_id = models.PositiveIntegerField()
+    movie_file_id = models.PositiveIntegerField()
+    source_edition = models.CharField(max_length=255, blank=True, default='')
+    target_edition = models.CharField(max_length=255, blank=True, default='')
+    reason = models.CharField(max_length=64, default=REASON_PERMANENT_DUPLICATE)
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    first_eligible_at = models.DateTimeField(); last_confirmed_at = models.DateTimeField()
+    ready_at = models.DateTimeField(null=True, blank=True); deleted_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True); updated_at = models.DateTimeField(auto_now=True)
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['target_instance', 'movie_file_id'], name='uniq_radarr_cleanup_target_file')]
+    def __str__(self):
+        return f'{self.target_instance_id}:{self.movie_file_id}:{self.status}'
+
+
 class RadarrMovieSearchCandidate(models.Model):
     STATUS_PENDING = 'pending'; STATUS_SUBMITTED = 'submitted'; STATUS_CANCELLED = 'cancelled'; STATUS_FAILED = 'failed'
     STATUS_CHOICES = [(value, value.title()) for value in (STATUS_PENDING, STATUS_SUBMITTED, STATUS_CANCELLED, STATUS_FAILED)]
