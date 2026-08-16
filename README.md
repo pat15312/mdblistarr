@@ -1,152 +1,20 @@
-# mdblistarr
+# MDBListarr
 
-Companion app for [mdblist.com](https://mdblist.com) for better Radarr and Sonarr integration.
+MDBListarr connects [MDBList](https://mdblist.com/) with Sonarr and Radarr. It can report library state to MDBList, synchronize MDBList collections, and optionally process the MDBList add queue. This repository is a fork of the [original MDBListarr project](https://github.com/linaspurinis/mdblistarr) by `linaspurinis`; the extended features described here belong to this fork and do not imply upstream endorsement.
 
-## Docker Hub image
+## Key capabilities
 
-[linaspurinis/mdblistarr](https://hub.docker.com/r/linaspurinis/mdblistarr)
+- MDBList authentication, library-state upload, optional collection sync, and optional queue import for multiple Sonarr and Radarr instances.
+- Authenticated administration, encrypted stored credentials, and automatically generated persistent cryptographic secrets.
+- Explicit permanent/library source, On-Demand target, and queue-import roles for Arr instances.
+- Sonarr and Radarr On-Demand monitoring reconciliation, persistent search tracking and retries, and conservative duplicate-file cleanup.
+- A staff-only, read-only operational health dashboard.
 
-## Basics
+## Installation
 
-- Connects MDBList with Radarr and Sonarr.
-- Uploads your current library state back to MDBList on schedule.
-- Pulls MDBList queue items and sends add requests to Radarr/Sonarr.
-- Supports multiple Radarr/Sonarr instances.
-- Runs as a simple Docker container with persistent DB volume.
+The container image for **this fork** is `ghcr.io/pat15312/mdblistarr:latest`. The upstream Docker Hub image is maintained separately and should not be expected to contain this fork's 2.4.0 functionality.
 
-### Basic workflow
-
-1. Connect your MDBList account via OAuth (or enter an API key manually).
-2. Add your Radarr and Sonarr instances.
-3. Set quality profile and root folder mappings per instance.
-4. Let scheduled sync keep MDBList and your ARR apps in sync.
-
-## New in v2.3.0
-
-- MDBList OAuth authentication: connect your account via the new "Connect with MDBList" button instead of copying an API key. Uses the OAuth 2.0 device authorization flow.
-- API key auth still works until you connect via OAuth — once OAuth is connected, the API key is cleared and OAuth takes over.
-
-## New in v2.2.4
-
-- Added support for syncing library status across all configured servers
-
-## New in v2.2.3
-
-- Optional MDBList collection sync: enable "Sync Library Status" in the MDBList config tab to keep your MDBList collection up to date based on what is downloaded in Radarr/Sonarr.
-- Configurable sync hour: choose which UTC hour of the day Radarr and Sonarr sync runs. A random hour is assigned automatically on first run to spread load across all users.
-- Home page now shows last sync time and next sync estimate so you always know when to expect the next run.
-- Fixed UI bug where the Radarr/Sonarr server form would reset after saving — the selected server now stays active across page reloads.
-
-## New in v2.2.2
-
-- Full sync now reports monitored and unmonitored items more reliably:
-  - Radarr uses `hasFile` to mark downloaded vs missing.
-  - Sonarr uses episode file statistics where available.
-- Import list exclusions from Radarr/Sonarr are included in sync payloads.
-- If a movie is already in Radarr, MDBListarr now triggers a Radarr `MoviesSearch` command instead of only logging a duplicate error.
-- HTTP/JSON handling is more defensive for empty/invalid/compressed responses.
-
-## App Configuration Screen
-
-![image](https://github.com/user-attachments/assets/cdd58b1a-4b55-464d-84dd-55246ba6a096)
-
-## Sonarr/Radarr parity foundation
-
-| Capability | Sonarr | Radarr |
-| --- | --- | --- |
-| Permanent library source role | Implemented | Implemented |
-| On-Demand target role | Implemented | Implemented |
-| Unified read-only operational health (`/health`) | Implemented | Implemented |
-| Optional profile/root for non-import use | Implemented | Implemented |
-| Role-aware permanent-library sync | Implemented | Implemented |
-| Monitoring reconciliation | Implemented | Implemented |
-| Persistent search candidates | Implemented | Implemented |
-| Command lifecycle tracking | Implemented | Implemented |
-| Automatic retry handling | Implemented | Implemented |
-| Safe duplicate cleanup | Implemented | Implemented |
-| Per-item cleanup summaries | Implemented | Implemented |
-
-Instance roles describe purpose; they do not authorize writes. MDBList queue import remains a separate global and per-instance opt-in and requires a valid quality profile and root folder. Existing Radarr instances migrate as permanent library sources (`source=True`, `target=False`), while target-only Radarr instances are excluded from permanent-library MDBList sync.
-
-### Radarr On Demand monitoring reconciliation
-
-Radarr reconciliation matches target movies to the permanent, read-only source exclusively by TMDB ID. A target movie is monitored only when neither its matching permanent movie nor the target movie has a file and the target Radarr record reports `isAvailable=true`. Permanent files, existing target files, and unavailable target movies are unmonitored. Radarr's `isAvailable` value is authoritative; MDBListarr does not derive availability from release dates.
-
-Monitoring writes are sent only to the configured On-Demand target in deterministic batches of at most 100 through Radarr's movie editor. The permanent source is never mutated. Eligible candidates are maintained even while search submission is disabled. When explicitly enabled, MDBListarr submits one-shot `MoviesSearch` commands in deterministic batches of at most 100 exact Radarr movie IDs, persists intent before the POST, tracks command outcomes, and retries only genuine execution failures. A successful search is not repeated merely because it found no release. Radarr duplicate cleanup uses persistent candidates keyed by the exact target movie-file ID and matches movies only by TMDB ID. Editions are trimmed, whitespace-collapsed, and compared case-insensitively; blank/non-blank, different, or malformed edition evidence fails closed. Cleanup deletes only the target `/moviefile/{id}` through Radarr after exact source/target revalidation and grace. It never deletes movie records or filesystem/NzbDAV paths. Radarr RSS/indexer processing remains independent.
-
-Safe rollout: deploy and confirm monitoring/search health, then enable cleanup with dry-run on, the 24-hour grace, and the 25-file cap. Review would-delete and edition-conflict output for at least one full grace period before disabling dry-run. Confirm permanent files remain untouched, the target movie record remains after its file disappears, and validate Jellyfin/NzbDAV behaviour independently.
-
-For the intended On-Demand workflow, configure Radarr import lists with **Monitor=None** and **Search on Add disabled**. Queue import remains an independent opt-in and is not required for reconciliation.
-
-## MDBListarr
-
-```sh
-git clone --branch latest git@github.com:linaspurinis/mdblistarr.git
-docker build -t mdblistarr .
-docker run -e PORT=5353 -p 5353:5353 mdblistarr
-```
-
-```
-services:
-  mdblistarr:
-    container_name: mdblistarr
-    image: linaspurinis/mdblistarr:latest
-    environment:
-      - PORT=5353
-    volumes:
-      - db:/usr/src/db/
-    ports:
-      - '5353:5353'
-volumes:
-  db:
-```
-
-## Security hardening in this fork
-
-MDBListarr now requires Django authentication for the configuration UI, logs, OAuth device-flow actions, connection tests, and state-changing endpoints. Only active staff or superuser accounts may use the application. `/healthz` and static assets remain unauthenticated.
-
-### Arr operational health
-
-Active staff users can open `/health` for a unified, read-only Sonarr and Radarr operational summary. Viewing or refreshing this page makes no Sonarr, Radarr, or MDBList API calls and provides no run, retry, repair, configuration, or deletion controls. The dashboard persists a structured snapshot of each latest actual reconciliation and separately aggregates current search-command, search-candidate, and cleanup-candidate state from MDBListarr's database, scoped to the currently configured On-Demand target.
-
-The endpoint indicators mean **validated on the last reconciliation**; they are not live connectivity probes. A snapshot is valid for the current configuration only when its persisted source and target instance IDs match the currently selected pair. Changing either selection marks the product Attention and withholds the previous pair's endpoint evidence and activity until the new pair completes an actual reconciliation; renaming an instance without changing its ID does not invalidate the snapshot. Starts are recorded only after the enabled, interval, and process-lock gates have passed. Disabled, not-scheduled, and already-running scheduler invocations do not replace the last health result. Configuration errors, incomplete or overdue runs, retry exhaustion, uncertain command state, and cleanup safety conditions are classified locally without changing any reconciliation lifecycle.
-
-### First-run setup and runtime secrets
-
-The recommended home-server deployment does not require credentials or cryptographic keys in Compose. On first startup MDBListarr creates persistent runtime secret files in the existing application-data volume and then shows `/setup/` so you can claim the first administrator account in the browser. Complete this setup promptly on a trusted network because the first administrator has not yet been claimed.
-
-Generated files live under:
-
-- `/usr/src/db/secrets/django_secret_key`
-- `/usr/src/db/secrets/mdblistarr_encryption_key`
-
-Back up the entire `/usr/src/db` volume, not only `db.sqlite3`. Losing the generated encryption key makes encrypted application credentials unrecoverable. Deleting only `db.sqlite3` keeps the generated keys and makes the one-time setup page available again because the user table is empty.
-
-Advanced/headless deployments may still provide explicit secrets. For each runtime secret, `_FILE` takes precedence over the direct environment variable, which takes precedence over the generated persistent file. `MDBLISTARR_ADMIN_USERNAME` plus `MDBLISTARR_ADMIN_PASSWORD` or `MDBLISTARR_ADMIN_PASSWORD_FILE` can still create the initial administrator during startup; otherwise web setup is used.
-
-| Purpose | Variable | File alternative | Default persistent file |
-| --- | --- | --- | --- |
-| Initial administrator name | `MDBLISTARR_ADMIN_USERNAME` | n/a | web setup |
-| Initial administrator password | `MDBLISTARR_ADMIN_PASSWORD` | `MDBLISTARR_ADMIN_PASSWORD_FILE` | web setup |
-| Django signing secret | `DJANGO_SECRET_KEY` | `DJANGO_SECRET_KEY_FILE` | `/usr/src/db/secrets/django_secret_key` |
-| Database secret encryption key | `MDBLISTARR_ENCRYPTION_KEY` | `MDBLISTARR_ENCRYPTION_KEY_FILE` | `/usr/src/db/secrets/mdblistarr_encryption_key` |
-| Allowed hosts | `DJANGO_ALLOWED_HOSTS` (preferred), `ALLOWED_HOSTS` (compatibility fallback) | n/a | `mdblistarr,localhost,127.0.0.1` |
-
-A legacy `admin` account is disabled only when its stored password still verifies as the literal password `admin`; an `admin` account with a changed password is preserved.
-
-### Encrypted credentials and migration
-
-Sonarr API keys, Radarr API keys, the MDBList API key, and MDBList OAuth access and refresh tokens are encrypted at rest with Fernet authenticated encryption and the `mdblistarr:v1:fernet:` prefix. Existing plaintext values are migrated by `python manage.py encrypt_secrets` during container startup after migrations. The migration is idempotent and skips already encrypted values. If the encryption key is missing or wrong, startup fails rather than replacing secrets with blanks.
-
-Back up `/usr/src/db` before upgrading. Older upstream images do not understand encrypted credentials, so rollback to upstream requires restoring the pre-migration database backup. Host-root, Docker-daemon, and running-container compromise remain outside this protection boundary.
-
-Verify that plaintext credentials are absent without printing secrets by checking for the encrypted prefix and lengths, for example:
-
-```sh
-sqlite3 /usr/src/db/db.sqlite3 "select 'radarr', count(*) from mdblistrr_radarrinstance where apikey like 'mdblistarr:v1:fernet:%' union all select 'sonarr', count(*) from mdblistrr_sonarrinstance where apikey like 'mdblistarr:v1:fernet:%' union all select name, length(value) from mdblistrr_preferences where name in ('mdblist_apikey','mdblist_access_token','mdblist_refresh_token');"
-```
-
-### Generic Docker Compose example
+Create `compose.yaml`:
 
 ```yaml
 services:
@@ -155,144 +23,188 @@ services:
     container_name: mdblistarr
     environment:
       PORT: "5353"
-      DJANGO_ALLOWED_HOSTS: "mdblistarr,localhost,127.0.0.1,10.0.0.11,mdblistarr.lan"
     volumes:
       - ./db:/usr/src/db
     ports:
       - "5353:5353"
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5353/healthz', timeout=3)"
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5353/healthz')"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
     restart: unless-stopped
 ```
 
-### Administration
+Then run `docker compose up -d` and visit `http://localhost:5353/setup/`. Runtime secrets do not need to be placed in Compose; the container generates them on first startup.
 
-Change an administrator password with `python manage.py changepassword USERNAME`. Add another staff administrator with `python manage.py createsuperuser`. Disable an administrator with `python manage.py shell -c "from django.contrib.auth import get_user_model; u=get_user_model().objects.get(username='NAME'); u.is_active=False; u.save()"`.
+To build from source instead:
 
-### Reverse proxies and HTTPS
-
-Authentication protects the web interface; encryption protects copied database backups; HTTPS protects credentials in transit; none of these protect against host-root, Docker-daemon, or running-container compromise. Plain HTTP remains usable for a trusted home LAN, so Secure cookies and HSTS are not forced by default. For an untrusted network, terminate HTTPS at a trusted reverse proxy, set `SESSION_COOKIE_SECURE=1`, `CSRF_COOKIE_SECURE=1`, and configure `DJANGO_SECURE_PROXY_SSL_HEADER` only for proxy headers you actually trust. Set `CSRF_TRUSTED_ORIGINS` to a comma- or semicolon-separated list of complete origins (including scheme and any non-default port). Proxy headers are not trusted by default. Prefer the explicit `DJANGO_SECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https`; upstream-compatible `TRUST_PROXY_HEADERS=1` also enables that header and `USE_X_FORWARDED_HOST`, but only when the application is reachable exclusively through a trusted proxy.
-
-## Sonarr On Demand reconciliation
-
-MDBListarr supports three explicit Sonarr purposes so a permanent Sonarr instance can remain read-only while a separate Sonarr On Demand instance is reconciled for NzbDAV-style ephemeral viewing.
-
-### Sonarr purposes and safety boundaries
-
-- **Permanent library source**: MDBListarr reads series and episode state, uploads library state to MDBList, and compares episode availability during reconciliation. MDBListarr never sends add-series, monitoring, search, delete, profile, path, tag, move, rename, or file requests to this source.
-- **On Demand reconciliation target**: MDBListarr writes only individual episode-monitoring changes and season-level monitoring changes. It never deletes series, episodes, or files and never changes quality profiles, root folders, series type, tags, paths, or files.
-- **Queue-import capability**: MDBList queue import is separate, disabled by default, and must be explicitly enabled globally and per instance. Queue targets require a real quality profile and root folder; read-only/reconciliation-only Sonarr instances do not.
-
-Sonarr API keys are not permission-scoped, so MDBListarr enforces the read-only and write-boundary rules in application code. Do not reuse the same Sonarr instance as both the permanent source and On Demand target for one reconciliation relationship.
-
-### Queue processing is disabled by default
-
-`Enable MDBList queue processing` defaults to off for new and upgraded installations. When disabled, the scheduled queue task returns without calling the MDBList queue endpoint and without sending Radarr or Sonarr add requests. To use legacy queue importing, enable the global setting and enable queue import on each desired Arr instance with a valid quality profile and root folder.
-
-### Whole-show downloaded status
-
-Sonarr shows are reported to MDBList as downloaded only when every relevant aired episode has `hasFile=true` in a permanent library source. Relevant episodes are regular season 1+ episodes that have already aired. Season 0 specials and future/unaired episodes are ignored by default. Enable `Include specials in completeness checks` to include specials in the same permanent-file rules. Shows with no relevant aired episodes are not reported as downloaded. Import-list exclusions remain separate from downloaded status.
-
-This means partially retained programmes remain eligible for On Demand lists. For example, if Standard Sonarr has American Dad seasons 1-10 permanently stored but seasons 11-21 are aired and absent, MDBListarr reports the show as incomplete rather than fully downloaded, so a MDBList exclusion for Downloaded does not remove it from the On Demand list.
-
-### On Demand reconciliation algorithm
-
-At the configured interval, MDBListarr matches series in the On Demand target to the permanent source by TVDB ID. Episodes are matched by stable season and episode numbers from Sonarr episode data. Target episodes with a permanent source file are set unmonitored. Aired regular target episodes without a permanent source file are set monitored. A target-only series that is absent from the permanent source is treated as having no permanent files, so its aired regular episodes are eligible while future episodes and disabled specials remain unmonitored. MDBListarr then reconciles season monitoring and the top-level Sonarr series `monitored` flag from the calculated episode decisions: the series is monitored only while at least one wanted On Demand episode exists. Existing correct states are not written again.
-
-`Search newly eligible missing episodes` is disabled by default and remains opt-in after upgrades. MDBListarr still creates persistent pending search candidates for eligible, missing, unsearched episodes while searching is disabled. When enabled later, MDBListarr submits those pending candidates once through explicit EpisodeSearch commands. Valid Sonarr `lastSearchTime` values are treated as evidence of a prior manual/external search, so those episodes are not automatically searched again. Submitted candidates are persisted locally, preventing repeated asynchronous submissions while an episode remains missing or Sonarr has not yet updated `lastSearchTime`. Permanent duplicates, episodes that already have an On Demand file, future episodes, unscheduled episodes, malformed episodes, and disabled specials are not searched. It does not run whole-series searches.
-
-#### EpisodeSearch command lifecycle and retries
-
-Each newly submitted batch (at most 100 episodes) now has a persistent command record and immutable candidate/target-episode snapshots. Local states distinguish submitting, queued, started, completed, explicit terminal failure (`failed`, `aborted`, `cancelled`, or `orphaned`), ambiguous, unavailable, and superseded attempts. `attempt_count` includes the initial accepted submission. A completed search means Sonarr ran the search; it does **not** mean an acceptable release was acquired, and MDBListarr does not repeat a completed search merely because the episode remains missing. Sonarr's `result: unknown` is not a failure by itself.
-
-Queued and started batches remain protected from duplicate submission. Explicit, validated terminal failures are assessed candidate by candidate exactly once: a target file or a `lastSearchTime` at/after the command proves satisfaction; an ineligible episode is cancelled; otherwise the candidate can be retried after the configured delay. The first retry deadline is persistent and is not moved by later reconciliation runs, so a 30-minute retry becomes due even when reconciliation runs every 15 minutes. Defaults are three automatic retries after the initial attempt and a 30-minute retry delay; zero retries disables automatic retries. Exhausted candidates enter `failed` for operator attention. Each retry creates a new command record linked to its exact predecessor rather than overwriting audit history, and initial candidates or candidates with different predecessor/attempt histories are submitted in separate batches.
-
-When an episode is genuinely newly eligible again—such as after being remonitored or returning from cancellation—its current lifecycle pointer, attempt count, and retry deadline reset so its next search is a new initial attempt. Historical command records and command/candidate links remain intact for audit. Conversely, a pending retry with an invalid or unverifiable predecessor fails closed, reports a partial reconciliation failure, and blocks destructive cleanup rather than guessing its lineage.
-
-Command polling continues while searching is disabled and can prepare pending retries, but no new EpisodeSearch POST is made until searching is enabled. MDBListarr uses one command-list request per target per reconciliation and at most ten deterministic individual command fallbacks for tracked IDs absent from that list. Persisted least-recently-checked ordering rotates that bounded budget fairly across runs, including process restarts, so larger command sets cannot starve later IDs. A missing command is never treated as failed: episode evidence may prove completion, otherwise it becomes unavailable during the default 24-hour grace period and remains fail-closed/uncertain afterward. Transport errors, malformed resources, unknown states, ambiguous submissions, zero/multiple adoption matches, and missing commands all preserve candidate protection and block destructive cleanup for the affected series. `unknown` and `indeterminate` results do not make queued/started commands fail; completed plus `indeterminate` is uncertain and fail-closed. Explicitly reconciled terminal failures and completed commands do not permanently block cleanup.
-
-The staff configuration page exposes the retry limit, retry delay, missing-command grace period, and compact lifecycle counts. Reconciliation summaries include command transitions, polling failures, requeues, exhausted retries, and file/last-search satisfaction counters. Logs are command-level and omit full command bodies and episode-ID arrays. Historical submitted candidates remain submitted and untracked after upgrade—no synthetic IDs are guessed and no historical search is repeated. The PR #8 accepted-response recovery remains active. All command POSTs and cleanup writes remain confined to the On Demand target; the permanent Sonarr source remains read-only.
-
-Rollout:
-
-1. Deploy normally.
-2. Existing submitted candidates remain protected.
-3. Newly submitted EpisodeSearch batches begin receiving command lifecycle tracking.
-4. Review command counters after the first reconciliation.
-5. Enable or adjust retry settings as required.
-6. No historical searches are repeated solely because they predate this feature.
-
-Troubleshooting recovery for installations affected by the PR #7 Sonarr EpisodeSearch response bug: disable `Search newly eligible missing episodes`, deploy this hotfix, and run Sonarr reconciliation once while searching remains disabled. MDBListarr will automatically recover pending candidates whose stored `last_error` proves Sonarr already accepted an `EpisodeSearch` command, report `search_candidates_recovered`, clear the stale response text, and submit no new EpisodeSearch commands during that disabled recovery run. Confirm `search_failures=0` and `failures=0` unless another unrelated issue exists, allow Sonarr's existing command queue to continue processing, then re-enable `Search newly eligible missing episodes` and reconcile again to submit only genuinely pending unrecovered episodes.
-
-### Required Sonarr On Demand import-list setup
-
-Configure native Sonarr MDBList import lists in the On Demand instance to:
-
-1. Enable **Automatic Add**.
-2. Set **Search for Missing Episodes** to **Off**.
-3. Set **Monitor** to **None**.
-4. Set **Monitor New Seasons** to **No New Seasons**.
-5. Use the correct On Demand root folder and quality profile.
-6. Apply the appropriate import-list tags for your setup.
-
-This sequence is intentional: the import list safely adds the series with nothing monitored, MDBListarr compares it with permanent Sonarr, monitors only wanted episodes and seasons, monitors the top-level series only when something is wanted, persists pending search candidates for unsearched wanted missing episodes, optionally submits those candidates once, and then RSS grabs can work because the top-level series is monitored. Fully duplicated series can remain unmonitored and be handled by cleanup.
-
-Recommended rollout for automatic On Demand acquisition:
-
-1. Deploy with **Search newly eligible missing episodes** disabled.
-2. Run and inspect monitoring reconciliation.
-3. Enable **Search newly eligible missing episodes**.
-4. Pending unsearched episodes are submitted once.
-5. Review Sonarr queue/history and NzbDAV.
-
-The setting remains Off by default to avoid unexpected backlog searches after upgrades.
-
-### Scheduling, upgrade notes, and troubleshooting
-
-Library-state sync keeps the existing configured sync-hour behaviour. On Demand reconciliation runs on the existing scheduled-task system every five minutes and internally honors the configured reconciliation interval. A file lock prevents overlapping reconciliation runs; a second invocation exits cleanly while a run is active.
-
-Upgrades preserve encrypted API keys, existing quality profiles, root folders, authentication, and runtime secrets. Sonarr quality profile and root folder fields may be blank for read-only or reconciliation-only uses. Expected logs include counts for series inspected, complete/incomplete/no-relevant shows, exclusions, reconciliation comparisons, monitoring changes, skipped specials/future episodes, searches, and failures. Logs are sanitized and must not contain API keys or bearer tokens. Reconciliation logs distinguish matched source comparisons from target-only series and report partial failures so the next idempotent scheduled run can retry failed monitor or search batches.
-
-### Safety-first Sonarr On Demand duplicate-file cleanup
-
-MDBListarr can optionally evaluate Sonarr On Demand episode files for cleanup when the file is a confirmed duplicate of the permanent Sonarr source. This is a destructive feature and is disabled by default; upgrades keep cleanup disabled, dry-run enabled, a 24-hour grace period, and a 25-file deletion cap.
-
-The only deletion reason is `permanent_duplicate`. An On Demand episode file is eligible only when every target episode linked to the same `episodeFileId` has a season/episode identity, matches the permanent source by TVDB ID plus season and episode number, the permanent episode has `hasFile=true`, the monitoring calculation explicitly chose `desired=false` because of `permanent_duplicate`, the target has `hasFile=true`, and the target episode is actually unmonitored after reconciliation writes complete. MDBListarr never treats unmonitored, future, unscheduled, malformed, disabled-special, target-only, list-excluded, or season-unmonitored state as deletion evidence.
-
-Cleanup candidates are persistent records keyed by On Demand target instance and target `episodeFileId`. Candidates begin as `pending`, preserve `first_eligible_at` while the linked episode set is unchanged, become `ready` only after the configured grace period, then either remain dry-run would-delete entries, are deleted, are cancelled, or are marked `already_absent`. If the linked episode set changes, a cancelled candidate becomes eligible again, or Sonarr reports a replacement file ID, the grace period starts over. If the permanent source no longer has every matching file, eligibility is cancelled immediately. Malformed or uncertain data does not create, advance, or delete candidates.
-
-Deletion is performed only against the Sonarr On Demand target through Sonarr's V3 episode-file API. MDBListarr uses bounded per-series bulk requests to `DELETE /api/v3/episodefile/bulk` with `{"episodeFileIds": [...]}`; files from different target series are never mixed in one bulk request. Immediately before deletion, MDBListarr revalidates source and target episode data, the candidate episode set, unmonitored state, `permanent_duplicate` reason, grace period, dry-run state, and deletion cap. After Sonarr accepts deletion, MDBListarr re-fetches target episodes and marks the candidate deleted only if no target episode still reports the file as active. If Sonarr returns an error but the file is already absent, the candidate is safely marked `already_absent`; if Sonarr reports success but the file remains, the candidate stays retryable with a sanitized error.
-
-The reconciliation log includes cleanup counters: new, pending, ready, cancelled, would-delete, deleted, already-absent, deferred-by-limit, and failures. It also emits one concise series-level summary for each series with relevant cleanup activity, for example:
-
-```
-Sonarr cleanup series="Example Series" tvdb=12345 sonarr_series=678 mode=dry_run ready=4 would_delete=4 deleted=0 already_absent=0 deferred=0 failures=0
+```console
+git clone https://github.com/pat15312/mdblistarr.git
+cd mdblistarr
+docker build -t mdblistarr:local .
 ```
 
-The stable `mode` values are `disabled` when cleanup is off, `dry_run` when cleanup is enabled without deletion, and `live` when deletion is enabled. Disabled summaries appear only for series with ready candidates; dry-run summaries require a non-zero `would_delete` count; live summaries require a non-zero ready, deleted, already-absent, deferred, or failure count. Newly created candidates still inside the grace period do not produce a series summary.
+Run that image with a persistent volume mounted at `/usr/src/db`, as in the Compose example.
 
-Titles come from the target-series data already fetched for reconciliation, so summary logging makes no additional Sonarr request. Missing or blank titles use `Unknown series`; displayed titles are sanitized, collapsed to one line, made safe for the quoted field, and limited to 200 characters. At most 100 series summaries are emitted per reconciliation, sorted by normalized title and target series ID. If more qualify, logging adds `Sonarr cleanup series summaries truncated reported=100 additional=N`. This bound affects logging only, never candidate processing or deletion decisions.
+## First-run setup
 
-Individual sanitized candidate transition events are logged only when created, ready, cancelled, first observed as would-delete in dry run, deleted, already absent, or failed. Series summaries intentionally omit filesystem paths, episode and episode-file ID arrays, linked-episode arrays, API keys, and raw Sonarr responses. Their counters are sourced from the same per-series cleanup counters accumulated into the existing reconciliation totals; the summaries do not change eligibility, ordering, budgets, validation, deletion safety, or the permanent Sonarr source's read-only role.
+When no active staff administrator exists, application pages redirect to `/setup/`. Open that page only on a trusted network, claim the first administrator account, and then sign in. As an alternative for unattended initial deployment, provide `MDBLISTARR_ADMIN_PASSWORD` (or its file variant) and, optionally, `MDBLISTARR_ADMIN_USERNAME`; startup creates the first administrator but does not change an existing usable administrator.
 
-The UI provides a prominent warning and reuses the authenticated, CSRF-protected manual reconciliation action labelled "Run Sonarr reconciliation now". There is no force-delete or safety-bypass action. The action respects the existing reconciliation lock, cleanup enabled state, dry-run state, grace period, and deletion cap.
+On first container startup MDBListarr creates the Django signing key and credential-encryption key under `/usr/src/db/secrets`. Secret resolution precedence is an explicit `*_FILE`, then the direct environment variable, then the existing generated file; if none exists, startup generates the persistent file. Back up the **entire** `/usr/src/db` directory. The database and encryption key must be retained together or encrypted credentials cannot be recovered.
 
-Recommended production dry-run rollout:
+## Configuration
 
-1. Deploy the updated application.
-2. Leave cleanup disabled and confirm normal reconciliation remains healthy.
-3. Enable cleanup with dry run enabled, 24-hour grace period, and maximum 25 deletions per run.
-4. Review candidates and would-delete logs for at least one full grace period.
-5. Confirm examples such as SpongeBob SquarePants Season 10.
-6. Disable dry run to permit real deletion.
-7. Confirm permanent files remain, On Demand target files disappear, target episodes remain unmonitored, target season state remains correct, and reconciliation reports zero failures.
+After signing in, use the application screen to connect MDBList through its OAuth device flow. A manually supplied MDBList API key remains available as a fallback when OAuth is not connected. Add Sonarr and Radarr URLs and API keys, then assign roles:
 
-Disabling cleanup stops DELETE calls. Dry-run can remain enabled indefinitely for candidate review. Sonarr remains responsible for removing target files and episode-file records; MDBListarr never directly deletes filesystem paths. NzbDAV backing-store or orphan cleanup may remain governed by NzbDAV's own maintenance behavior.
+- **Permanent/library source**: contributes library state and comparison data. Reconciliation does not write to this instance.
+- **On-Demand target**: permits the applicable reconciliation, monitoring, search, and cleanup writes.
+- **Enable MDBList queue import**: permits queue items addressed to that instance to add media.
+
+Roles express MDBListarr's intended use of an instance; they do not change the API key's permissions in Sonarr or Radarr. Use suitably restricted credentials and network controls where available.
+
+A quality profile and root folder may remain blank for library-state or reconciliation-only use. Both are required when queue import is enabled because actual add requests need them.
+
+## Standard MDBList workflow
+
+The traditional workflow operates independently of On-Demand reconciliation:
+
+1. At the configured UTC sync hour, MDBListarr uploads downloaded/excluded Radarr and Sonarr library state. Sync can use the first configured instance or all configured instances.
+2. When **Sync Library Status** is enabled, it also adds and removes matching MDBList collection entries.
+3. MDBList queue processing can add queued movies or series to their addressed Arr instance.
+
+Queue processing defaults to **off**. It requires both the global **Enable MDBList queue processing** option and the destination instance's **Enable MDBList queue import** role. Items are skipped when the destination lacks a valid quality profile or root folder.
+
+## On-Demand workflow
+
+On-Demand reconciliation separates retained media from an ephemeral target:
+
+```text
+Permanent/library source
+    read-only comparison and library evidence
+
+On-Demand target
+    controlled monitoring, search, and duplicate-file cleanup writes
+```
+
+This supports workflows in which the target may acquire media temporarily. NzbDAV is one possible companion in such a deployment, but it is not required and MDBListarr does not manage its filesystem. Select different source and target instances of the same Arr product and enable reconciliation explicitly. Only configured role pairs are accepted.
+
+## Sonarr behaviour
+
+Sonarr reconciliation matches series by TVDB ID and compares episode state. It reads the permanent/library source and applies changes only to the On-Demand target.
+
+- Aired, scheduled episodes are eligible. Future and unscheduled episodes are unmonitored; malformed episode data makes the affected reconciliation fail closed. Season 0 specials are ignored by default.
+- An eligible target episode is unmonitored when the permanent source has its file; otherwise it is monitored. A target-only series therefore monitors its eligible missing episodes.
+- Season monitoring follows whether any episode in that season should be monitored. Top-level series monitoring follows whether any season is wanted.
+- A permanent series counts as completely downloaded only when it has at least one relevant episode, every relevant episode has a file, and relevant data is well formed. Ignored specials, future episodes, and unscheduled episodes do not make it incomplete.
+- **Search newly eligible** defaults off. When enabled, persistent candidates are created for eligible missing episodes after monitoring is confirmed; searches are not sent to the permanent source.
+
+## Radarr behaviour
+
+Radarr reconciliation matches movies by TMDB ID, treats the target's `isAvailable` value as authoritative, and writes only to the On-Demand target.
+
+- A target movie is unmonitored when the permanent source has a file or the target itself has a file.
+- An available movie missing from both is monitored. An unavailable movie is unmonitored.
+- A target-only movie follows the same target availability/file rules, without requiring a corresponding permanent record.
+- When search is enabled, eligible missing movies enter the persistent `MoviesSearch` lifecycle after monitoring is confirmed.
+
+This reconciliation and its searches do not depend on MDBList queue processing or queue-import roles.
+
+## Search lifecycle
+
+Sonarr and Radarr keep durable search candidates and command records rather than treating an API request as proof of acquisition. Submission intent and candidate association are recorded before applicable `EpisodeSearch` or `MoviesSearch` commands are sent, allowing later reconciliation after uncertain responses or restarts.
+
+Commands are polled to distinguish queued/running work, completion, genuine failure, and ambiguous or unavailable state. Completion means the Arr command finished; it does **not** prove that a release was acquired. Evidence such as a resulting file or Arr search timestamp resolves a candidate. A successfully completed search is not automatically repeated merely because the item remains missing.
+
+Genuine failed, aborted, cancelled, or orphaned outcomes can be retried after the configured delay, up to the configured retry count (defaults: 3 retries and 30 minutes). A missing command remains uncertain for a grace period (default: 24 hours) before failure handling. Exhausted candidates remain visible for attention. Disabling new searches stops new submissions while maintenance still reconciles previously recorded commands and outcomes; uncertainty blocks destructive cleanup.
+
+## Cleanup safety
+
+Cleanup deletes duplicate **files from the On-Demand target through its Arr API**. It does not delete Sonarr series, Radarr movie records, permanent-source data, or paths directly from a filesystem or NzbDAV.
+
+Cleanup defaults to **disabled** and, when enabled initially, **dry-run**. Both products default to a 24-hour eligibility grace period and a cap of 25 deletion attempts per reconciliation. Persistent candidates preserve the grace period across runs. Immediately before a live deletion, MDBListarr re-fetches and validates the relevant source, target, monitoring, search, and immutable file identity evidence. Changed, incomplete, malformed, ambiguous, or unavailable evidence defers or cancels deletion; destructive uncertainty can stop further deletions for that run.
+
+- **Sonarr:** only a target episode file whose linked episodes are confirmed unmonitored permanent duplicates is eligible. Multi-episode files are handled as one immutable file candidate and all links must remain safe.
+- **Radarr:** source and target files must be confirmed duplicates for the same TMDB movie. Edition metadata must be compatible; conflicting or malformed edition evidence fails closed.
+
+Use dry-run output and the health dashboard to evaluate candidates before enabling live cleanup. Defaults are safeguards, not universal deployment recommendations.
+
+## Operational health
+
+`/health` is available only to staff/superusers. Rendering or refreshing it performs database reads only: it does not call MDBList, Sonarr, or Radarr. Reconciliation records its latest snapshot and counters on a best-effort basis; a health-recording failure does not change reconciliation's result.
+
+The dashboard correlates each product's configured source/target pair with the latest run, persistent search commands/candidates, and cleanup candidates. It highlights changed or invalid configuration, overdue runs, runs that appear stale, uncertain searches, exhausted retries, and cleanup errors. Classifications are:
+
+- **Healthy**: enabled with no current detected issue.
+- **Running**: the latest matching reconciliation has started and is not overdue/stale.
+- **Attention**: operator review is warranted, such as partial failure, overdue work, configuration changed since the snapshot, or uncertain lifecycle state.
+- **Error**: invalid role pairing, a stale run, or a matching failed reconciliation.
+- **Disabled**: reconciliation is not enabled.
+
+## Security and reverse proxy
+
+MDBListarr uses Django authentication and limits application administration and health views to active staff/superusers. Arr API keys and MDBList API/OAuth credentials are encrypted in the database with the persistent encryption key. This protects stored application values but is not a substitute for HTTPS, host/container security, limited API permissions, or protected backups.
+
+For Internet-facing access, terminate HTTPS at a correctly configured trusted reverse proxy. Set secure cookies with `SESSION_COOKIE_SECURE=1` and `CSRF_COOKIE_SECURE=1`, configure allowed hosts, and list complete trusted origins such as `https://mdblistarr.example.test` in `CSRF_TRUSTED_ORIGINS`.
+
+Forwarded proxy headers are **not trusted by default**. Prefer the explicit setting below when a trusted proxy sets and removes the corresponding header:
+
+```console
+DJANGO_SECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https
+```
+
+`TRUST_PROXY_HEADERS=1` is an upstream-compatible convenience that additionally enables forwarded-host handling. Use it only when MDBListarr is reachable exclusively through a trusted proxy. Trusted-LAN HTTP can omit HTTPS settings, with the trade-off that transport is not encrypted.
+
+## Environment variables
+
+| Variable | Semantics |
+| --- | --- |
+| `PORT` | HTTP listen port; defaults to `5353`. |
+| `TZ` | Django/container IANA timezone; defaults to `UTC`. Scheduled library sync still uses its configured UTC hour. |
+| `DJANGO_DEBUG` | Enables Django debug mode for true-like values; defaults off. Do not enable in public deployments. |
+| `DJANGO_ALLOWED_HOSTS` | Comma- or semicolon-separated Django host allowlist. Takes precedence over `ALLOWED_HOSTS`. |
+| `ALLOWED_HOSTS` | Compatibility host allowlist used when `DJANGO_ALLOWED_HOSTS` is unset. The built-in list is `mdblistarr`, `localhost`, and `127.0.0.1`. |
+| `CSRF_TRUSTED_ORIGINS` | Comma- or semicolon-separated complete trusted origins, including scheme. |
+| `TRUST_PROXY_HEADERS` | True-like value trusts `X-Forwarded-Proto: https` and enables forwarded-host use; defaults off. |
+| `DJANGO_SECURE_PROXY_SSL_HEADER` | Explicit `header,value` pair Django uses to recognize proxied HTTPS. |
+| `SESSION_COOKIE_SECURE` | True-like value marks the session cookie HTTPS-only; defaults off. |
+| `CSRF_COOKIE_SECURE` | True-like value marks the CSRF cookie HTTPS-only; defaults off. |
+| `SESSION_COOKIE_SAMESITE` | Django session cookie SameSite value; defaults to `Lax`. |
+| `CSRF_COOKIE_SAMESITE` | Django CSRF cookie SameSite value; defaults to `Lax`. |
+| `DJANGO_SECRET_KEY` / `DJANGO_SECRET_KEY_FILE` | Direct or file-sourced Django signing secret; otherwise persisted automatically. |
+| `MDBLISTARR_ENCRYPTION_KEY` / `MDBLISTARR_ENCRYPTION_KEY_FILE` | Direct or file-sourced Fernet key for stored credentials; otherwise persisted automatically. |
+| `MDBLISTARR_ADMIN_USERNAME` | Initial bootstrap username; defaults to `admin` when password bootstrapping is used. |
+| `MDBLISTARR_ADMIN_PASSWORD` / `MDBLISTARR_ADMIN_PASSWORD_FILE` | Optional direct or file-sourced password for unattended creation of the first administrator. |
+
+For every documented `*_FILE` pair, the file value takes precedence over the direct variable. Avoid changing cryptographic secrets after data has been written.
+
+## Upgrade and backup
+
+Back up `/usr/src/db` before upgrades, including `db.sqlite3` and `secrets/`. Pull the current image and recreate the container while retaining the same mount:
+
+```console
+docker compose pull
+docker compose up -d
+```
+
+The entrypoint runs database migrations, credential encryption maintenance, and secure administrator startup before the scheduler and web server. Keep the encryption key with its matching database. Older upstream versions do not understand this fork's encrypted credential representation, so rolling back to an upstream image is not a safe general rollback procedure; restore a compatible whole-data backup instead.
+
+## Development and testing
+
+Install `requirements.txt`, ensure `/usr/src/db` is writable, and run:
+
+```console
+python mdblistarr/manage.py test mdblistrr
+python mdblistarr/manage.py makemigrations --check --dry-run
+python mdblistarr/manage.py migrate --check
+python mdblistarr/manage.py check
+docker build -t mdblistarr:local .
+```
+
+GitHub Actions runs Django tests and checks, builds the image, and exercises a fresh persistent Docker volume, runtime-secret persistence across restart, `/healthz`, and `TZ` support.
+
+## MDBListarr 2.4.0
+
+Version 2.4.0 is a substantial backward-compatible fork feature release built on upstream 2.3.2. It brings the fork's authenticated first-run administration, encrypted credentials and persistent runtime secrets, role-aware Arr configuration, permanent/read-only sources, Sonarr On-Demand reconciliation, Radarr parity, persistent search retries, conservative duplicate-file cleanup, and operational health dashboard into one documented public release. It retains upstream 2.3.2 compatibility work for reverse proxies, path prefixes, and timezone configuration.
+
+For older original-project history and attribution, see the [upstream repository](https://github.com/linaspurinis/mdblistarr). This repository retains the upstream license; it is not presented as the official upstream project.
