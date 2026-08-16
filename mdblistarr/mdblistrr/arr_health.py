@@ -120,7 +120,7 @@ def _configured_instance(model, instance_id):
 def _search_metrics(candidate_model, command_model, target_id):
     empty = {key: 0 for key in ('pending', 'submitted', 'retry_exhausted', 'active_errors',
         'submitting', 'queued', 'started', 'in_flight', 'ambiguous', 'unavailable',
-        'uncertain', 'unreconciled_terminal_failures')}
+        'uncertain', 'unreconciled_terminal_failures', 'needs_attention')}
     empty['oldest_pending_at'] = None
     if not target_id:
         return empty
@@ -140,6 +140,13 @@ def _search_metrics(candidate_model, command_model, target_id):
     metrics['uncertain'] = sum(metrics[state] for state in UNCERTAIN_COMMAND_STATUSES)
     metrics['unreconciled_terminal_failures'] = commands.filter(
         status__in=TERMINAL_FAILURE_STATUSES, outcome_reconciled_at__isnull=True).count()
+    # This is a deterministic count of actionable conditions, not historical work.
+    # The categories are intentionally additive; it is not an entity-level count
+    # across candidate/command relationships, which would require extra joins.
+    metrics['needs_attention'] = sum(metrics[key] for key in (
+        'retry_exhausted', 'active_errors', 'uncertain',
+        'unreconciled_terminal_failures',
+    ))
     return metrics
 
 

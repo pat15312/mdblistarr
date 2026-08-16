@@ -175,6 +175,91 @@ class TargetScopedMetricsAndViewTests(TestCase):
             finish_reconciliation_status(product, 200, 'ok', source_instance_id=source.id,
                                          target_instance_id=target.id, source_ok=True, target_ok=True)
 
+    def _candidate(self, product, item_id, status='pending', last_error=''):
+        now = timezone.now()
+        if product == 'sonarr':
+            return SonarrEpisodeSearchCandidate(target_instance=self.s_target,
+                target_series_id=1, target_episode_id=item_id, tvdb_id=item_id,
+                season_number=1, episode_number=item_id, status=status,
+                first_eligible_at=now, last_confirmed_at=now, last_error=last_error)
+        return RadarrMovieSearchCandidate(target_instance=self.r_target,
+            target_movie_id=item_id, tmdb_id=item_id, status=status,
+            first_eligible_at=now, last_confirmed_at=now, last_error=last_error)
+
+    def _product(self, product):
+        return build_arr_health()['products'][0 if product == 'sonarr' else 1]
+
+    def test_submitted_history_is_not_workload_or_unhealthy_for_either_product(self):
+        for product, model in (
+                ('sonarr', SonarrEpisodeSearchCandidate),
+                ('radarr', RadarrMovieSearchCandidate)):
+            model.objects.bulk_create([
+                self._candidate(product, item_id, status='submitted')
+                for item_id in range(1, 102)
+            ])
+            search = self._product(product)['search']
+            self.assertEqual(search['submitted'], 101)
+            self.assertEqual(search['in_flight'], 0)
+            self.assertEqual(search['needs_attention'], 0)
+            self.assertEqual(self._product(product)['classification'], 'healthy')
+
+        self.client.force_login(self.staff)
+        body = self.client.get(reverse('arr_health_view')).content.decode()
+        self.assertNotIn('Submitted:', body)
+        self.assertNotIn('Submitted: <strong>101</strong>', body)
+
+    def test_started_and_pending_are_current_but_do_not_need_attention(self):
+        now = timezone.now()
+        for product, candidate_model, command_model, target, extra in (
+                ('sonarr', SonarrEpisodeSearchCandidate, SonarrEpisodeSearchCommand,
+                 self.s_target, {'target_series_id': 1}),
+                ('radarr', RadarrMovieSearchCandidate, RadarrMovieSearchCommand,
+                 self.r_target, {})):
+            candidate_model.objects.bulk_create([
+                self._candidate(product, 200, status='submitted'),
+                self._candidate(product, 201, status='pending'),
+            ])
+            command_model.objects.create(target_instance=target, status='started',
+                                         submission_attempted_at=now, **extra)
+            search = self._product(product)['search']
+            self.assertEqual(search['pending'], 1)
+            self.assertEqual(search['in_flight'], 1)
+            self.assertEqual(search['started'], 1)
+            self.assertEqual(search['needs_attention'], 0)
+            self.assertEqual(self._product(product)['classification'], 'healthy')
+
+    def test_actionable_search_conditions_are_counted_for_either_product(self):
+        now = timezone.now()
+        for product, candidate_model, command_model, target, extra in (
+                ('sonarr', SonarrEpisodeSearchCandidate, SonarrEpisodeSearchCommand,
+                 self.s_target, {'target_series_id': 1}),
+                ('radarr', RadarrMovieSearchCandidate, RadarrMovieSearchCommand,
+                 self.r_target, {})):
+            candidate_model.objects.bulk_create([
+                self._candidate(product, 300, status='failed'),
+                self._candidate(product, 301, status='pending', last_error='private raw error'),
+            ])
+            command_model.objects.create(target_instance=target, status='ambiguous',
+                                         submission_attempted_at=now, **extra)
+            command_model.objects.create(target_instance=target, status='unavailable',
+                                         submission_attempted_at=now, **extra)
+            command_model.objects.create(target_instance=target, status='failed',
+                                         submission_attempted_at=now, **extra)
+            search = self._product(product)['search']
+            self.assertEqual(search['retry_exhausted'], 1)
+            self.assertEqual(search['active_errors'], 1)
+            self.assertEqual(search['uncertain'], 2)
+            self.assertEqual(search['unreconciled_terminal_failures'], 1)
+            self.assertEqual(search['needs_attention'], 5)
+            self.assertEqual(self._product(product)['classification'], 'attention')
+
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse('arr_health_view'))
+        for label in ('Pending', 'In flight', 'Needs attention', 'Retry exhausted',
+                      'Ambiguous/unavailable', 'Unreconciled failures'):
+            self.assertContains(response, label)
+        self.assertNotContains(response, 'private raw error')
+
     def test_sonarr_metrics_are_scoped_to_current_target(self):
         now = timezone.now()
         for target in (self.s_target, self.s_old):

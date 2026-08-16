@@ -45,10 +45,10 @@
             {% for metric in product.latest_activity %}<div class="col mb-1"><span class="text-body-secondary">{{ metric.label }}:</span> {{ metric.value }}</div>{% empty %}<p class="text-body-secondary">{% if product.last_run and not product.snapshot_matches_configuration %}No activity has been recorded for the current configuration.{% else %}No structured monitoring activity recorded.{% endif %}</p>{% endfor %}
           </div>
 
-          <h3 class="h6 border-top pt-3">Search — current persistent state</h3>
-          <p class="small mb-1">Pending: <strong>{{ product.search.pending }}</strong> · Submitted: <strong>{{ product.search.submitted }}</strong> · Retry exhausted: <strong>{{ product.search.retry_exhausted }}</strong></p>
-          <p class="small mb-1">In flight: <strong>{{ product.search.in_flight }}</strong> (submitting {{ product.search.submitting }}, queued {{ product.search.queued }}, started {{ product.search.started }})</p>
-          <p class="small">Ambiguous/unavailable: <strong>{{ product.search.uncertain }}</strong> · Unreconciled terminal failures: <strong>{{ product.search.unreconciled_terminal_failures }}</strong>{% if product.search.oldest_pending_at %} · Oldest pending: {{ product.search.oldest_pending_at|naturaltime }}{% endif %}</p>
+          <h3 class="h6 border-top pt-3">Search — current state</h3>
+          <p class="small mb-1">Pending: <strong>{{ product.search.pending }}</strong> · In flight: <strong>{{ product.search.in_flight }}</strong> · Needs attention: <strong>{{ product.search.needs_attention }}</strong></p>
+          {% if product.search.in_flight %}<p class="small text-body-secondary mb-1">In flight: submitting {{ product.search.submitting }}, queued {{ product.search.queued }}, started {{ product.search.started }}</p>{% endif %}
+          <p class="small">Retry exhausted: <strong>{{ product.search.retry_exhausted }}</strong> · Ambiguous/unavailable: <strong>{{ product.search.uncertain }}</strong> · Unreconciled failures: <strong>{{ product.search.unreconciled_terminal_failures }}</strong>{% if product.search.active_errors %} · Active candidate errors: <strong>{{ product.search.active_errors }}</strong>{% endif %}{% if product.search.oldest_pending_at %} · Oldest pending: {{ product.search.oldest_pending_at|naturaltime }}{% endif %}</p>
 
           <h3 class="h6 border-top pt-3">Cleanup — current persistent state</h3>
           <p class="small mb-1">Pending: <strong>{{ product.cleanup.pending }}</strong> · Ready: <strong>{{ product.cleanup.ready }}</strong> · Active errors: <strong>{{ product.cleanup.active_errors }}</strong></p>
