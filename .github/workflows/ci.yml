@@ -71,8 +71,10 @@ jobs:
           assert_logs_do_not_contain "$c1" "$django_value"
           assert_logs_do_not_contain "$c1" "$fernet_value"
           docker rm -f "$c1"
-          docker run -d --name "$c2" -p 5353:5353 -e DJANGO_ALLOWED_HOSTS=mdblistarr,localhost,127.0.0.1,testserver -v "$volume":/usr/src/db mdblistarr:ci
+          docker run -d --name "$c2" -p 5353:5353 -e TZ=Europe/London -e DJANGO_ALLOWED_HOSTS=mdblistarr,localhost,127.0.0.1,testserver -v "$volume":/usr/src/db mdblistarr:ci
           wait_health "$c2"
+          timezone=$(docker exec "$c2" python -c "import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mdblist.settings'); from django.conf import settings; print(settings.TIME_ZONE)")
+          test "$timezone" = "Europe/London"
           curl -fsS http://127.0.0.1:5353/setup/ >/tmp/setup2.html
           test "$(docker exec "$c2" sha256sum /usr/src/db/secrets/django_secret_key | awk '{print $1}')" = "$django_hash"
           test "$(docker exec "$c2" sha256sum /usr/src/db/secrets/mdblistarr_encryption_key | awk '{print $1}')" = "$fernet_hash"

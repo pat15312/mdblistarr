@@ -48,7 +48,8 @@ class SonarrAPI():
         if not re.match(r'http(s?)\:', url):
             url = 'http://' + url
         parsed = urlsplit(url)
-        return f"{parsed.scheme}://{parsed.netloc}"
+        path = parsed.path.rstrip('/')
+        return f"{parsed.scheme}://{parsed.netloc}{path}"
     
     def get_status(self):
         try:
@@ -234,7 +235,8 @@ class RadarrAPI():
         if not re.match(r'http(s?)\:', url):
             url = 'http://' + url
         parsed = urlsplit(url)
-        return f"{parsed.scheme}://{parsed.netloc}"
+        path = parsed.path.rstrip('/')
+        return f"{parsed.scheme}://{parsed.netloc}{path}"
     
     def get_status(self):
         try:

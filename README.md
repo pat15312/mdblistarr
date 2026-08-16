@@ -130,7 +130,7 @@ Advanced/headless deployments may still provide explicit secrets. For each runti
 | Initial administrator password | `MDBLISTARR_ADMIN_PASSWORD` | `MDBLISTARR_ADMIN_PASSWORD_FILE` | web setup |
 | Django signing secret | `DJANGO_SECRET_KEY` | `DJANGO_SECRET_KEY_FILE` | `/usr/src/db/secrets/django_secret_key` |
 | Database secret encryption key | `MDBLISTARR_ENCRYPTION_KEY` | `MDBLISTARR_ENCRYPTION_KEY_FILE` | `/usr/src/db/secrets/mdblistarr_encryption_key` |
-| Allowed hosts | `DJANGO_ALLOWED_HOSTS` | n/a | built-in LAN defaults |
+| Allowed hosts | `DJANGO_ALLOWED_HOSTS` (preferred), `ALLOWED_HOSTS` (compatibility fallback) | n/a | `mdblistarr,localhost,127.0.0.1` |
 
 A legacy `admin` account is disabled only when its stored password still verifies as the literal password `admin`; an `admin` account with a changed password is preserved.
 
@@ -179,7 +179,7 @@ Change an administrator password with `python manage.py changepassword USERNAME`
 
 ### Reverse proxies and HTTPS
 
-Authentication protects the web interface; encryption protects copied database backups; HTTPS protects credentials in transit; none of these protect against host-root, Docker-daemon, or running-container compromise. Plain HTTP remains usable for a trusted home LAN, so Secure cookies and HSTS are not forced by default. For an untrusted network, terminate HTTPS at a trusted reverse proxy, set `SESSION_COOKIE_SECURE=1`, `CSRF_COOKIE_SECURE=1`, and configure `DJANGO_SECURE_PROXY_SSL_HEADER` only for proxy headers you actually trust.
+Authentication protects the web interface; encryption protects copied database backups; HTTPS protects credentials in transit; none of these protect against host-root, Docker-daemon, or running-container compromise. Plain HTTP remains usable for a trusted home LAN, so Secure cookies and HSTS are not forced by default. For an untrusted network, terminate HTTPS at a trusted reverse proxy, set `SESSION_COOKIE_SECURE=1`, `CSRF_COOKIE_SECURE=1`, and configure `DJANGO_SECURE_PROXY_SSL_HEADER` only for proxy headers you actually trust. Set `CSRF_TRUSTED_ORIGINS` to a comma- or semicolon-separated list of complete origins (including scheme and any non-default port). Proxy headers are not trusted by default. Prefer the explicit `DJANGO_SECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https`; upstream-compatible `TRUST_PROXY_HEADERS=1` also enables that header and `USE_X_FORWARDED_HOST`, but only when the application is reachable exclusively through a trusted proxy.
 
 ## Sonarr On Demand reconciliation
 
