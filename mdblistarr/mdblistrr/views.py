@@ -10,12 +10,13 @@ import requests as _requests
 from django import forms
 from django.contrib import messages
 from django.contrib.auth import get_user_model, login
+from django.contrib.admin.views.decorators import staff_member_required
 from django.db import transaction
 from django.http import JsonResponse, HttpResponseRedirect
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.views.decorators.debug import sensitive_post_parameters
-from django.views.decorators.http import require_http_methods, require_POST
+from django.views.decorators.http import require_http_methods, require_POST, require_GET
 
 from .arr import MdblistAPI, RadarrAPI, SonarrAPI, MDBLIST_DEFAULT_CLIENT_ID
 from .connect import Connect
@@ -33,6 +34,13 @@ MDBLIST_TOKEN_URL = "https://api.mdblist.com/oauth/token/"
 MDBLIST_DEVICE_AUTH_URL = "https://api.mdblist.com/oauth/device-authorization/"
 MDBLIST_DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 MDBLIST_REVOKE_URL = "https://api.mdblist.com/oauth/revoke_token/"
+
+
+@require_GET
+@staff_member_required
+def arr_health_view(request):
+    from .arr_health import build_arr_health
+    return render(request, 'health.html', {'health': build_arr_health()})
 
 
 SYNC_HOUR_CHOICES = [(str(h), f"{h:02d}:00 UTC") for h in range(24)]

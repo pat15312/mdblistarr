@@ -56,6 +56,7 @@ Companion app for [mdblist.com](https://mdblist.com) for better Radarr and Sonar
 | --- | --- | --- |
 | Permanent library source role | Implemented | Implemented |
 | On-Demand target role | Implemented | Implemented |
+| Unified read-only operational health (`/health`) | Implemented | Implemented |
 | Optional profile/root for non-import use | Implemented | Implemented |
 | Role-aware permanent-library sync | Implemented | Implemented |
 | Monitoring reconciliation | Implemented | Implemented |
@@ -103,6 +104,12 @@ volumes:
 ## Security hardening in this fork
 
 MDBListarr now requires Django authentication for the configuration UI, logs, OAuth device-flow actions, connection tests, and state-changing endpoints. Only active staff or superuser accounts may use the application. `/healthz` and static assets remain unauthenticated.
+
+### Arr operational health
+
+Active staff users can open `/health` for a unified, read-only Sonarr and Radarr operational summary. Viewing or refreshing this page makes no Sonarr, Radarr, or MDBList API calls and provides no run, retry, repair, configuration, or deletion controls. The dashboard persists a structured snapshot of each latest actual reconciliation and separately aggregates current search-command, search-candidate, and cleanup-candidate state from MDBListarr's database, scoped to the currently configured On-Demand target.
+
+The endpoint indicators mean **validated on the last reconciliation**; they are not live connectivity probes. Starts are recorded only after the enabled, interval, and process-lock gates have passed. Disabled, not-scheduled, and already-running scheduler invocations do not replace the last health result. Configuration errors, incomplete or overdue runs, retry exhaustion, uncertain command state, and cleanup safety conditions are classified locally without changing any reconciliation lifecycle.
 
 ### First-run setup and runtime secrets
 

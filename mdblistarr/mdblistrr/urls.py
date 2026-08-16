@@ -6,6 +6,7 @@ from .log import log_view
 urlpatterns = [
     path('setup/', views.setup_view, name='setup'),
     path('', home_view, name='home_view'),
+    path('health', views.arr_health_view, name='arr_health_view'),
     path('log', log_view, name='log_view'),
     path('test_radarr_connection/', views.test_radarr_connection, name='test_radarr_connection'),
     path('test_sonarr_connection/', views.test_sonarr_connection, name='test_sonarr_connection'),
