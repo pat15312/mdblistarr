@@ -63,26 +63,30 @@ class ReconciliationHealthIntegrationMixin:
     def test_disabled_not_scheduled_and_lock_held_preserve_healthy_snapshot(self):
         self.healthy_snapshot()
         before = _status_values(self.product)
-        Preferences.set_value(f'{self.product}_reconciliation_enabled', '0')
-        with patch(self.api_setting) as factory:
-            self.reconcile(force=True)
-            factory.assert_not_called()
-        self.assertEqual(_status_values(self.product), before)
-
-        Preferences.set_value(f'{self.product}_reconciliation_enabled', '1')
-        Preferences.set_value(f'{self.product}_reconciliation_interval_minutes', '30')
-        outside_interval = timezone.now().replace(minute=1)
-        with patch('mdblistrr.cron.timezone.now', return_value=outside_interval), patch(self.api_setting) as factory:
-            self.reconcile(force=False)
-            factory.assert_not_called()
-        self.assertEqual(_status_values(self.product), before)
-
-        with open(self.lock_path, 'a+') as held:
-            fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with patch(self.lock_setting, self.lock_path), patch(self.api_setting) as factory:
-                result = self.reconcile(force=True)
+        with patch('mdblistrr.cron.begin_reconciliation_status') as begin, patch(
+                'mdblistrr.cron.finish_reconciliation_status') as finish:
+            Preferences.set_value(f'{self.product}_reconciliation_enabled', '0')
+            with patch(self.api_setting) as factory:
+                self.reconcile(force=True)
                 factory.assert_not_called()
-            self.assertIn('running', result['message'].lower())
+            self.assertEqual(_status_values(self.product), before)
+
+            Preferences.set_value(f'{self.product}_reconciliation_enabled', '1')
+            Preferences.set_value(f'{self.product}_reconciliation_interval_minutes', '30')
+            outside_interval = timezone.now().replace(minute=1)
+            with patch('mdblistrr.cron.timezone.now', return_value=outside_interval), patch(self.api_setting) as factory:
+                self.reconcile(force=False)
+                factory.assert_not_called()
+            self.assertEqual(_status_values(self.product), before)
+
+            with open(self.lock_path, 'a+') as held:
+                fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with patch(self.lock_setting, self.lock_path), patch(self.api_setting) as factory:
+                    result = self.reconcile(force=True)
+                    factory.assert_not_called()
+                self.assertIn('running', result['message'].lower())
+            begin.assert_not_called()
+            finish.assert_not_called()
         self.assertEqual(_status_values(self.product), before)
 
     def assert_success_status(self, result):
@@ -140,6 +144,38 @@ class SonarrReconciliationHealthIntegrationTests(ReconciliationHealthIntegration
         self.assert_success_status(result)
         source_api.get_series.assert_called_once_with()
         target_api.get_series.assert_called_once_with()
+
+    def test_begin_failure_does_not_block_success(self):
+        source_api, target_api = self.apis()
+        with patch('mdblistrr.cron.begin_reconciliation_status',
+                   side_effect=RuntimeError('health begin failed')):
+            result = self.invoke(source_api, target_api)
+        self.assertEqual(result['result'], 200)
+        source_api.get_series.assert_called_once_with()
+        target_api.get_series.assert_called_once_with()
+
+    def test_finish_failure_preserves_success(self):
+        source_api, target_api = self.apis()
+        with patch('mdblistrr.cron.finish_reconciliation_status',
+                   side_effect=RuntimeError('health finish failed')):
+            result = self.invoke(source_api, target_api)
+        self.assertEqual(result['result'], 200)
+
+    def test_finish_failure_preserves_partial_result(self):
+        malformed_target = [{'id': 1, 'tvdbId': 1, 'monitored': 'bad', 'seasons': []}]
+        source_api, target_api = self.apis([], malformed_target)
+        with patch('mdblistrr.cron.finish_reconciliation_status',
+                   side_effect=RuntimeError('health finish failed')):
+            result = self.invoke(source_api, target_api)
+        self.assertEqual(result['result'], 207)
+
+    def test_core_and_finish_failures_preserve_handled_result(self):
+        source_api, target_api = self.apis()
+        source_api.get_series.side_effect = RuntimeError('core failed')
+        with patch('mdblistrr.cron.finish_reconciliation_status',
+                   side_effect=RuntimeError('health finish failed')):
+            result = self.invoke(source_api, target_api)
+        self.assertEqual(result, {'result': 500, 'message': 'exception'})
 
     def test_partial_failure_preserves_success(self):
         previous = self.healthy_snapshot().last_success_at
@@ -210,6 +246,68 @@ class RadarrReconciliationHealthIntegrationTests(ReconciliationHealthIntegration
         source_api.get_movies.assert_called_once_with()
         target_api.get_movies.assert_called_once_with()
         self.assertNotEqual(old_target.id, new_target.id)
+
+    def test_begin_failure_does_not_block_success(self):
+        source_api, target_api = self.apis()
+        with patch('mdblistrr.cron.begin_reconciliation_status',
+                   side_effect=RuntimeError('health begin failed')):
+            result = self.invoke(source_api, target_api)
+        self.assertEqual(result['result'], 200)
+        source_api.get_movies.assert_called_once_with()
+        target_api.get_movies.assert_called_once_with()
+
+    def test_finish_failure_preserves_success(self):
+        source_api, target_api = self.apis()
+        with patch('mdblistrr.cron.finish_reconciliation_status',
+                   side_effect=RuntimeError('health finish failed')):
+            result = self.invoke(source_api, target_api)
+        self.assertEqual(result['result'], 200)
+
+    def test_finish_failure_preserves_partial_result(self):
+        source_api, target_api = self.apis([], [self.movie()])
+        target_api.put_movie_monitor.return_value = {'error': 'monitor failed'}
+        with patch('mdblistrr.cron.finish_reconciliation_status',
+                   side_effect=RuntimeError('health finish failed')):
+            result = self.invoke(source_api, target_api)
+        self.assertEqual(result['result'], 207)
+
+    def test_core_and_health_finish_failures_preserve_original_exception(self):
+        core_error = RuntimeError('sentinel core failure')
+        source_api, target_api = self.apis()
+        source_api.get_movies.side_effect = core_error
+        with patch('mdblistrr.cron.finish_reconciliation_status',
+                   side_effect=RuntimeError('health finish failed')):
+            with self.assertRaises(RuntimeError) as raised:
+                self.invoke(source_api, target_api)
+        self.assertIs(raised.exception, core_error)
+
+    def test_health_pre_read_failure_does_not_block_success(self):
+        source_api, target_api = self.apis()
+        with patch('mdblistrr.models.ArrReconciliationStatus.objects.filter',
+                   side_effect=RuntimeError('health read failed')):
+            result = self.invoke(source_api, target_api)
+        self.assertEqual(result['result'], 200)
+        source_api.get_movies.assert_called_once_with()
+
+    def test_exception_health_read_failure_preserves_original_exception(self):
+        core_error = RuntimeError('sentinel core failure')
+        source_api, target_api = self.apis()
+        source_api.get_movies.side_effect = core_error
+        original_filter = ArrReconciliationStatus.objects.filter
+        calls = 0
+
+        def fail_second_health_read(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError('health exception read failed')
+            return original_filter(*args, **kwargs)
+
+        with patch('mdblistrr.models.ArrReconciliationStatus.objects.filter',
+                   side_effect=fail_second_health_read):
+            with self.assertRaises(RuntimeError) as raised:
+                self.invoke(source_api, target_api)
+        self.assertIs(raised.exception, core_error)
 
     def test_partial_failure_preserves_success(self):
         previous = self.healthy_snapshot().last_success_at
