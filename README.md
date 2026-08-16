@@ -99,6 +99,22 @@ Sonarr reconciliation matches series by TVDB ID and compares episode state. It r
 - A permanent series counts as completely downloaded only when it has at least one relevant episode, every relevant episode has a file, and relevant data is well formed. Ignored specials, future episodes, and unscheduled episodes do not make it incomplete.
 - **Search newly eligible** defaults off. When enabled, persistent candidates are created for eligible missing episodes after monitoring is confirmed; searches are not sent to the permanent source.
 
+### Native Sonarr import-list setup
+
+When using Sonarr native import lists to populate an On-Demand target, configure the list so Sonarr adds records without independently monitoring or searching the imported backlog:
+
+| Setting | Value |
+| --- | --- |
+| Automatic Add | Enabled |
+| Search for Missing Episodes | Off |
+| Monitor | None |
+| Monitor New Seasons | No New Seasons |
+| Root folder | The intended On-Demand target root folder |
+| Quality profile | The intended On-Demand target quality profile |
+| Tags | Any tags required by the operator's setup |
+
+MDBListarr is intended to decide which episodes are monitored and, when **Search newly eligible** is enabled, which newly eligible missing episodes receive explicit `EpisodeSearch` commands. Allowing the import list to monitor or search imported content independently can bypass that controlled lifecycle and trigger unwanted backlog searches. A native Sonarr import list is optional; other mechanisms may populate the target.
+
 ## Radarr behaviour
 
 Radarr reconciliation matches movies by TMDB ID, treats the target's `isAvailable` value as authoritative, and writes only to the On-Demand target.
@@ -110,13 +126,15 @@ Radarr reconciliation matches movies by TMDB ID, treats the target's `isAvailabl
 
 This reconciliation and its searches do not depend on MDBList queue processing or queue-import roles.
 
+When using a native Radarr import list to populate the On-Demand target, use **Monitor = None** and disable **Search on Add** so Radarr does not bypass MDBListarr's monitoring and search decisions.
+
 ## Search lifecycle
 
 Sonarr and Radarr keep durable search candidates and command records rather than treating an API request as proof of acquisition. Submission intent and candidate association are recorded before applicable `EpisodeSearch` or `MoviesSearch` commands are sent, allowing later reconciliation after uncertain responses or restarts.
 
 Commands are polled to distinguish queued/running work, completion, genuine failure, and ambiguous or unavailable state. Completion means the Arr command finished; it does **not** prove that a release was acquired. Evidence such as a resulting file or Arr search timestamp resolves a candidate. A successfully completed search is not automatically repeated merely because the item remains missing.
 
-Genuine failed, aborted, cancelled, or orphaned outcomes can be retried after the configured delay, up to the configured retry count (defaults: 3 retries and 30 minutes). A missing command remains uncertain for a grace period (default: 24 hours) before failure handling. Exhausted candidates remain visible for attention. Disabling new searches stops new submissions while maintenance still reconciles previously recorded commands and outcomes; uncertainty blocks destructive cleanup.
+Genuine failed, aborted, cancelled, or orphaned outcomes can be retried after the configured delay, up to the configured retry count (defaults: 3 retries and 30 minutes). An accepted command that disappears from Arr history without independent file or search evidence remains unavailable and fail-closed. During the missing-command grace period it is recorded as missing within grace; after that period (24 hours by default), it is recorded as missing after grace but is not automatically converted into a retryable terminal failure or retried merely because the period elapsed. The unresolved uncertainty continues to block destructive cleanup until later valid evidence resolves the command. Exhausted candidates remain visible for attention. Disabling new searches stops new submissions while maintenance still reconciles previously recorded commands and outcomes.
 
 ## Cleanup safety
 
