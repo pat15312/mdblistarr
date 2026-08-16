@@ -50,7 +50,11 @@ from django.utils import timezone
 from .cron import reconcile_radarr_ondemand, reconcile_radarr_ondemand_task
 from .forms import RadarrReconciliationForm
 from .models import (Preferences, RadarrInstance, RadarrMovieSearchCandidate,
-    RadarrMovieSearchCommand, RadarrMovieSearchCommandCandidate)
+    RadarrMovieSearchCommand, RadarrMovieSearchCommandCandidate, RadarrCleanupCandidate)
+
+def cleanup_movie(mid, tmdb, file_id, *, monitored=False, edition=None):
+    return {**movie(mid,tmdb,True,monitored), 'movieFileId':file_id,
+        'movieFile':{'id':file_id,'movieId':mid,'edition':edition}}
 
 class RadarrOrchestrationTests(TestCase):
     def setUp(self):
@@ -179,6 +183,44 @@ class RadarrOrchestrationTests(TestCase):
         a,b=self.apis([],[movie(1,10)])
         with patch('mdblistrr.cron.RADARR_RECONCILE_LOCK_PATH',self.lock),patch('mdblistrr.cron.RadarrAPI',side_effect=[a,b]): task_result=reconcile_radarr_ondemand_task.enqueue()
         self.assertEqual(task_result.status.value,'SUCCESSFUL'); json.dumps(task_result.return_value)
+    def test_full_mixed_cleanup_dry_run_then_safe_live_delete(self):
+        Preferences.set_value('radarr_cleanup_enabled','1'); Preferences.set_value('radarr_cleanup_dry_run','1')
+        Preferences.set_value('radarr_cleanup_grace_hours','0'); Preferences.set_value('radarr_cleanup_max_deletions_per_run','1')
+        sources=[cleanup_movie(200+i,10000+i,20000+i) for i in range(2,111)]
+        targets=[movie(1,99999),cleanup_movie(2,10002,30002),cleanup_movie(3,10003,30003,edition='IMAX'),cleanup_movie(4,10004,30004)]
+        sources[1]['movieFile']['edition']='Extended'
+        targets += [cleanup_movie(i,10000+i,30000+i,monitored=True) for i in range(10,111)]
+        now=timezone.now(); command=RadarrMovieSearchCommand.objects.create(target_instance=self.target,status='queued',submission_attempted_at=now)
+        RadarrMovieSearchCandidate.objects.create(target_instance=self.target,target_movie_id=4,tmdb_id=10004,status='submitted',first_eligible_at=now,last_confirmed_at=now,current_command=command)
+        source_api,target_api=self.apis(sources,targets); target_api.put_movie_monitor.side_effect=[{}, {}, {'error':'editor failed'}]; target_api.get_commands.return_value=[{'id':77,'name':'MoviesSearch','body':{'name':'MoviesSearch','movieIds':[4]},'status':'queued','result':'unknown','queued':now.isoformat()}]
+        dry=self.invoke(source_api,target_api)
+        self.assertEqual(target_api.put_movie_monitor.call_args_list,[call([1],True),call(list(range(10,110)),False),call([110],False)])
+        self.assertEqual(dry['counters']['cleanup_edition_conflicts'],1); self.assertEqual(dry['counters']['cleanup_would_delete'],101)
+        self.assertFalse(RadarrCleanupCandidate.objects.filter(target_movie_id__in=(3,4,110)).exists()); json.dumps(dry)
+        for name in ('put_movie_monitor','trigger_movies_search','post_movie','delete_movie_file'): self.assertFalse(getattr(source_api,name).called)
+        target_api.delete_movie_file.assert_not_called()
+
+        # A healthy subsequent run can delete only the first deterministic ready
+        # candidate; force bypasses the interval, never dry-run or the cap.
+        Preferences.set_value('radarr_cleanup_dry_run','0')
+        command.status='completed'; command.outcome_reconciled_at=timezone.now(); command.save(update_fields=['status','outcome_reconciled_at'])
+        live_targets=[{**item,'monitored':False} for item in targets if item['id'] != 110]
+        source_api,target_api=self.apis(sources,live_targets); target_api.get_commands.return_value=[{'id':77,'name':'MoviesSearch','body':{'name':'MoviesSearch','movieIds':[4]},'status':'queued','result':'unknown','queued':now.isoformat()}]
+        source_by_id={item['id']:item for item in sources}; target_by_id={item['id']:item for item in live_targets}
+        source_api.get_movie.side_effect=lambda mid:{**source_by_id[mid],'status_code':200}
+        target_api.get_movie.side_effect=lambda mid:{**target_by_id[mid],'status_code':200}
+        source_api.get_movie_file.side_effect=lambda fid:{'id':fid,'movieId':next(item['id'] for item in sources if item.get('movieFileId')==fid),'edition':next(item['movieFile']['edition'] for item in sources if item['movieFileId']==fid),'status_code':200}
+        file_calls={}
+        def target_file(fid):
+            file_calls[fid]=file_calls.get(fid,0)+1
+            if file_calls[fid] > 1: return {'status_code':404,'error':'not found'}
+            item=next(item for item in live_targets if item.get('movieFileId')==fid)
+            return {'id':fid,'movieId':item['id'],'edition':item['movieFile']['edition'],'status_code':200}
+        target_api.get_movie_file.side_effect=target_file; target_api.delete_movie_file.return_value={'status':'ok','status_code':204}
+        live=self.invoke(source_api,target_api)
+        target_api.delete_movie_file.assert_called_once_with(30002); self.assertEqual(live['counters']['cleanup_files_deleted'],1)
+        self.assertGreater(live['counters']['cleanup_deferred_by_limit'],0); json.dumps(live)
+        for name in ('put_movie_monitor','trigger_movies_search','post_movie','delete_movie_file'): self.assertFalse(getattr(source_api,name).called)
     def test_held_independent_lock_blocks_all_io(self):
         with open(self.lock,'a+') as held:
             fcntl.flock(held.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -194,9 +236,18 @@ class RadarrFormUiManualTests(TestCase):
         U=get_user_model(); self.staff=U.objects.create_user('staff',password='pw',is_staff=True,is_superuser=True); self.user=U.objects.create_user('user',password='pw')
     def test_form_querysets_validation_default_and_preferences(self):
         form=RadarrReconciliationForm(); self.assertEqual(set(form.fields['source'].queryset),{self.source,self.both}); self.assertEqual(set(form.fields['target'].queryset),{self.target,self.both}); self.assertEqual(form.fields['interval_minutes'].initial,'15')
+        self.assertTrue(form.fields['cleanup_dry_run'].initial)
+        self.assertEqual((form.fields['cleanup_grace_hours'].initial,form.fields['cleanup_max_deletions_per_run'].initial),('24',25))
+        self.assertEqual([Preferences.get_value(k,d) for k,d in (('radarr_cleanup_enabled','0'),('radarr_cleanup_dry_run','1'),('radarr_cleanup_grace_hours','24'),('radarr_cleanup_max_deletions_per_run','25'))],['0','1','24','25'])
+        for maximum in ('0','501'):
+            invalid=RadarrReconciliationForm({'interval_minutes':'15','cleanup_grace_hours':'24','cleanup_max_deletions_per_run':maximum})
+            self.assertFalse(invalid.is_valid())
         self.assertFalse(RadarrReconciliationForm({'enabled':'on','interval_minutes':'15'}).is_valid()); self.assertFalse(RadarrReconciliationForm({'enabled':'on','source':self.both.id,'target':self.both.id,'interval_minutes':'15'}).is_valid()); disabled=RadarrReconciliationForm({'interval_minutes':'15'}); self.assertTrue(disabled.is_valid()); disabled.save_preferences()
         enabled=RadarrReconciliationForm({'enabled':'on','source':self.source.id,'target':self.target.id,'interval_minutes':'30'}); self.assertTrue(enabled.is_valid()); enabled.save_preferences()
         self.assertEqual([Preferences.get_value(k) for k in ('radarr_reconciliation_enabled','radarr_reconciliation_source_id','radarr_reconciliation_target_id','radarr_reconciliation_interval_minutes')],['1',str(self.source.id),str(self.target.id),'30'])
+        cleanup=RadarrReconciliationForm({'enabled':'on','source':self.source.id,'target':self.target.id,'interval_minutes':'30','cleanup_enabled':'on','cleanup_dry_run':'on','cleanup_grace_hours':'48','cleanup_max_deletions_per_run':'17'})
+        self.assertTrue(cleanup.is_valid()); cleanup.save_preferences()
+        self.assertEqual([Preferences.get_value(k) for k in ('radarr_cleanup_enabled','radarr_cleanup_dry_run','radarr_cleanup_grace_hours','radarr_cleanup_max_deletions_per_run')],['1','1','48','17'])
     @patch('mdblistrr.views.get_mdblistarr')
     def test_ui_persisted_selection_no_future_controls_secrets_or_duplicate_ids(self,service):
         service.return_value.get_radarr_quality_profile_choices.return_value=[]; service.return_value.get_radarr_root_folder_choices.return_value=[]
@@ -204,7 +255,9 @@ class RadarrFormUiManualTests(TestCase):
         self.assertIn('Run Radarr reconciliation now',html); self.assertIn(f'<option value="{self.source.id}" selected>Source</option>',html); self.assertIn(f'<option value="{self.target.id}" selected>Target</option>',html)
         self.assertIn('Search newly eligible missing movies', html)
         self.assertIn('MoviesSearch commands:', html)
-        for absent in ('Radarr cleanup','force-delete','source-key','target-key'): self.assertNotIn(absent,html)
+        self.assertIn('Destructive cleanup safety:',html); self.assertIn('Enable automatic duplicate-file cleanup',html)
+        self.assertIn('Dry-run cleanup',html); self.assertIn('Maximum file deletions per reconciliation run',html)
+        for absent in ('force-delete','Force delete','safety bypass','source-key','target-key'): self.assertNotIn(absent,html)
         ids=[x.split('"',1)[0] for x in html.split(' id="')[1:]]; self.assertEqual(len(ids),len(set(ids)))
     def test_manual_methods_permissions_force_disabled_and_csrf(self):
         rec,sync=reverse('run_radarr_reconciliation_now'),reverse('run_radarr_library_sync_now'); self.client.force_login(self.user); self.assertEqual(self.client.post(rec, content_type='application/json').status_code,403); self.assertEqual(self.client.post(sync, content_type='application/json').status_code,403)

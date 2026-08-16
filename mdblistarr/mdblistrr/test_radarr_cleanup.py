@@ -182,3 +182,29 @@ class DestructiveLifecycleTests(TestCase):
         sources,targets=self.snapshots(); self.ready(sources,targets); source_api,target_api,_=self.valid_apis(sources,targets); source_api.get_movie.return_value={**sources[0],'hasFile':False,'movieFileId':0,'status_code':200}; source_api.get_movie.side_effect=None
         out=self.invoke(sources,targets,source_api,target_api)
         self.assertEqual(RadarrCleanupCandidate.objects.get().status,'cancelled'); target_api.delete_movie_file.assert_not_called()
+
+class TargetMovieDisappearanceTests(TestCase):
+    def setUp(self):
+        self.target=RadarrInstance.objects.create(name='target-missing',url='http://target',apikey='x',is_library_source=False,is_ondemand_target=True)
+    def process_missing(self, exact, *, live=False):
+        sources=[movie(1,1001,2001)]; targets=[movie(101,1001,3001)]
+        now=timezone.now()-timezone.timedelta(days=2)
+        RadarrCleanupCandidate.objects.create(target_instance=self.target,tmdb_id=1001,source_movie_id=1,source_movie_file_id=2001,target_movie_id=101,movie_file_id=3001,source_edition='',target_edition='',first_eligible_at=now,last_confirmed_at=now,ready_at=now,status='ready')
+        target_api=Mock(); target_api.get_movie_file.return_value=exact
+        out=process_radarr_cleanup(target_instance=self.target,source_movies=sources,target_movies=[],
+            confirmed_unmonitored_ids=set(),monitoring_blocked_ids=set(),source_api=Mock(),target_api=target_api,
+            cleanup_enabled=live,dry_run=not live,grace_hours=24,max_deletions=25)
+        return out,target_api,RadarrCleanupCandidate.objects.get()
+    def test_missing_movie_and_exact_404_is_already_absent(self):
+        out,api,cand=self.process_missing({'status_code':404,'error':'not found'})
+        self.assertEqual(cand.status,'already_absent'); self.assertEqual(out.cleanup_files_already_absent,1)
+        api.get_movie_file.assert_called_once_with(3001); api.delete_movie_file.assert_not_called()
+    def test_missing_movie_but_exact_file_exists_cancels_without_delete(self):
+        out,api,cand=self.process_missing({'id':3001,'movieId':101,'edition':None,'status_code':200})
+        self.assertEqual(cand.status,'cancelled'); self.assertEqual(out.cleanup_candidates_cancelled,1)
+        api.delete_movie_file.assert_not_called()
+    def test_missing_movie_malformed_exact_file_stops_live_deletes(self):
+        out,api,cand=self.process_missing({'status_code':503,'error':'unavailable'},live=True)
+        self.assertEqual(cand.status,'ready'); self.assertEqual(out.cleanup_failures,1)
+        self.assertGreaterEqual(out.cleanup_safety_deferred,1); self.assertTrue(out.stop_deletes_for_run)
+        api.delete_movie_file.assert_not_called()

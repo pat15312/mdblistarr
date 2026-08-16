@@ -179,6 +179,13 @@ def process_radarr_cleanup(*, target_instance, source_movies, target_movies, con
     for cand in RadarrCleanupCandidate.objects.filter(target_instance=target_instance).exclude(status__in=('deleted','already_absent','cancelled')):
         current = target_by_id.get(cand.target_movie_id)
         if current is None:
+            # A missing movie record is not proof that its immutable file is
+            # absent. Resolve the exact file identity before terminalising.
+            state = _retire_inactive_exact_file(cand, target_api, counters, now)
+            if state == 'uncertain':
+                lifecycle_blocked_candidate_ids.add(cand.id)
+                if cleanup_enabled and not dry_run:
+                    counters.stop_deletes_for_run = True
             continue
         current_file_id = positive_int(current.get('movieFileId')) if current.get('hasFile') is True else None
         if current_file_id != cand.movie_file_id:
