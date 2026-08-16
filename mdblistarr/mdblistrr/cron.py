@@ -64,19 +64,6 @@ def _try_finish_reconciliation_status(product, result_code, message, counters=No
         return None
 
 
-def _try_read_radarr_reconciliation_status(phase, last_started_only=False):
-    """Return (read_succeeded, value), keeping health reads optional."""
-    try:
-        from .models import ArrReconciliationStatus
-        queryset = ArrReconciliationStatus.objects.filter(product='radarr')
-        value = (queryset.values_list('last_started_at', flat=True).first()
-                 if last_started_only else queryset.first())
-        return True, value
-    except Exception:
-        _health_warning('radarr', phase)
-        return False, None
-
-
 def _cleanup_series_title(value):
     """Return a bounded, single-line, quoted-field-safe display title."""
     if not isinstance(value, str) or not value.strip():
@@ -1086,8 +1073,10 @@ def _radarr_summary(result):
     )
 
 
-def _reconcile_radarr_ondemand(force=False):
+def _reconcile_radarr_ondemand(force=False, health_context=None):
     """Reconcile movie monitoring; the permanent Radarr is strictly read-only."""
+    if health_context is None:
+        health_context = {'begin_recorded': False, 'source_id': None, 'target_id': None}
     provider = 1
     if Preferences.get_value('radarr_reconciliation_enabled', '0') != '1':
         return {'result': 200, 'message': 'Radarr reconciliation disabled'}
@@ -1107,17 +1096,21 @@ def _reconcile_radarr_ondemand(force=False):
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {'result': 200, 'message': 'Radarr reconciliation already running'}
-        _try_begin_reconciliation_status('radarr')
+        health_context['begin_recorded'] = (
+            _try_begin_reconciliation_status('radarr') is not None)
+        source_id = Preferences.get_value('radarr_reconciliation_source_id')
+        target_id = Preferences.get_value('radarr_reconciliation_target_id')
+        health_context['source_id'] = source_id
+        health_context['target_id'] = target_id
         try:
             source = RadarrInstance.objects.get(
-                id=Preferences.get_value('radarr_reconciliation_source_id'), is_library_source=True)
+                id=source_id, is_library_source=True)
             target = RadarrInstance.objects.get(
-                id=Preferences.get_value('radarr_reconciliation_target_id'), is_ondemand_target=True)
+                id=target_id, is_ondemand_target=True)
         except (RadarrInstance.DoesNotExist, ValueError, TypeError):
             save_log(provider, 2, 'Radarr reconciliation failed: configured source or target role is invalid')
             _try_finish_reconciliation_status('radarr', 400, 'invalid_source_or_target',
-                source_instance_id=Preferences.get_value('radarr_reconciliation_source_id'),
-                target_instance_id=Preferences.get_value('radarr_reconciliation_target_id'))
+                source_instance_id=source_id, target_instance_id=target_id)
             return {'result': 400, 'message': 'invalid_source_or_target'}
         if source.id == target.id:
             save_log(provider, 2, 'Radarr reconciliation source and target must be different instances')
@@ -1216,25 +1209,18 @@ def _reconcile_radarr_ondemand(force=False):
 
 def reconcile_radarr_ondemand(force=False):
     """Record unexpected failures after a run begins, then preserve propagation."""
-    before_read, before = _try_read_radarr_reconciliation_status(
-        'pre_read', last_started_only=True)
+    health_context = {'begin_recorded': False, 'source_id': None, 'target_id': None}
     try:
-        return _reconcile_radarr_ondemand(force=force)
+        return _reconcile_radarr_ondemand(force=force, health_context=health_context)
     except Exception:
         # A bare raise below must always preserve the original core exception.
-        # If the baseline was unavailable, do not guess whether a run began.
-        if before_read:
-            status_read, status = _try_read_radarr_reconciliation_status('exception_read')
-            if status_read and status and status.last_started_at and status.last_started_at != before and (
-                    not status.last_completed_at or status.last_started_at > status.last_completed_at):
-                try:
-                    source_id = Preferences.get_value('radarr_reconciliation_source_id')
-                    target_id = Preferences.get_value('radarr_reconciliation_target_id')
-                    _try_finish_reconciliation_status(
-                        'radarr', 500, 'exception', source_instance_id=source_id,
-                        target_instance_id=target_id, phase='exception_finish')
-                except Exception:
-                    _health_warning('radarr', 'exception_finish')
+        # Only a begin successfully recorded by this invocation is finalized.
+        if health_context['begin_recorded']:
+            _try_finish_reconciliation_status(
+                'radarr', 500, 'exception',
+                source_instance_id=health_context['source_id'],
+                target_instance_id=health_context['target_id'],
+                phase='exception_finish')
         raise
 
 

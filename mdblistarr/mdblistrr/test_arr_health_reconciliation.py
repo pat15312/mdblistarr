@@ -281,33 +281,46 @@ class RadarrReconciliationHealthIntegrationTests(ReconciliationHealthIntegration
                 self.invoke(source_api, target_api)
         self.assertIs(raised.exception, core_error)
 
-    def test_health_pre_read_failure_does_not_block_success(self):
-        source_api, target_api = self.apis()
-        with patch('mdblistrr.models.ArrReconciliationStatus.objects.filter',
-                   side_effect=RuntimeError('health read failed')):
-            result = self.invoke(source_api, target_api)
-        self.assertEqual(result['result'], 200)
-        source_api.get_movies.assert_called_once_with()
+    def test_invalid_configuration_reuses_core_preference_values(self):
+        self.target.delete()
+        original_get_value = Preferences.get_value
+        preference_reads = []
 
-    def test_exception_health_read_failure_preserves_original_exception(self):
+        def count_get_value(name, default=None):
+            preference_reads.append(name)
+            return original_get_value(name, default)
+
+        with patch.object(Preferences, 'get_value', side_effect=count_get_value):
+            result = self.reconcile(force=True)
+        self.assertEqual(result, {'result': 400, 'message': 'invalid_source_or_target'})
+        self.assertEqual(preference_reads.count('radarr_reconciliation_source_id'), 1)
+        self.assertEqual(preference_reads.count('radarr_reconciliation_target_id'), 1)
+
+    def test_successful_begin_and_core_exception_records_terminal_failure(self):
         core_error = RuntimeError('sentinel core failure')
         source_api, target_api = self.apis()
         source_api.get_movies.side_effect = core_error
-        original_filter = ArrReconciliationStatus.objects.filter
-        calls = 0
+        with self.assertRaises(RuntimeError) as raised:
+            self.invoke(source_api, target_api)
+        self.assertIs(raised.exception, core_error)
+        row = ArrReconciliationStatus.objects.get(product='radarr')
+        self.assertEqual(row.last_outcome, 'failure')
+        self.assertEqual(row.last_result_code, 500)
+        self.assertEqual(row.last_message, 'exception')
+        self.assertIsNotNone(row.last_completed_at)
 
-        def fail_second_health_read(*args, **kwargs):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise RuntimeError('health exception read failed')
-            return original_filter(*args, **kwargs)
-
-        with patch('mdblistrr.models.ArrReconciliationStatus.objects.filter',
-                   side_effect=fail_second_health_read):
+    def test_begin_failure_and_core_exception_does_not_invent_terminal_row(self):
+        core_error = RuntimeError('sentinel core failure')
+        source_api, target_api = self.apis()
+        source_api.get_movies.side_effect = core_error
+        with patch('mdblistrr.cron.begin_reconciliation_status',
+                   side_effect=RuntimeError('health begin failed')), patch(
+                   'mdblistrr.cron.finish_reconciliation_status') as finish:
             with self.assertRaises(RuntimeError) as raised:
                 self.invoke(source_api, target_api)
         self.assertIs(raised.exception, core_error)
+        finish.assert_not_called()
+        self.assertFalse(ArrReconciliationStatus.objects.filter(product='radarr').exists())
 
     def test_partial_failure_preserves_success(self):
         previous = self.healthy_snapshot().last_success_at
