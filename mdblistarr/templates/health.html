@@ -1,0 +1,67 @@
+{% extends 'layout.html' %}
+{% load humanize %}
+{% block body %}
+<main class="container mb-5">
+  <div class="d-flex flex-wrap align-items-center gap-3 mb-2">
+    <h1 class="mb-0">Arr Health</h1>
+    <span class="badge fs-6 {% if health.overall == 'healthy' %}text-bg-success{% elif health.overall == 'error' %}text-bg-danger{% elif health.overall == 'attention' %}text-bg-warning{% elif health.overall == 'running' %}text-bg-info{% else %}text-bg-secondary{% endif %}">{{ health.overall|title }}</span>
+  </div>
+  <p class="text-body-secondary">Health reflects MDBListarr's persisted state and the last reconciliation; it is not a live Arr connectivity probe.</p>
+  <div class="row g-4">
+  {% for product in health.products %}
+    <div class="col-12 col-xl-6">
+      <section class="card h-100 shadow-sm">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h2 class="h4 mb-0">{{ product.name }}</h2>
+          <span class="badge {% if product.classification == 'healthy' %}text-bg-success{% elif product.classification == 'error' %}text-bg-danger{% elif product.classification == 'attention' %}text-bg-warning{% elif product.classification == 'running' %}text-bg-info{% else %}text-bg-secondary{% endif %}">{{ product.classification|title }}</span>
+        </div>
+        <div class="card-body">
+          <h3 class="h6">Configuration</h3>
+          <dl class="row small">
+            <dt class="col-6">Reconciliation</dt><dd class="col-6">{% if product.configuration.enabled %}Enabled{% else %}Disabled{% endif %}</dd>
+            <dt class="col-6">Permanent source</dt><dd class="col-6">{{ product.configuration.source_name }}</dd>
+            <dt class="col-6">On-Demand target</dt><dd class="col-6">{{ product.configuration.target_name }}</dd>
+            <dt class="col-6">Interval</dt><dd class="col-6">{{ product.configuration.interval_minutes }} minutes</dd>
+            <dt class="col-6">Search</dt><dd class="col-6">{% if product.configuration.search_enabled %}Enabled{% else %}Disabled{% endif %}</dd>
+            <dt class="col-6">Cleanup mode</dt><dd class="col-6"><span class="badge {% if product.configuration.cleanup_mode == 'Live' %}border border-danger text-danger{% elif product.configuration.cleanup_mode == 'Dry run' %}text-bg-info{% else %}text-bg-secondary{% endif %}">{{ product.configuration.cleanup_mode }}</span></dd>
+            <dt class="col-6">Cleanup grace / cap</dt><dd class="col-6">{{ product.configuration.cleanup_grace_hours }} hours / {{ product.configuration.cleanup_max_deletions }} per run</dd>
+          </dl>
+
+          <h3 class="h6 border-top pt-3">Last reconciliation</h3>
+          {% with run=product.last_run %}
+          {% if run and not product.snapshot_matches_configuration %}<div class="alert alert-warning py-2 small">This snapshot belongs to the previous source/target configuration. Its timestamps and outcome are historical and do not validate the current pair.</div>{% endif %}
+          <dl class="row small">
+            <dt class="col-6">Last attempt started</dt><dd class="col-6">{% if run.last_started_at %}{{ run.last_started_at|date:"Y-m-d H:i:s T" }} — {{ run.last_started_at|naturaltime }}{% else %}Never{% endif %}</dd>
+            <dt class="col-6">Last attempt completed</dt><dd class="col-6">{% if run.last_completed_at %}{{ run.last_completed_at|date:"Y-m-d H:i:s T" }} — {{ run.last_completed_at|naturaltime }}{% else %}Never{% endif %}</dd>
+            <dt class="col-6">Last successful run</dt><dd class="col-6">{% if run.last_success_at %}{{ run.last_success_at|date:"Y-m-d H:i:s T" }} — {{ run.last_success_at|naturaltime }}{% else %}Never{% endif %}</dd>
+            <dt class="col-6">Snapshot configuration</dt><dd class="col-6">{{ product.snapshot_context }}</dd>
+            <dt class="col-6">Latest outcome / code</dt><dd class="col-6">{{ run.last_outcome|default:"never"|title }}{% if run.last_result_code %} / {{ run.last_result_code }}{% endif %}</dd>
+            <dt class="col-6">Source validated on last reconciliation</dt><dd class="col-6">{% if not product.snapshot_matches_configuration and run %}Not yet validated for current configuration{% elif product.source_validation is True %}Yes{% elif product.source_validation is False %}No{% else %}Unknown{% endif %}</dd>
+            <dt class="col-6">Target validated on last reconciliation</dt><dd class="col-6">{% if not product.snapshot_matches_configuration and run %}Not yet validated for current configuration{% elif product.target_validation is True %}Yes{% elif product.target_validation is False %}No{% else %}Unknown{% endif %}</dd>
+          </dl>{% endwith %}
+
+          <h3 class="h6 border-top pt-3">Latest reconciliation activity</h3>
+          <div class="small row row-cols-2">
+            {% for metric in product.latest_activity %}<div class="col mb-1"><span class="text-body-secondary">{{ metric.label }}:</span> {{ metric.value }}</div>{% empty %}<p class="text-body-secondary">{% if product.last_run and not product.snapshot_matches_configuration %}No activity has been recorded for the current configuration.{% else %}No structured monitoring activity recorded.{% endif %}</p>{% endfor %}
+          </div>
+
+          <h3 class="h6 border-top pt-3">Search — current persistent state</h3>
+          <p class="small mb-1">Pending: <strong>{{ product.search.pending }}</strong> · Submitted: <strong>{{ product.search.submitted }}</strong> · Retry exhausted: <strong>{{ product.search.retry_exhausted }}</strong></p>
+          <p class="small mb-1">In flight: <strong>{{ product.search.in_flight }}</strong> (submitting {{ product.search.submitting }}, queued {{ product.search.queued }}, started {{ product.search.started }})</p>
+          <p class="small">Ambiguous/unavailable: <strong>{{ product.search.uncertain }}</strong> · Unreconciled terminal failures: <strong>{{ product.search.unreconciled_terminal_failures }}</strong>{% if product.search.oldest_pending_at %} · Oldest pending: {{ product.search.oldest_pending_at|naturaltime }}{% endif %}</p>
+
+          <h3 class="h6 border-top pt-3">Cleanup — current persistent state</h3>
+          <p class="small mb-1">Pending: <strong>{{ product.cleanup.pending }}</strong> · Ready: <strong>{{ product.cleanup.ready }}</strong> · Active errors: <strong>{{ product.cleanup.active_errors }}</strong></p>
+          <p class="small">Historical: deleted {{ product.cleanup.deleted }}, cancelled {{ product.cleanup.cancelled }}, already absent {{ product.cleanup.already_absent }}{% if product.cleanup.oldest_pending_at %} · Oldest pending: {{ product.cleanup.oldest_pending_at|naturaltime }}{% endif %}{% if product.cleanup.oldest_ready_at %} · Oldest ready: {{ product.cleanup.oldest_ready_at|naturaltime }}{% endif %}</p>
+          {% if product.configuration.cleanup_enabled and product.configuration.cleanup_dry_run and product.cleanup.ready %}<div class="alert alert-info py-2 small">Dry run: {{ product.cleanup.ready }} files are currently ready for deletion after persisted safety checks.</div>{% endif %}
+          {% if product.product == 'radarr' and product.latest_counters.cleanup_edition_conflicts %}<div class="alert alert-secondary py-2 small">{{ product.latest_counters.cleanup_edition_conflicts }} duplicates were excluded because edition evidence differed.</div>{% endif %}
+
+          {% if product.issues %}<h3 class="h6 border-top pt-3">Needs attention</h3><ul class="small text-danger">{% for issue in product.issues %}<li>{{ issue }}</li>{% endfor %}</ul>{% endif %}
+          <div class="d-flex gap-2"><a class="btn btn-sm btn-outline-primary" href="{% url 'home_view' %}">Configure {{ product.name }}</a><a class="btn btn-sm btn-outline-secondary" href="{% url 'log_view' %}">View Log</a></div>
+        </div>
+      </section>
+    </div>
+  {% endfor %}
+  </div>
+</main>
+{% endblock %}

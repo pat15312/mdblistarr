@@ -67,6 +67,37 @@ class Preferences(models.Model):
     def __str__(self):
         return self.name
 
+
+class ArrReconciliationStatus(models.Model):
+    PRODUCT_SONARR = 'sonarr'
+    PRODUCT_RADARR = 'radarr'
+    PRODUCT_CHOICES = ((PRODUCT_SONARR, 'Sonarr'), (PRODUCT_RADARR, 'Radarr'))
+    OUTCOME_NEVER = 'never'
+    OUTCOME_SUCCESS = 'success'
+    OUTCOME_PARTIAL_FAILURE = 'partial_failure'
+    OUTCOME_FAILURE = 'failure'
+    OUTCOME_CHOICES = tuple((value, value.replace('_', ' ').title()) for value in (
+        OUTCOME_NEVER, OUTCOME_SUCCESS, OUTCOME_PARTIAL_FAILURE, OUTCOME_FAILURE,
+    ))
+
+    product = models.CharField(max_length=10, choices=PRODUCT_CHOICES, unique=True)
+    last_started_at = models.DateTimeField(null=True, blank=True)
+    last_completed_at = models.DateTimeField(null=True, blank=True)
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    last_result_code = models.IntegerField(null=True, blank=True)
+    last_outcome = models.CharField(max_length=32, choices=OUTCOME_CHOICES, default=OUTCOME_NEVER)
+    last_message = models.CharField(max_length=255, blank=True, default='')
+    last_counters = models.JSONField(default=dict)
+    source_instance_id = models.PositiveIntegerField(null=True, blank=True)
+    target_instance_id = models.PositiveIntegerField(null=True, blank=True)
+    source_ok = models.BooleanField(null=True, blank=True)
+    target_ok = models.BooleanField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'{self.product}:{self.last_outcome}'
+
 class RadarrInstance(models.Model):
     id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=255)

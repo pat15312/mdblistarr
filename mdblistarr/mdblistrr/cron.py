@@ -21,6 +21,7 @@ from .radarr_search import (update_movie_search_candidates,
     reconcile_movie_search_commands, poll_movie_search_commands)
 from .radarr_cleanup import process_radarr_cleanup
 from .instance_config import queue_import_requirements_are_valid
+from .arr_health import begin_reconciliation_status, finish_reconciliation_status
 import fcntl, os
 from dataclasses import asdict
 
@@ -811,21 +812,29 @@ def reconcile_sonarr_ondemand(force=False):
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {'result': 200, 'message': 'Reconciliation already running'}
+        begin_reconciliation_status('sonarr')
+        source = target = None
         try:
             source = SonarrInstance.objects.get(id=Preferences.get_value('sonarr_reconciliation_source_id'), is_library_source=True)
             target = SonarrInstance.objects.get(id=Preferences.get_value('sonarr_reconciliation_target_id'), is_ondemand_target=True)
             if source.id == target.id:
                 save_log(provider, 2, 'Sonarr reconciliation source and target must be different instances')
+                finish_reconciliation_status('sonarr', 400, 'source_target_same',
+                    source_instance_id=source.id, target_instance_id=target.id)
                 return {'result': 400, 'message': 'source_target_same'}
             source_api, target_api = SonarrAPI(instance_id=source.id), SonarrAPI(instance_id=target.id)
             source_series, target_series = source_api.get_series(), target_api.get_series()
             source_ok, source_error = validate_sonarr_series_response(source_series, 'source')
             if not source_ok:
                 save_log(provider, 2, f'Sonarr reconciliation failed: permanent source series response invalid ({sanitize_text(source_error)})')
+                finish_reconciliation_status('sonarr', 502, 'source_validation_failed',
+                    source_instance_id=source.id, target_instance_id=target.id, source_ok=False)
                 return {'result': 502, 'message': source_error}
             target_ok, target_error = validate_sonarr_series_response(target_series, 'target')
             if not target_ok:
                 save_log(provider, 2, f'Sonarr reconciliation failed: On Demand target series response invalid ({sanitize_text(target_error)})')
+                finish_reconciliation_status('sonarr', 502, 'target_validation_failed',
+                    source_instance_id=source.id, target_instance_id=target.id, source_ok=True, target_ok=False)
                 return {'result': 502, 'message': target_error}
             source_by_tvdb = {s.get('tvdbId'): s for s in source_series}
             totals = calculate_episode_monitoring([], [])
@@ -969,9 +978,17 @@ def reconcile_sonarr_ondemand(force=False):
             log_status = 2 if totals.failures else 1
             command_summary = ' '.join(f'{key}={value}' for key, value in command_totals.items())
             save_log(provider, log_status, f'Sonarr reconciliation: series compared={totals.series_compared} target_only={totals.series_target_only} episodes inspected={totals.episodes_inspected} newly_monitored={totals.episodes_newly_monitored} newly_unmonitored={totals.episodes_newly_unmonitored} unchanged={totals.episodes_unchanged} searches={totals.searches_triggered} specials_ignored={totals.specials_ignored} future_ignored={totals.future_episodes_ignored} unscheduled_ignored={totals.unscheduled_episodes_ignored} malformed={totals.malformed_episodes} seasons_newly_monitored={totals.seasons_newly_monitored} seasons_newly_unmonitored={totals.seasons_newly_unmonitored} seasons_unchanged={totals.seasons_unchanged} season_update_failures={totals.season_update_failures} series_newly_monitored={totals.series_newly_monitored} series_newly_unmonitored={totals.series_newly_unmonitored} series_unchanged={totals.series_unchanged} series_update_failures={totals.series_update_failures} initial_searches_triggered={totals.initial_searches_triggered} search_candidates_new={search_candidate_totals['search_candidates_new']} search_candidates_pending={search_candidate_totals['search_candidates_pending']} search_candidates_submitted={search_candidate_totals['search_candidates_submitted']} search_candidates_cancelled={search_candidate_totals['search_candidates_cancelled']} search_candidates_deferred={search_candidate_totals['search_candidates_deferred']} search_candidates_recovered={search_candidate_totals['search_candidates_recovered']} search_recovery_failures={search_candidate_totals['search_recovery_failures']} search_failures={search_candidate_totals['search_failures']} failures={totals.failures} cleanup_candidates_new={cleanup_totals['cleanup_candidates_new']} cleanup_candidates_pending={cleanup_totals['cleanup_candidates_pending']} cleanup_candidates_ready={cleanup_totals['cleanup_candidates_ready']} cleanup_candidates_cancelled={cleanup_totals['cleanup_candidates_cancelled']} cleanup_would_delete={cleanup_totals['cleanup_would_delete']} cleanup_files_deleted={cleanup_totals['cleanup_files_deleted']} cleanup_files_already_absent={cleanup_totals['cleanup_files_already_absent']} cleanup_deferred_by_limit={cleanup_totals['cleanup_deferred_by_limit']} cleanup_failures={cleanup_totals['cleanup_failures']} {command_summary}')
-            return {'result': status, 'failures': totals.failures, 'message': 'partial_failure' if totals.failures else 'ok'}
+            monitoring_counters = {key: value for key, value in asdict(totals).items()
+                if isinstance(value, (int, float, bool))}
+            counters = {**monitoring_counters, **search_candidate_totals, **command_totals, **cleanup_totals}
+            message = 'partial_failure' if totals.failures else 'ok'
+            finish_reconciliation_status('sonarr', status, message, counters,
+                source.id, target.id, source_ok=True, target_ok=True)
+            return {'result': status, 'failures': totals.failures, 'message': message, 'counters': counters}
         except Exception:
             save_log(provider, 2, sanitize_text(traceback.format_exc()))
+            finish_reconciliation_status('sonarr', 500, 'exception',
+                source_instance_id=getattr(source, 'id', None), target_instance_id=getattr(target, 'id', None))
             return {'result': 500, 'message': 'exception'}
 
 @cron_task(cron_schedule="*/5 * * * *")
@@ -1014,7 +1031,7 @@ def _radarr_summary(result):
     )
 
 
-def reconcile_radarr_ondemand(force=False):
+def _reconcile_radarr_ondemand(force=False):
     """Reconcile movie monitoring; the permanent Radarr is strictly read-only."""
     provider = 1
     if Preferences.get_value('radarr_reconciliation_enabled', '0') != '1':
@@ -1035,6 +1052,7 @@ def reconcile_radarr_ondemand(force=False):
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {'result': 200, 'message': 'Radarr reconciliation already running'}
+        begin_reconciliation_status('radarr')
         try:
             source = RadarrInstance.objects.get(
                 id=Preferences.get_value('radarr_reconciliation_source_id'), is_library_source=True)
@@ -1042,9 +1060,14 @@ def reconcile_radarr_ondemand(force=False):
                 id=Preferences.get_value('radarr_reconciliation_target_id'), is_ondemand_target=True)
         except (RadarrInstance.DoesNotExist, ValueError, TypeError):
             save_log(provider, 2, 'Radarr reconciliation failed: configured source or target role is invalid')
+            finish_reconciliation_status('radarr', 400, 'invalid_source_or_target',
+                source_instance_id=Preferences.get_value('radarr_reconciliation_source_id'),
+                target_instance_id=Preferences.get_value('radarr_reconciliation_target_id'))
             return {'result': 400, 'message': 'invalid_source_or_target'}
         if source.id == target.id:
             save_log(provider, 2, 'Radarr reconciliation source and target must be different instances')
+            finish_reconciliation_status('radarr', 400, 'source_target_same',
+                source_instance_id=source.id, target_instance_id=target.id)
             return {'result': 400, 'message': 'source_target_same'}
         source_api = RadarrAPI(instance_id=source.id)
         target_api = RadarrAPI(instance_id=target.id)
@@ -1053,10 +1076,14 @@ def reconcile_radarr_ondemand(force=False):
         valid, reason = validate_movie_response(source_movies, label='source')
         if not valid:
             save_log(provider, 2, f'Radarr reconciliation failed: permanent source response invalid ({sanitize_text(reason)})')
+            finish_reconciliation_status('radarr', 502, 'source_validation_failed',
+                source_instance_id=source.id, target_instance_id=target.id, source_ok=False)
             return {'result': 502, 'message': reason}
         valid, reason = validate_movie_response(target_movies, target=True, label='target')
         if not valid:
             save_log(provider, 2, f'Radarr reconciliation failed: On Demand target response invalid ({sanitize_text(reason)})')
+            finish_reconciliation_status('radarr', 502, 'target_validation_failed',
+                source_instance_id=source.id, target_instance_id=target.id, source_ok=True, target_ok=False)
             return {'result': 502, 'message': reason}
         result = calculate_movie_monitoring(source_movies, target_movies)
         applied_true = _apply_radarr_monitor_batches(target_api, result.monitor_true_ids, True, result)
@@ -1121,11 +1148,32 @@ def reconcile_radarr_ondemand(force=False):
         for event in search_events + command_events + submission_events + cleanup.events:
             save_log(provider, 2 if 'failure' in event or 'ambiguous' in event else 1, event)
         save_log(provider, 2 if result.failures else 1, summary)
+        result_code = 207 if result.failures else 200
+        finish_reconciliation_status('radarr', result_code,
+            'partial_failure' if result.failures else 'ok', all_counters,
+            source.id, target.id, source_ok=True, target_ok=True)
         return {
-            'result': 207 if result.failures else 200,
+            'result': result_code,
             'message': summary,
             'counters': all_counters,
         }
+
+
+def reconcile_radarr_ondemand(force=False):
+    """Record unexpected failures after a run begins, then preserve propagation."""
+    from .models import ArrReconciliationStatus
+    before = ArrReconciliationStatus.objects.filter(product='radarr').values_list(
+        'last_started_at', flat=True).first()
+    try:
+        return _reconcile_radarr_ondemand(force=force)
+    except Exception:
+        status = ArrReconciliationStatus.objects.filter(product='radarr').first()
+        if status and status.last_started_at and status.last_started_at != before and (
+                not status.last_completed_at or status.last_started_at > status.last_completed_at):
+            finish_reconciliation_status('radarr', 500, 'exception',
+                source_instance_id=Preferences.get_value('radarr_reconciliation_source_id'),
+                target_instance_id=Preferences.get_value('radarr_reconciliation_target_id'))
+        raise
 
 
 @cron_task(cron_schedule="*/5 * * * *")
