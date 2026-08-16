@@ -310,6 +310,15 @@ def update_search_candidates_for_series(*, target_instance, tvdb_id, target_seri
     for episode_id, cand in existing.items():
         if episode_id in logically_eligible or cand.status not in (SEARCH_STATUS_PENDING, SEARCH_STATUS_FAILED):
             continue
+        current_episode = by_id.get(episode_id)
+        has_search_lineage = cand.attempt_count > 0 or cand.current_command_id is not None
+        if cand.status == SEARCH_STATUS_FAILED and has_search_lineage and current_episode is not None:
+            current_key = episode_key(current_episode)
+            if current_key is None or _identity_changed(
+                    cand, current_key, tvdb_id, target_series_id):
+                # A reused or malformed episode identity is not evidence that the
+                # retry-exhausted acquisition need was resolved. Fail closed.
+                continue
         was_failed = cand.status == SEARCH_STATUS_FAILED
         _cancel_retry_exhausted(cand, now=now)
         counters['search_candidates_cancelled'] += 1
