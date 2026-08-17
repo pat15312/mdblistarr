@@ -225,7 +225,7 @@ class RadarrReconciliationHealthIntegrationTests(ReconciliationHealthIntegration
         return {'id': movie_id, 'tmdbId': movie_id, 'hasFile': False,
                 'monitored': False, 'isAvailable': True, 'title': 'Movie'}
 
-    def test_success_records_pr14_counters_without_extra_arr_calls_and_clears_mismatch(self):
+    def test_success_records_cleanup_counters_without_extra_arr_calls_and_clears_mismatch(self):
         old_target = self.target
         new_target = RadarrInstance.objects.create(name='New target', url='http://new-target',
             apikey='new-secret', is_library_source=False, is_ondemand_target=True)
