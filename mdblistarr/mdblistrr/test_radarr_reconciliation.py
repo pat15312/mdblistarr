@@ -48,7 +48,7 @@ from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.utils import timezone
 from .cron import reconcile_radarr_ondemand, reconcile_radarr_ondemand_task
-from .forms import RadarrReconciliationForm
+from .forms import RadarrReconciliationForm, SonarrReconciliationForm
 from .models import (Preferences, RadarrInstance, RadarrMovieSearchCandidate,
     RadarrMovieSearchCommand, RadarrMovieSearchCommandCandidate, RadarrCleanupCandidate)
 
@@ -257,6 +257,21 @@ class RadarrFormUiManualTests(TestCase):
         self.assertIn('MoviesSearch commands:', html)
         self.assertIn('Destructive cleanup safety:',html); self.assertIn('Enable automatic duplicate-file cleanup',html)
         self.assertIn('Dry-run cleanup',html); self.assertIn('Maximum file deletions per reconciliation run',html)
+        for text in ('On-Demand Reconciliation', 'When using a native Radarr import list', 'Monitor to None', 'Search on Add disabled'):
+            self.assertIn(text, html)
+        radarr_section = html.split('value="radarr_reconcile"', 1)[1].split('value="sonarr_select"', 1)[0]
+        self.assertLess(radarr_section.index('Missing-command grace period'), radarr_section.index('MoviesSearch commands:'))
+        self.assertLess(radarr_section.index('MoviesSearch commands:'), radarr_section.index('Destructive cleanup safety:'))
+        self.assertIn('alert alert-secondary py-2', radarr_section)
+        self.assertIn('Run Radarr library sync now', radarr_section)
+        sonarr_section = html.rsplit('On-Demand Reconciliation', 1)[1]
+        for text in ('When using a native Sonarr import list', 'Automatic Add', 'Monitor to None', 'Search for Missing Episodes', 'Monitor New Seasons', 'No New Seasons', 'EpisodeSearch commands:', 'Destructive cleanup safety:', 'Include specials in completeness checks', 'Run Sonarr reconciliation now', 'Run Sonarr library sync now'):
+            self.assertIn(text, sonarr_section)
+        self.assertLess(sonarr_section.index('Missing-command grace period'), sonarr_section.index('EpisodeSearch commands:'))
+        self.assertLess(sonarr_section.index('EpisodeSearch commands:'), sonarr_section.index('Destructive cleanup safety:'))
+        for form in (RadarrReconciliationForm(), SonarrReconciliationForm()):
+            for field in ('search_max_retries', 'search_retry_delay_minutes', 'search_missing_command_grace_hours', 'cleanup_max_deletions_per_run'):
+                self.assertEqual(form.fields[field].widget.attrs['class'], 'form-control w-auto')
         for absent in ('force-delete','Force delete','safety bypass','source-key','target-key'): self.assertNotIn(absent,html)
         ids=[x.split('"',1)[0] for x in html.split(' id="')[1:]]; self.assertEqual(len(ids),len(set(ids)))
     def test_manual_methods_permissions_force_disabled_and_csrf(self):

@@ -7,10 +7,10 @@ RECONCILIATION_INTERVAL_CHOICES = [('5', 'Every 5 minutes'), ('15', 'Every 15 mi
 
 
 class RadarrReconciliationForm(forms.Form):
-    enabled = forms.BooleanField(label='Enable On Demand reconciliation', required=False)
+    enabled = forms.BooleanField(label='Enable On-Demand reconciliation', required=False)
     source = forms.ModelChoiceField(label='Permanent Radarr source', queryset=RadarrInstance.objects.none(), required=False)
-    target = forms.ModelChoiceField(label='Radarr On Demand target', queryset=RadarrInstance.objects.none(), required=False)
-    search_newly_eligible = forms.BooleanField(label='Search newly eligible missing movies', required=False, help_text='Monitoring is always reconciled and eligible unsearched movies remain pending while searching is disabled. Enabling this submits pending movies once; manual or successful searches are not repeated. Command execution failures may be retried using the controls below.')
+    target = forms.ModelChoiceField(label='Radarr On-Demand target', queryset=RadarrInstance.objects.none(), required=False)
+    search_newly_eligible = forms.BooleanField(label='Search newly eligible missing movies', required=False, help_text='Monitoring is always reconciled. Eligible unsearched movies remain pending while searching is disabled. Enabling this submits pending movies once; manual or successful searches are not repeated. Command execution failures may be retried using the controls below.')
     interval_minutes = forms.ChoiceField(label='Reconciliation interval', choices=RECONCILIATION_INTERVAL_CHOICES, initial='15')
     search_max_retries = forms.IntegerField(label='Maximum automatic MoviesSearch retries', min_value=0, max_value=10, initial=3, required=False, help_text='Retries after the initial accepted attempt; 0 disables automatic retries.')
     search_retry_delay_minutes = forms.IntegerField(label='MoviesSearch retry delay (minutes)', min_value=0, max_value=10080, initial=30, required=False)
@@ -32,6 +32,8 @@ class RadarrReconciliationForm(forms.Form):
                 field.widget.attrs['class'] = 'form-check-input'
         for name, field in self.fields.items():
             field.widget.attrs['id'] = f'id_radarr_reconciliation_{name}'
+        for name in ('search_max_retries', 'search_retry_delay_minutes', 'search_missing_command_grace_hours', 'cleanup_max_deletions_per_run'):
+            self.fields[name].widget.attrs['class'] = 'form-control w-auto'
 
     def clean(self):
         data = super().clean()
@@ -70,11 +72,11 @@ class InitialAdminSetupForm(UserCreationForm):
 
 
 class SonarrReconciliationForm(forms.Form):
-    enabled = forms.BooleanField(label='Enable On Demand reconciliation', required=False)
+    enabled = forms.BooleanField(label='Enable On-Demand reconciliation', required=False)
     source = forms.ModelChoiceField(label='Permanent Sonarr source', queryset=SonarrInstance.objects.none(), required=False)
-    target = forms.ModelChoiceField(label='Sonarr On Demand target', queryset=SonarrInstance.objects.none(), required=False)
+    target = forms.ModelChoiceField(label='Sonarr On-Demand target', queryset=SonarrInstance.objects.none(), required=False)
     include_specials = forms.BooleanField(label='Include specials in completeness checks', required=False)
-    search_newly_eligible = forms.BooleanField(label='Search newly eligible missing episodes', required=False, help_text='Monitoring is always reconciled. When searching is disabled, eligible unsearched episodes remain pending; enabling this option later submits pending episodes once. Episodes previously searched manually are not automatically searched again, and successfully submitted searches are not repeated every reconciliation.')
+    search_newly_eligible = forms.BooleanField(label='Search newly eligible missing episodes', required=False, help_text='Monitoring is always reconciled. Eligible unsearched episodes remain pending while searching is disabled. Enabling this submits pending episodes once; manual or successful searches are not repeated. Command execution failures may be retried using the controls below.')
     interval_minutes = forms.ChoiceField(label='Reconciliation interval', choices=RECONCILIATION_INTERVAL_CHOICES)
     search_max_retries = forms.IntegerField(label='Maximum automatic EpisodeSearch retries', min_value=0, max_value=10, help_text='Retries after the initial accepted attempt; 0 disables automatic retries.')
     search_retry_delay_minutes = forms.IntegerField(label='EpisodeSearch retry delay (minutes)', min_value=0, max_value=10080)
@@ -94,6 +96,8 @@ class SonarrReconciliationForm(forms.Form):
                 field.widget.attrs.update({'class': 'form-select'})
             elif isinstance(field.widget, forms.CheckboxInput):
                 field.widget.attrs.update({'class': 'form-check-input'})
+        for name in ('search_max_retries', 'search_retry_delay_minutes', 'search_missing_command_grace_hours', 'cleanup_max_deletions_per_run'):
+            self.fields[name].widget.attrs['class'] = 'form-control w-auto'
 
     def clean(self):
         data = super().clean()

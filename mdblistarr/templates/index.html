@@ -212,8 +212,8 @@
                 </div>
             </div>
             {% endif %}
-            <div class="card mb-4"><div class="card-header"><h5 class="mb-0">On Demand Reconciliation</h5></div><div class="card-body">
-            <div class="alert alert-warning">Configure On-Demand import lists with Monitor=None and leave Search on Add disabled. MDBListarr reconciles monitoring and, when “Search newly eligible missing movies” is enabled, performs controlled one-time MoviesSearch submissions and tracks their command lifecycle. Monitored movies may independently still be acted on by Radarr RSS/indexer processing.</div>
+            <div class="card mb-4"><div class="card-header"><h5 class="mb-0">On-Demand Reconciliation</h5></div><div class="card-body">
+            <div class="alert alert-warning"><strong>When using a native Radarr import list to populate the On-Demand target</strong>, set Monitor to None and leave Search on Add disabled. MDBListarr reconciles monitoring and, when “Search newly eligible missing movies” is enabled, performs controlled MoviesSearch submissions and tracks their command lifecycle. Monitored movies may still be acted on independently by Radarr RSS/indexer processing.</div>
             <form action="{% url 'home_view' %}" method="post">{% csrf_token %}<input type="hidden" name="form_type" value="radarr_reconcile">
             {% if radarr_reconcile_form.non_field_errors %}<div class="alert alert-warning">{{ radarr_reconcile_form.non_field_errors }}</div>{% endif %}
             <div class="form-check mb-3">{{ radarr_reconcile_form.enabled }} {{ radarr_reconcile_form.enabled.label_tag }}</div>
@@ -224,12 +224,12 @@
             <div class="mb-3">{{ radarr_reconcile_form.search_max_retries.label_tag }} {{ radarr_reconcile_form.search_max_retries }}</div>
             <div class="mb-3">{{ radarr_reconcile_form.search_retry_delay_minutes.label_tag }} {{ radarr_reconcile_form.search_retry_delay_minutes }}</div>
             <div class="mb-3">{{ radarr_reconcile_form.search_missing_command_grace_hours.label_tag }} {{ radarr_reconcile_form.search_missing_command_grace_hours }}</div>
-            <div class="alert alert-danger"><strong>Destructive cleanup safety:</strong> Cleanup affects only the Radarr On Demand target; permanent Radarr remains read-only. Only confirmed TMDB duplicates with safely equivalent editions qualify. Review dry-run output before live deletion. Radarr deletes the managed movie file; MDBListarr never deletes filesystem paths directly. NzbDAV backing-store/orphan cleanup remains governed by NzbDAV maintenance.</div>
+            <div class="alert alert-secondary py-2"><strong>MoviesSearch commands:</strong> in flight {{ radarr_search_command_summary.in_flight }}, completed {{ radarr_search_command_summary.completed }}, awaiting retry {{ radarr_search_command_summary.terminal_awaiting_retry }}, retry exhausted {{ radarr_search_command_summary.retry_exhausted }}, ambiguous/unavailable {{ radarr_search_command_summary.ambiguous_unavailable }}.</div>
+            <div class="alert alert-danger"><strong>Destructive cleanup safety:</strong> Cleanup affects only the Radarr On-Demand target; permanent Radarr remains read-only. Only confirmed TMDB duplicates with safely compatible editions qualify. Review dry-run output before live deletion. Radarr deletes the managed movie file; MDBListarr never deletes filesystem paths directly. NzbDAV backing-store/orphan cleanup remains governed by NzbDAV maintenance.</div>
             <div class="form-check mb-3">{{ radarr_reconcile_form.cleanup_enabled }} {{ radarr_reconcile_form.cleanup_enabled.label_tag }}</div>
             <div class="form-check mb-3">{{ radarr_reconcile_form.cleanup_dry_run }} {{ radarr_reconcile_form.cleanup_dry_run.label_tag }}</div>
             <div class="mb-3">{{ radarr_reconcile_form.cleanup_grace_hours.label_tag }} {{ radarr_reconcile_form.cleanup_grace_hours }}</div>
             <div class="mb-3">{{ radarr_reconcile_form.cleanup_max_deletions_per_run.label_tag }} {{ radarr_reconcile_form.cleanup_max_deletions_per_run }}</div>
-            <p class="small text-muted">MoviesSearch commands: in flight {{ radarr_search_command_summary.in_flight }}, completed {{ radarr_search_command_summary.completed }}, awaiting retry {{ radarr_search_command_summary.terminal_awaiting_retry }}, retry exhausted {{ radarr_search_command_summary.retry_exhausted }}, ambiguous/unavailable {{ radarr_search_command_summary.ambiguous_unavailable }}.</p>
             <button type="submit" class="btn btn-success">Save Reconciliation Settings</button></form>
             <form action="{% url 'run_radarr_reconciliation_now' %}" method="post" class="mt-3 d-inline">{% csrf_token %}<button type="submit" class="btn btn-outline-primary">Run Radarr reconciliation now</button></form>
             <form action="{% url 'run_radarr_library_sync_now' %}" method="post" class="mt-3 d-inline">{% csrf_token %}<button type="submit" class="btn btn-outline-secondary">Run Radarr library sync now</button></form>
@@ -349,7 +349,8 @@
                 </div>
             </div>
             {% endif %}
-            <div class="card mb-4"><div class="card-header"><h5 class="mb-0">On Demand Reconciliation</h5></div><div class="card-body">
+            <div class="card mb-4"><div class="card-header"><h5 class="mb-0">On-Demand Reconciliation</h5></div><div class="card-body">
+            <div class="alert alert-warning"><strong>When using a native Sonarr import list to populate the On-Demand target</strong>, enable Automatic Add, set Monitor to None, disable Search for Missing Episodes, and set Monitor New Seasons to No New Seasons. MDBListarr reconciles monitoring and, when “Search newly eligible missing episodes” is enabled, performs controlled EpisodeSearch submissions and tracks their command lifecycle. Monitored episodes may still be acted on independently by Sonarr RSS/indexer processing.</div>
             <form action="{% url 'home_view' %}" method="post">{% csrf_token %}<input type="hidden" name="form_type" value="sonarr_reconcile">
             {% if reconcile_form.non_field_errors %}<div class="alert alert-warning">{{ reconcile_form.non_field_errors }}</div>{% endif %}
             <div class="form-check mb-3">{{ reconcile_form.enabled }} {{ reconcile_form.enabled.label_tag }}</div>
@@ -362,7 +363,7 @@
             <div class="mb-3">{{ reconcile_form.search_retry_delay_minutes.label_tag }} {{ reconcile_form.search_retry_delay_minutes }}</div>
             <div class="mb-3">{{ reconcile_form.search_missing_command_grace_hours.label_tag }} {{ reconcile_form.search_missing_command_grace_hours }}</div>
             <div class="alert alert-secondary py-2"><strong>EpisodeSearch commands:</strong> in flight {{ search_command_summary.in_flight }}, completed {{ search_command_summary.completed }}, awaiting retry {{ search_command_summary.terminal_awaiting_retry }}, retry exhausted {{ search_command_summary.retry_exhausted }}, ambiguous/unavailable {{ search_command_summary.ambiguous_unavailable }}.</div>
-            <div class="alert alert-danger"><strong>Destructive safety warning:</strong> duplicate-file cleanup affects only the Sonarr On Demand target. Permanent Sonarr remains read-only. Only confirmed <code>permanent_duplicate</code> files are eligible, and multi-episode files are deleted only when every linked episode is duplicated. Review dry-run output before real deletion. Sonarr performs deletion; MDBListarr never directly deletes filesystem paths. NzbDAV backing-store/orphan cleanup may still be governed by NzbDAV maintenance.</div>
+            <div class="alert alert-danger"><strong>Destructive cleanup safety:</strong> Cleanup affects only the Sonarr On-Demand target; permanent Sonarr remains read-only. Only confirmed permanent duplicates qualify, and multi-episode files qualify only when every linked episode is duplicated. Review dry-run output before live deletion. Sonarr deletes the managed episode file; MDBListarr never deletes filesystem paths directly. NzbDAV backing-store/orphan cleanup remains governed by NzbDAV maintenance.</div>
             <div class="form-check mb-3">{{ reconcile_form.cleanup_enabled }} {{ reconcile_form.cleanup_enabled.label_tag }}</div>
             <div class="form-check mb-3">{{ reconcile_form.cleanup_dry_run }} {{ reconcile_form.cleanup_dry_run.label_tag }}</div>
             <div class="mb-3">{{ reconcile_form.cleanup_grace_hours.label_tag }} {{ reconcile_form.cleanup_grace_hours }}</div>
