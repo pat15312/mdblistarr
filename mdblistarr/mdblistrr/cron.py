@@ -25,6 +25,8 @@ from .radarr_search import (update_movie_search_candidates,
 from .radarr_cleanup import process_radarr_cleanup
 from .instance_config import queue_import_requirements_are_valid
 from .arr_health import begin_reconciliation_status, finish_reconciliation_status
+from .reconciliation_schedule import (ReconciliationSchedule, normalise_interval,
+    scheduler_due_time)
 import fcntl, os
 from dataclasses import asdict
 
@@ -834,19 +836,28 @@ def _apply_season_updates(target_api, series_id, updates):
     newly_unmonitored = len(updates) - newly_monitored
     return newly_monitored, newly_unmonitored, 0
 
-def reconcile_sonarr_ondemand(force=False):
+def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
     provider = 2
     if Preferences.get_value('sonarr_reconciliation_enabled', '0') != '1':
         return {'result': 200, 'message': 'Sonarr reconciliation disabled'}
-    interval = int(Preferences.get_value('sonarr_reconciliation_interval_minutes', '15') or '15')
-    if not force and timezone.now().minute % interval != 0:
+    interval = normalise_interval(Preferences.get_value('sonarr_reconciliation_interval_minutes', '15'))
+    schedule = ReconciliationSchedule('sonarr', interval)
+    if not force and scheduled_for is None and timezone.now().minute % 5:
+        return {'result': 200, 'message': 'Not scheduled interval'}
+    scheduled_for = scheduled_for or timezone.now()
+    due_slot = None if force else schedule.due(scheduled_for)
+    if not force and due_slot is None:
         return {'result': 200, 'message': 'Not scheduled interval'}
     os.makedirs(os.path.dirname(RECONCILE_LOCK_PATH), exist_ok=True)
     with open(RECONCILE_LOCK_PATH, 'a+') as lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            if due_slot is not None:
+                schedule.defer(due_slot)
             return {'result': 200, 'message': 'Reconciliation already running'}
+        if not force and schedule.claim(scheduled_for) is None:
+            return {'result': 200, 'message': 'Scheduled interval already serviced'}
         _try_begin_reconciliation_status('sonarr')
         source = target = None
         try:
@@ -1025,6 +1036,8 @@ def reconcile_sonarr_ondemand(force=False):
             message = 'partial_failure' if totals.failures else 'ok'
             _try_finish_reconciliation_status('sonarr', status, message, counters,
                 source.id, target.id, source_ok=True, target_ok=True)
+            if force and status == 200:
+                schedule.service_manually(scheduled_for)
             return {'result': status, 'failures': totals.failures, 'message': message, 'counters': counters}
         except Exception:
             save_log(provider, 2, sanitize_text(traceback.format_exc()))
@@ -1036,7 +1049,8 @@ def reconcile_sonarr_ondemand(force=False):
 @cron_task(cron_schedule="*/5 * * * *")
 @task
 def reconcile_sonarr_ondemand_task():
-    return reconcile_sonarr_ondemand()
+    return reconcile_sonarr_ondemand(
+        scheduled_for=scheduler_due_time(reconcile_sonarr_ondemand_task))
 
 
 RADARR_RECONCILE_LOCK_PATH = os.environ.get(
@@ -1073,20 +1087,20 @@ def _radarr_summary(result):
     )
 
 
-def _reconcile_radarr_ondemand(force=False, health_context=None):
+def _reconcile_radarr_ondemand(force=False, scheduled_for=None, health_context=None):
     """Reconcile movie monitoring; the permanent Radarr is strictly read-only."""
     if health_context is None:
         health_context = {'begin_recorded': False, 'source_id': None, 'target_id': None}
     provider = 1
     if Preferences.get_value('radarr_reconciliation_enabled', '0') != '1':
         return {'result': 200, 'message': 'Radarr reconciliation disabled'}
-    try:
-        interval = int(Preferences.get_value('radarr_reconciliation_interval_minutes', '15') or '15')
-    except (TypeError, ValueError):
-        interval = 15
-    if interval not in (5, 15, 30):
-        interval = 15
-    if not force and timezone.now().minute % interval:
+    interval = normalise_interval(Preferences.get_value('radarr_reconciliation_interval_minutes', '15'))
+    schedule = ReconciliationSchedule('radarr', interval)
+    if not force and scheduled_for is None and timezone.now().minute % 5:
+        return {'result': 200, 'message': 'Not scheduled interval'}
+    scheduled_for = scheduled_for or timezone.now()
+    due_slot = None if force else schedule.due(scheduled_for)
+    if not force and due_slot is None:
         return {'result': 200, 'message': 'Not scheduled interval'}
     directory = os.path.dirname(RADARR_RECONCILE_LOCK_PATH)
     if directory:
@@ -1095,7 +1109,11 @@ def _reconcile_radarr_ondemand(force=False, health_context=None):
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            if due_slot is not None:
+                schedule.defer(due_slot)
             return {'result': 200, 'message': 'Radarr reconciliation already running'}
+        if not force and schedule.claim(scheduled_for) is None:
+            return {'result': 200, 'message': 'Scheduled interval already serviced'}
         health_context['begin_recorded'] = (
             _try_begin_reconciliation_status('radarr') is not None)
         source_id = Preferences.get_value('radarr_reconciliation_source_id')
@@ -1200,6 +1218,8 @@ def _reconcile_radarr_ondemand(force=False, health_context=None):
         _try_finish_reconciliation_status('radarr', result_code,
             'partial_failure' if result.failures else 'ok', all_counters,
             source.id, target.id, source_ok=True, target_ok=True)
+        if force and result_code == 200:
+            schedule.service_manually(scheduled_for)
         return {
             'result': result_code,
             'message': summary,
@@ -1207,11 +1227,12 @@ def _reconcile_radarr_ondemand(force=False, health_context=None):
         }
 
 
-def reconcile_radarr_ondemand(force=False):
+def reconcile_radarr_ondemand(force=False, scheduled_for=None):
     """Record unexpected failures after a run begins, then preserve propagation."""
     health_context = {'begin_recorded': False, 'source_id': None, 'target_id': None}
     try:
-        return _reconcile_radarr_ondemand(force=force, health_context=health_context)
+        return _reconcile_radarr_ondemand(force=force, scheduled_for=scheduled_for,
+            health_context=health_context)
     except Exception:
         # A bare raise below must always preserve the original core exception.
         # Only a begin successfully recorded by this invocation is finalized.
@@ -1227,4 +1248,5 @@ def reconcile_radarr_ondemand(force=False):
 @cron_task(cron_schedule="*/5 * * * *")
 @task
 def reconcile_radarr_ondemand_task():
-    return reconcile_radarr_ondemand()
+    return reconcile_radarr_ondemand(
+        scheduled_for=scheduler_due_time(reconcile_radarr_ondemand_task))
