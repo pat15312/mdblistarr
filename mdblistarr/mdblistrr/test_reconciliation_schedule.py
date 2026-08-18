@@ -2,12 +2,14 @@
 import fcntl
 import os
 import tempfile
+import threading
 from datetime import UTC, datetime
 from unittest.mock import Mock, patch
 
 os.environ.setdefault('MDBLISTARR_ENCRYPTION_KEY', 'MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=')
 
-from django.test import TestCase
+from django.db import close_old_connections
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from .cron import reconcile_radarr_ondemand, reconcile_sonarr_ondemand
@@ -19,7 +21,7 @@ def at(hour, minute, second=0):
     return datetime(2026, 8, 18, hour, minute, second, tzinfo=UTC)
 
 
-class DueSlotTests(TestCase):
+class DueSlotTests(TransactionTestCase):
     def test_delayed_slot_is_serviced_once_and_next_slot_runs(self):
         schedule = ReconciliationSchedule('radarr', 15)
         self.assertEqual(schedule.claim(at(19, 45)), at(19, 45))
@@ -46,12 +48,52 @@ class DueSlotTests(TestCase):
         self.assertEqual(ReconciliationSchedule('radarr', 30).claim(at(20, 0)), at(20, 0))
         self.assertEqual(ReconciliationSchedule('radarr', 15).claim(at(20, 15)), at(20, 15))
 
-    def test_started_manual_attempt_consumes_only_next_slot(self):
+    def test_manual_run_away_from_boundary_does_not_change_schedule(self):
         schedule = ReconciliationSchedule('radarr', 15)
-        schedule.service_manually(at(19, 59, 59))
-        self.assertIsNone(schedule.claim(at(19, 59, 59)))
+        self.assertIsNone(schedule.service_manually(at(19, 46)))
+        self.assertIsNone(schedule.service_manually(at(19, 59, 59)))
+        self.assertEqual(schedule.claim(at(20, 0)), at(20, 0))
+
+    def test_successful_manual_run_exactly_on_boundary_services_that_slot(self):
+        schedule = ReconciliationSchedule('radarr', 15)
+        self.assertEqual(schedule.service_manually(at(20, 0)), at(20, 0))
         self.assertIsNone(schedule.claim(at(20, 0)))
         self.assertEqual(schedule.claim(at(20, 15)), at(20, 15))
+
+    def test_defer_cannot_restore_a_slot_claimed_during_lock_contention(self):
+        schedule_a = ReconciliationSchedule('radarr', 15)
+        schedule_b = ReconciliationSchedule('radarr', 15)
+        defer_started = threading.Event()
+        defer_finished = threading.Event()
+
+        def defer_from_lock_loser():
+            close_old_connections()
+            defer_started.set()
+            try:
+                schedule_b.defer(at(19, 45))
+                defer_finished.set()
+            finally:
+                close_old_connections()
+
+        # A owns the product lock and serializes its schedule-state claim. B has
+        # already lost the product lock and begun deferral, but cannot read stale
+        # state while A records the slot as serviced.
+        with schedule_a._state_lock():
+            thread = threading.Thread(target=defer_from_lock_loser)
+            thread.start()
+            self.assertTrue(defer_started.wait(1))
+            self.assertFalse(defer_finished.is_set())
+            self.assertEqual(schedule_a._claim_unlocked(at(19, 45)), at(19, 45))
+        thread.join(1)
+        self.assertTrue(defer_finished.is_set())
+        self.assertIsNone(schedule_a.due(at(19, 50)))
+
+    def test_newer_slot_deferred_by_older_run_remains_pending(self):
+        schedule = ReconciliationSchedule('sonarr', 15)
+        self.assertEqual(schedule.claim(at(19, 45)), at(19, 45))
+        schedule.defer(at(20, 0))
+        self.assertEqual(schedule.claim(at(20, 5)), at(20, 0))
+        self.assertIsNone(schedule.due(at(20, 10)))
 
 
 class SchedulerDueTimeCompatibilityTests(TestCase):
@@ -144,12 +186,11 @@ class DelayedReconciliationIntegrationTests(TestCase):
                 reconcile_radarr_ondemand(scheduled_for=at(19, 50))
         self.assertIsNone(ReconciliationSchedule('radarr', 15).due(at(19, 50)))
 
-    def test_started_manual_failure_consumes_next_scheduled_slot(self):
+    def test_failed_manual_attempt_does_not_consume_future_slot(self):
         self._configure('radarr', RadarrInstance)
         with patch('mdblistrr.cron.RADARR_RECONCILE_LOCK_PATH', self._path()), patch(
                 'mdblistrr.cron.RadarrAPI', side_effect=RuntimeError('ordinary failure')), patch(
                 'mdblistrr.cron.timezone.now', return_value=at(19, 59, 59)):
             with self.assertRaises(RuntimeError):
                 reconcile_radarr_ondemand(force=True)
-        self.assertIsNone(ReconciliationSchedule('radarr', 15).due(at(20, 0)))
-        self.assertEqual(ReconciliationSchedule('radarr', 15).due(at(20, 15)), at(20, 15))
+        self.assertEqual(ReconciliationSchedule('radarr', 15).due(at(20, 0)), at(20, 0))

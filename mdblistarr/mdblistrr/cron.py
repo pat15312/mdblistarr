@@ -856,9 +856,7 @@ def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
             if due_slot is not None:
                 schedule.defer(due_slot)
             return {'result': 200, 'message': 'Reconciliation already running'}
-        if force:
-            schedule.service_manually(timezone.now())
-        elif schedule.claim(scheduled_for) is None:
+        if not force and schedule.claim(scheduled_for) is None:
             return {'result': 200, 'message': 'Scheduled interval already serviced'}
         _try_begin_reconciliation_status('sonarr')
         source = target = None
@@ -1038,6 +1036,8 @@ def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
             message = 'partial_failure' if totals.failures else 'ok'
             _try_finish_reconciliation_status('sonarr', status, message, counters,
                 source.id, target.id, source_ok=True, target_ok=True)
+            if force and status == 200:
+                schedule.service_manually(scheduled_for)
             return {'result': status, 'failures': totals.failures, 'message': message, 'counters': counters}
         except Exception:
             save_log(provider, 2, sanitize_text(traceback.format_exc()))
@@ -1112,9 +1112,7 @@ def _reconcile_radarr_ondemand(force=False, scheduled_for=None, health_context=N
             if due_slot is not None:
                 schedule.defer(due_slot)
             return {'result': 200, 'message': 'Radarr reconciliation already running'}
-        if force:
-            schedule.service_manually(timezone.now())
-        elif schedule.claim(scheduled_for) is None:
+        if not force and schedule.claim(scheduled_for) is None:
             return {'result': 200, 'message': 'Scheduled interval already serviced'}
         health_context['begin_recorded'] = (
             _try_begin_reconciliation_status('radarr') is not None)
@@ -1220,6 +1218,8 @@ def _reconcile_radarr_ondemand(force=False, scheduled_for=None, health_context=N
         _try_finish_reconciliation_status('radarr', result_code,
             'partial_failure' if result.failures else 'ok', all_counters,
             source.id, target.id, source_ok=True, target_ok=True)
+        if force and result_code == 200:
+            schedule.service_manually(scheduled_for)
         return {
             'result': result_code,
             'message': summary,

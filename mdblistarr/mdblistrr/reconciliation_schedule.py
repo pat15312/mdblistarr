@@ -1,5 +1,8 @@
 """Shared due-slot gating for Sonarr and Radarr reconciliation."""
 import json
+import fcntl
+import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from django.utils import timezone
@@ -53,10 +56,20 @@ class ReconciliationSchedule:
     """Persist product slot state independently of best-effort health data."""
 
     def __init__(self, product, interval):
+        self.product = product
         self.interval = normalise_interval(interval)
         self.preference_name = f'{product}_reconciliation_schedule_state'
+        self.lock_path = f'/tmp/mdblistarr-{product}-reconciliation-schedule.lock'
 
-    def _load(self):
+    @contextmanager
+    def _state_lock(self):
+        """Serialize preference read/modify/write cycles across processes."""
+        os.makedirs(os.path.dirname(self.lock_path), exist_ok=True)
+        with open(self.lock_path, 'a+', encoding='utf-8') as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            yield
+
+    def _load_unlocked(self):
         raw = Preferences.get_value(self.preference_name, '')
         try:
             state = json.loads(raw) if raw else {}
@@ -69,7 +82,7 @@ class ReconciliationSchedule:
         except (TypeError, ValueError):
             return {}
 
-    def _save(self, serviced=None, pending=None):
+    def _save_unlocked(self, serviced=None, pending=None):
         value = {'interval': self.interval}
         if serviced:
             value['serviced'] = serviced.isoformat()
@@ -78,28 +91,39 @@ class ReconciliationSchedule:
         Preferences.set_value(self.preference_name, json.dumps(value, separators=(',', ':')))
 
     def due(self, scheduled_for):
-        state = self._load()
+        with self._state_lock():
+            return self._due_unlocked(scheduled_for)
+
+    def _due_unlocked(self, scheduled_for):
+        state = self._load_unlocked()
         candidate = state.get('pending') or interval_slot(scheduled_for, self.interval)
         serviced = state.get('serviced')
         return candidate if serviced is None or candidate > serviced else None
 
     def defer(self, slot):
-        state = self._load()
-        serviced, pending = state.get('serviced'), state.get('pending')
-        if serviced is None or slot > serviced:
-            self._save(serviced, min(pending, slot) if pending else slot)
+        with self._state_lock():
+            state = self._load_unlocked()
+            serviced, pending = state.get('serviced'), state.get('pending')
+            if serviced is None or slot > serviced:
+                self._save_unlocked(serviced, min(pending, slot) if pending else slot)
 
     def claim(self, scheduled_for):
         """Consume a due slot once the product lock has been obtained."""
-        slot = self.due(scheduled_for)
+        with self._state_lock():
+            return self._claim_unlocked(scheduled_for)
+
+    def _claim_unlocked(self, scheduled_for):
+        slot = self._due_unlocked(scheduled_for)
         if slot is not None:
-            self._save(serviced=slot)
+            self._save_unlocked(serviced=slot)
         return slot
 
     def service_manually(self, at):
-        """Let a started manual attempt consume only the next scheduled boundary."""
+        """Service an exactly coincident boundary after a successful manual run."""
         slot = interval_slot(at, self.interval)
-        if at > slot:
-            slot += timedelta(minutes=self.interval)
-        serviced = self._load().get('serviced')
-        self._save(serviced=max(serviced, slot) if serviced else slot)
+        if at != slot:
+            return None
+        with self._state_lock():
+            serviced = self._load_unlocked().get('serviced')
+            self._save_unlocked(serviced=max(serviced, slot) if serviced else slot)
+        return slot
