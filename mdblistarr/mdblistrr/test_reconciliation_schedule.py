@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from .cron import reconcile_radarr_ondemand, reconcile_sonarr_ondemand
 from .models import Preferences, RadarrInstance, SonarrInstance
-from .reconciliation_schedule import ReconciliationSchedule
+from .reconciliation_schedule import ReconciliationSchedule, scheduler_due_time
 
 
 def at(hour, minute, second=0):
@@ -46,12 +46,41 @@ class DueSlotTests(TestCase):
         self.assertEqual(ReconciliationSchedule('radarr', 30).claim(at(20, 0)), at(20, 0))
         self.assertEqual(ReconciliationSchedule('radarr', 15).claim(at(20, 15)), at(20, 15))
 
-    def test_manual_run_services_only_current_slot(self):
+    def test_started_manual_attempt_consumes_only_next_slot(self):
         schedule = ReconciliationSchedule('radarr', 15)
         schedule.service_manually(at(19, 59, 59))
         self.assertIsNone(schedule.claim(at(19, 59, 59)))
         self.assertIsNone(schedule.claim(at(20, 0)))
         self.assertEqual(schedule.claim(at(20, 15)), at(20, 15))
+
+
+class SchedulerDueTimeCompatibilityTests(TestCase):
+    def _assert_hash_lookup(self, schedule, expected_hash):
+        task = object()
+        schedule.task = task
+        run_log = Mock(next_scheduled_run_time=at(19, 45))
+        with patch('django_scheduled_tasks.base.scheduler.schedules', {schedule}), patch(
+                'django_scheduled_tasks.models.ScheduledTaskRunLog.objects.filter') as query:
+            query.return_value.first.return_value = run_log
+            self.assertEqual(scheduler_due_time(task), at(19, 45))
+        query.assert_called_once_with(task_hash=expected_hash)
+
+    def test_02_binary_schedule_hash(self):
+        class Schedule02:
+            def to_sha_bytes(self):
+                return b'\x12\x34'
+
+        self._assert_hash_lookup(Schedule02(), b'\x12\x34')
+
+    def test_03_hex_schedule_hash(self):
+        class Schedule03:
+            def to_sha_bytes(self):
+                raise AssertionError('0.3 lookup must use the database hex representation')
+
+            def to_sha_hex(self):
+                return '1234'
+
+        self._assert_hash_lookup(Schedule03(), '1234')
 
 
 class DelayedReconciliationIntegrationTests(TestCase):
@@ -114,3 +143,13 @@ class DelayedReconciliationIntegrationTests(TestCase):
             with self.assertRaises(RuntimeError):
                 reconcile_radarr_ondemand(scheduled_for=at(19, 50))
         self.assertIsNone(ReconciliationSchedule('radarr', 15).due(at(19, 50)))
+
+    def test_started_manual_failure_consumes_next_scheduled_slot(self):
+        self._configure('radarr', RadarrInstance)
+        with patch('mdblistrr.cron.RADARR_RECONCILE_LOCK_PATH', self._path()), patch(
+                'mdblistrr.cron.RadarrAPI', side_effect=RuntimeError('ordinary failure')), patch(
+                'mdblistrr.cron.timezone.now', return_value=at(19, 59, 59)):
+            with self.assertRaises(RuntimeError):
+                reconcile_radarr_ondemand(force=True)
+        self.assertIsNone(ReconciliationSchedule('radarr', 15).due(at(20, 0)))
+        self.assertEqual(ReconciliationSchedule('radarr', 15).due(at(20, 15)), at(20, 15))

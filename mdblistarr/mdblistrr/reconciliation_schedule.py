@@ -18,7 +18,13 @@ def scheduler_due_time(task):
     schedule = next((item for item in scheduler.schedules if item.task is task), None)
     if schedule is None:
         return None
-    run_log = ScheduledTaskRunLog.objects.filter(task_hash=schedule.to_sha_hex()).first()
+    # 0.2.x stores the raw digest in a BinaryField. 0.3.x stores its hex
+    # representation in a CharField and added the corresponding helper.
+    if hasattr(schedule, 'to_sha_hex'):
+        task_hash = schedule.to_sha_hex()
+    else:
+        task_hash = schedule.to_sha_bytes()
+    run_log = ScheduledTaskRunLog.objects.filter(task_hash=task_hash).first()
     return run_log.next_scheduled_run_time if run_log else None
 
 
@@ -91,7 +97,7 @@ class ReconciliationSchedule:
         return slot
 
     def service_manually(self, at):
-        """Suppress only the next boundary after an equivalent manual run."""
+        """Let a started manual attempt consume only the next scheduled boundary."""
         slot = interval_slot(at, self.interval)
         if at > slot:
             slot += timedelta(minutes=self.interval)
