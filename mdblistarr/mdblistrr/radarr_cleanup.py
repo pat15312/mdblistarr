@@ -28,6 +28,9 @@ class RadarrCleanupCounters:
 def positive_int(value):
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
+def normalize_display_metadata(title, year):
+    return ((title.strip()[:255] if isinstance(title, str) else ''), positive_int(year))
+
 def normalize_edition(value):
     if value is None: return ''
     if not isinstance(value, str): return None
@@ -189,11 +192,13 @@ def process_radarr_cleanup(*, target_instance, source_movies, target_movies, con
             continue
         cand,created=RadarrCleanupCandidate.objects.get_or_create(target_instance=target_instance,movie_file_id=evidence.movie_file_id,
             defaults={**evidence.__dict__,'status':'pending','first_eligible_at':now,'last_confirmed_at':now})
+        display_title, display_year = normalize_display_metadata(target.get('title'), target.get('year'))
         changed=not created and any(getattr(cand,k)!=getattr(evidence,k) for k in ('tmdb_id','source_movie_id','source_movie_file_id','target_movie_id','source_edition','target_edition'))
         if created: counters.cleanup_candidates_new+=1; counters.events.append(_event('candidate created',cand,target.get('title'),REASON_PERMANENT_DUPLICATE))
         if changed or cand.status in ('cancelled','deleted','already_absent'):
             cand.first_eligible_at=now; cand.status='pending'; cand.ready_at=cand.deleted_at=cand.cancelled_at=None
         for k,v in evidence.__dict__.items(): setattr(cand,k,v)
+        cand.target_title, cand.target_year = display_title, display_year
         cand.last_confirmed_at=now; cand.last_error=''
         if now >= cand.first_eligible_at+timedelta(hours=int(grace_hours)):
             if cand.status!='ready': cand.status='ready'; cand.ready_at=now; counters.events.append(_event('candidate ready',cand,target.get('title')))

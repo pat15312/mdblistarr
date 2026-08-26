@@ -286,9 +286,11 @@ def revalidate_candidate_for_delete(*, cand, source_api, target_api, source_seri
     return 'cancel', 'revalidation_ineligible'
 
 
-def process_cleanup_for_series(*, target_instance, tvdb_id, target_series_id, source_episodes, target_episodes, stats, target_api, source_api, source_series_id, include_specials=False, cleanup_enabled=False, dry_run=True, grace_hours=24, remaining_delete_budget=25, stop_real_deletes=False):
+def process_cleanup_for_series(*, target_instance, tvdb_id, target_series_id, source_episodes, target_episodes, stats, target_api, source_api, source_series_id, target_title='', target_year=None, include_specials=False, cleanup_enabled=False, dry_run=True, grace_hours=24, remaining_delete_budget=25, stop_real_deletes=False):
     counters = CleanupCounters()
     now = timezone.now()
+    target_title = target_title.strip()[:255] if isinstance(target_title, str) else ''
+    target_year = target_year if isinstance(target_year, int) and not isinstance(target_year, bool) and target_year > 0 else None
     eligible = eligible_episode_file_ids(source_episodes, target_episodes, stats)
     active = SonarrCleanupCandidate.objects.filter(target_instance=target_instance, target_series_id=target_series_id)
     for cand in active:
@@ -320,7 +322,7 @@ def process_cleanup_for_series(*, target_instance, tvdb_id, target_series_id, so
         cand, created = SonarrCleanupCandidate.objects.get_or_create(
             target_instance=target_instance,
             episode_file_id=file_id,
-            defaults={'tvdb_id': tvdb_id, 'target_series_id': target_series_id, 'linked_episode_keys': keys, 'reason': REASON_PERMANENT_DUPLICATE, 'status': SonarrCleanupCandidate.STATUS_PENDING, 'first_eligible_at': now, 'last_confirmed_at': now},
+            defaults={'tvdb_id': tvdb_id, 'target_series_id': target_series_id, 'linked_episode_keys': keys, 'target_title': target_title, 'target_year': target_year, 'reason': REASON_PERMANENT_DUPLICATE, 'status': SonarrCleanupCandidate.STATUS_PENDING, 'first_eligible_at': now, 'last_confirmed_at': now},
         )
         terminal_reappeared = cand.status in (SonarrCleanupCandidate.STATUS_DELETED, SonarrCleanupCandidate.STATUS_ALREADY_ABSENT)
         if created:
@@ -334,6 +336,7 @@ def process_cleanup_for_series(*, target_instance, tvdb_id, target_series_id, so
         cand.target_series_id = target_series_id
         cand.reason = REASON_PERMANENT_DUPLICATE
         cand.linked_episode_keys = keys
+        cand.target_title, cand.target_year = target_title, target_year
         cand.last_confirmed_at = now
         cand.last_error = ''
         if now >= cand.first_eligible_at + timedelta(hours=int(grace_hours)):

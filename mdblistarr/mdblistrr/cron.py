@@ -1011,6 +1011,7 @@ def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
                     cleanup = process_cleanup_for_series(
                         target_instance=target, tvdb_id=show.get('tvdbId'), target_series_id=show['id'],
                         source_episodes=src_eps, target_episodes=tgt_eps, stats=stats, target_api=target_api,
+                        target_title=show.get('title'), target_year=show.get('year'),
                         source_api=source_api, source_series_id=src['id'] if src else None, include_specials=include_specials,
                         cleanup_enabled=cleanup_enabled, dry_run=cleanup_dry_run, grace_hours=cleanup_grace_hours,
                         remaining_delete_budget=cleanup_remaining_delete_attempts, stop_real_deletes=cleanup_stop_real_deletes)
