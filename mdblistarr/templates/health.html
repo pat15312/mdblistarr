@@ -55,6 +55,28 @@
           <p class="small">Historical: deleted {{ product.cleanup.deleted }}, cancelled {{ product.cleanup.cancelled }}, already absent {{ product.cleanup.already_absent }}{% if product.cleanup.oldest_pending_at %} · Oldest pending: {{ product.cleanup.oldest_pending_at|naturaltime }}{% endif %}{% if product.cleanup.oldest_ready_at %} · Oldest ready: {{ product.cleanup.oldest_ready_at|naturaltime }}{% endif %}</p>
           {% if product.configuration.cleanup_enabled and product.configuration.cleanup_dry_run and product.cleanup.ready %}<div class="alert alert-info py-2 small">Dry run: {{ product.cleanup.ready }} files are currently ready for deletion after persisted safety checks.</div>{% endif %}
           {% if product.product == 'radarr' and product.latest_counters.cleanup_edition_conflicts %}<div class="alert alert-secondary py-2 small">{{ product.latest_counters.cleanup_edition_conflicts }} duplicates were excluded because edition evidence differed.</div>{% endif %}
+          {% if product.cleanup.ready_candidates %}
+          <h4 class="h6">Ready for deletion</h4>
+          <div class="table-responsive"><table class="table table-sm small align-middle"><thead><tr>
+            <th>{% if product.product == 'sonarr' %}Series{% else %}Movie{% endif %}</th>
+            {% if product.product == 'sonarr' %}<th>Episodes</th><th>TVDb ID</th><th>EpisodeFile ID</th>{% else %}<th>TMDb ID</th><th>MovieFile ID</th>{% endif %}<th>Ready since</th>
+          </tr></thead><tbody>{% for candidate in product.cleanup.ready_candidates %}<tr>
+            <td>{{ candidate.display_title }}{% if candidate.has_error %} <span class="badge text-bg-warning">Error</span>{% endif %}</td>
+            {% if product.product == 'sonarr' %}<td>{{ candidate.episodes_display }}</td>{% endif %}<td>{{ candidate.external_id }}</td><td>{{ candidate.file_id }}</td>
+            <td>{% if candidate.ready_at %}{{ candidate.ready_at|date:"Y-m-d H:i:s T" }} — {{ candidate.ready_at|naturaltime }}{% else %}Unknown{% endif %}</td>
+          </tr>{% endfor %}</tbody></table></div>
+          {% endif %}
+          {% if product.cleanup.pending_candidates %}
+          <details class="mb-3"><summary class="small fw-semibold">Pending cleanup candidates ({{ product.cleanup.pending_candidates|length }})</summary>
+          <div class="table-responsive mt-2"><table class="table table-sm small align-middle"><thead><tr>
+            <th>{% if product.product == 'sonarr' %}Series{% else %}Movie{% endif %}</th>
+            {% if product.product == 'sonarr' %}<th>Episodes</th><th>TVDb ID</th><th>EpisodeFile ID</th>{% else %}<th>TMDb ID</th><th>MovieFile ID</th>{% endif %}<th>Eligible since</th>
+          </tr></thead><tbody>{% for candidate in product.cleanup.pending_candidates %}<tr>
+            <td>{{ candidate.display_title }}{% if candidate.has_error %} <span class="badge text-bg-warning">Error</span>{% endif %}</td>
+            {% if product.product == 'sonarr' %}<td>{{ candidate.episodes_display }}</td>{% endif %}<td>{{ candidate.external_id }}</td><td>{{ candidate.file_id }}</td>
+            <td>{% if candidate.first_eligible_at %}{{ candidate.first_eligible_at|date:"Y-m-d H:i:s T" }} — {{ candidate.first_eligible_at|naturaltime }}{% else %}Unknown{% endif %}</td>
+          </tr>{% endfor %}</tbody></table></div></details>
+          {% endif %}
 
           {% if product.issues %}<h3 class="h6 border-top pt-3">Needs attention</h3><ul class="small text-danger">{% for issue in product.issues %}<li>{{ issue }}</li>{% endfor %}</ul>{% endif %}
           <div class="d-flex gap-2"><a class="btn btn-sm btn-outline-primary" href="{% url 'home_view' %}">Configure {{ product.name }}</a><a class="btn btn-sm btn-outline-secondary" href="{% url 'log_view' %}">View Log</a></div>
