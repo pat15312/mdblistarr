@@ -13,6 +13,7 @@ from .models import (
 )
 
 PRODUCTS = ('sonarr', 'radarr')
+CLEANUP_CANDIDATE_DISPLAY_LIMIT = 100
 ACTIVE_CANDIDATE_STATUSES = ('pending', 'submitted')
 IN_FLIGHT_COMMAND_STATUSES = ('submitting', 'queued', 'started')
 UNCERTAIN_COMMAND_STATUSES = ('ambiguous', 'unavailable')
@@ -153,7 +154,9 @@ def _search_metrics(candidate_model, command_model, target_id):
 def _cleanup_metrics(model, target_id):
     metrics = {key: 0 for key in ('pending', 'ready', 'active_errors', 'deleted', 'cancelled', 'already_absent')}
     metrics.update({'oldest_pending_at': None, 'oldest_ready_at': None,
-                    'ready_candidates': [], 'pending_candidates': []})
+                    'ready_candidates': [], 'pending_candidates': [],
+                    'ready_candidates_truncated': False,
+                    'pending_candidates_truncated': False})
     if not target_id:
         return metrics
     candidates = model.objects.filter(target_instance_id=target_id)
@@ -167,28 +170,28 @@ def _cleanup_metrics(model, target_id):
     is_sonarr = model is SonarrCleanupCandidate
     fields += (['tvdb_id', 'target_series_id', 'episode_file_id', 'linked_episode_keys']
                if is_sonarr else ['tmdb_id', 'target_movie_id', 'movie_file_id'])
-    details = []
-    for row in candidates.filter(status__in=('pending', 'ready')).values(*fields):
-        external_id = row['tvdb_id' if is_sonarr else 'tmdb_id']
-        file_id = row['episode_file_id' if is_sonarr else 'movie_file_id']
-        title = row['target_title'].strip() if isinstance(row['target_title'], str) else ''
-        display_title = title or f"{'TVDb' if is_sonarr else 'TMDb'} {external_id}"
-        if title and row['target_year']:
-            display_title += f" ({row['target_year']})"
-        has_error = bool(row.pop('last_error', ''))
-        item = {**row, 'display_title': display_title, 'external_id': external_id,
-                'file_id': file_id, 'has_error': has_error}
-        if is_sonarr:
-            item['episode_labels'], item['episodes_display'] = _episode_labels(row.pop('linked_episode_keys', None))
-        details.append(item)
-    def sort_key(item, timestamp):
-        value = item[timestamp]
-        return (value is None, value or timezone.now(), item['id'])
-    metrics['ready_candidates'] = sorted((x for x in details if x['status'] == 'ready'),
-                                         key=lambda x: sort_key(x, 'ready_at'))
-    metrics['pending_candidates'] = sorted((x for x in details if x['status'] == 'pending'),
-                                           key=lambda x: sort_key(x, 'first_eligible_at'))
+    for state, timestamp in (('ready', 'ready_at'), ('pending', 'first_eligible_at')):
+        # Bound each status in SQL; aggregate counts still include the full backlog.
+        rows = candidates.filter(status=state).order_by(timestamp, 'id').values(*fields)[:CLEANUP_CANDIDATE_DISPLAY_LIMIT]
+        metrics[f'{state}_candidates'] = [_cleanup_detail(row, is_sonarr) for row in rows]
+        metrics[f'{state}_candidates_truncated'] = metrics[state] > CLEANUP_CANDIDATE_DISPLAY_LIMIT
     return metrics
+
+
+def _cleanup_detail(row, is_sonarr):
+    episode_keys = row.pop('linked_episode_keys', None)
+    external_id = row['tvdb_id' if is_sonarr else 'tmdb_id']
+    file_id = row['episode_file_id' if is_sonarr else 'movie_file_id']
+    title = row['target_title'].strip() if isinstance(row['target_title'], str) else ''
+    display_title = title or f"{'TVDb' if is_sonarr else 'TMDb'} {external_id}"
+    if title and row['target_year']:
+        display_title += f" ({row['target_year']})"
+    has_error = bool(row.pop('last_error', ''))
+    item = {**row, 'display_title': display_title, 'external_id': external_id,
+            'file_id': file_id, 'has_error': has_error}
+    if is_sonarr:
+        item['episode_labels'], item['episodes_display'] = _episode_labels(episode_keys)
+    return item
 
 
 def _episode_labels(value):

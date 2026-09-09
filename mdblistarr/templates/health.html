@@ -57,6 +57,7 @@
           {% if product.product == 'radarr' and product.latest_counters.cleanup_edition_conflicts %}<div class="alert alert-secondary py-2 small">{{ product.latest_counters.cleanup_edition_conflicts }} duplicates were excluded because edition evidence differed.</div>{% endif %}
           {% if product.cleanup.ready_candidates %}
           <h4 class="h6">Ready for deletion</h4>
+          {% if product.cleanup.ready_candidates_truncated %}<p class="small text-body-secondary">Showing first {{ product.cleanup.ready_candidates|length }} of {{ product.cleanup.ready }} ready candidates.</p>{% endif %}
           <div class="table-responsive"><table class="table table-sm small align-middle"><thead><tr>
             <th>{% if product.product == 'sonarr' %}Series{% else %}Movie{% endif %}</th>
             {% if product.product == 'sonarr' %}<th>Episodes</th><th>TVDb ID</th><th>EpisodeFile ID</th>{% else %}<th>TMDb ID</th><th>MovieFile ID</th>{% endif %}<th>Ready since</th>
@@ -67,7 +68,8 @@
           </tr>{% endfor %}</tbody></table></div>
           {% endif %}
           {% if product.cleanup.pending_candidates %}
-          <details class="mb-3"><summary class="small fw-semibold">Pending cleanup candidates ({{ product.cleanup.pending_candidates|length }})</summary>
+          <details class="mb-3"><summary class="small fw-semibold">Pending cleanup candidates ({{ product.cleanup.pending }})</summary>
+          {% if product.cleanup.pending_candidates_truncated %}<p class="small text-body-secondary">Showing first {{ product.cleanup.pending_candidates|length }} of {{ product.cleanup.pending }} pending candidates.</p>{% endif %}
           <div class="table-responsive mt-2"><table class="table table-sm small align-middle"><thead><tr>
             <th>{% if product.product == 'sonarr' %}Series{% else %}Movie{% endif %}</th>
             {% if product.product == 'sonarr' %}<th>Episodes</th><th>TVDb ID</th><th>EpisodeFile ID</th>{% else %}<th>TMDb ID</th><th>MovieFile ID</th>{% endif %}<th>Eligible since</th>

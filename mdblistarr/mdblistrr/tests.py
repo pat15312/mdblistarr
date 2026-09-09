@@ -1104,6 +1104,40 @@ class SonarrDuplicateCleanupTests(TestCase):
     def ep(self, sid, season=1, num=1, has=True, mon=False, file_id=10, air='2020-01-01T00:00:00Z'):
         return {'id': sid, 'seasonNumber': season, 'episodeNumber': num, 'hasFile': has, 'monitored': mon, 'episodeFileId': file_id, 'airDateUtc': air}
 
+    def test_display_metadata_refresh_preserves_pending_and_ready_identity(self):
+        from unittest.mock import Mock
+        from .sonarr_cleanup import process_cleanup_for_series
+        from .sonarr_reconcile import calculate_episode_monitoring
+        src, tgt = [self.ep(1)], [self.ep(2, file_id=88)]
+        source_api, target_api = Mock(), Mock()
+        args = dict(target_instance=self.target, tvdb_id=1, target_series_id=2,
+                    source_episodes=src, target_episodes=tgt,
+                    stats=calculate_episode_monitoring(src, tgt), source_api=source_api,
+                    target_api=target_api, source_series_id=1, grace_hours=24)
+        process_cleanup_for_series(**args, target_title='  Original  ', target_year=2024)
+        candidate = SonarrCleanupCandidate.objects.get()
+        self.assertEqual((candidate.target_title, candidate.target_year), ('Original', 2024))
+        for state in ('pending', 'ready'):
+            candidate.status = state
+            candidate.first_eligible_at = timezone.now() - timezone.timedelta(hours=1 if state == 'pending' else 48)
+            candidate.ready_at = None if state == 'pending' else timezone.now() - timezone.timedelta(hours=24)
+            candidate.save()
+            fields = ('pk', 'target_instance_id', 'tvdb_id', 'target_series_id', 'episode_file_id',
+                      'linked_episode_keys', 'first_eligible_at', 'ready_at', 'status')
+            before = tuple(getattr(candidate, name) for name in fields)
+            process_cleanup_for_series(**args, target_title='  Corrected  ', target_year=2025)
+            candidate.refresh_from_db()
+            self.assertEqual((candidate.target_title, candidate.target_year), ('Corrected', 2025))
+            self.assertEqual(tuple(getattr(candidate, name) for name in fields), before)
+            self.assertEqual(SonarrCleanupCandidate.objects.count(), 1)
+        self.assertEqual(source_api.mock_calls, [])
+        self.assertEqual(target_api.mock_calls, [])
+        for title, year, expected in ((None, True, ('', None)), ([], '2024', ('', None)),
+                                     (' ', 0, ('', None)), ('x' * 300, -1, ('x' * 255, None))):
+            process_cleanup_for_series(**args, target_title=title, target_year=year)
+            candidate.refresh_from_db()
+            self.assertEqual((candidate.target_title, candidate.target_year), expected)
+
     def test_delete_episode_files_uses_bulk_endpoint_body_and_headers(self):
         from .arr import SonarrAPI
         with patch('mdblistrr.arr.Connect.delete_json', return_value={'status':'ok','status_code':204}) as delete:
@@ -1722,7 +1756,7 @@ class SonarrSeriesMonitoringInitialSearchTests(TestCase):
         from .cron import reconcile_sonarr_ondemand
         Preferences.set_value('sonarr_cleanup_enabled', '1')
         Preferences.set_value('sonarr_cleanup_dry_run', '1')
-        target_series = [{'id': 20, 'tvdbId': 1, 'title': 'Human Title', 'monitored': True,
+        target_series = [{'id': 20, 'tvdbId': 1, 'title': 'Human Title', 'year': 2024, 'monitored': True,
                           'seasons': [{'seasonNumber': 1, 'monitored': True}]}]
         target_eps = [dict(self.ep(1), lastSearchTime='2020-01-02T00:00:00Z')]
         cleanup = type('C', (), {
@@ -1738,17 +1772,21 @@ class SonarrSeriesMonitoringInitialSearchTests(TestCase):
             api_self.instance_id = instance_id
 
         with patch('mdblistrr.cron.SonarrAPI.__init__', init), \
-             patch('mdblistrr.cron.SonarrAPI.get_series', lambda api_self: [] if api_self.instance_id == self.source.id else target_series), \
+             patch('mdblistrr.cron.SonarrAPI.get_series', autospec=True, side_effect=lambda api_self: [] if api_self.instance_id == self.source.id else target_series) as get_series, \
              patch('mdblistrr.cron.SonarrAPI.get_episodes', return_value=target_eps), \
              patch('mdblistrr.cron.SonarrAPI.put_episode_monitor'), \
              patch('mdblistrr.cron.SonarrAPI.post_seasonpass'), \
              patch('mdblistrr.cron.SonarrAPI.put_series_monitor'), \
              patch('mdblistrr.cron.SonarrAPI.trigger_episode_search'), \
-             patch('mdblistrr.cron.process_cleanup_for_series', return_value=cleanup), \
+             patch('mdblistrr.cron.process_cleanup_for_series', return_value=cleanup) as process_cleanup, \
              patch('mdblistrr.cron.save_log') as save_log:
             res = reconcile_sonarr_ondemand(force=True)
 
         self.assertEqual(res['result'], 200)
+        self.assertEqual(get_series.call_count, 2)
+        process_cleanup.assert_called_once()
+        self.assertEqual(process_cleanup.call_args.kwargs['target_title'], 'Human Title')
+        self.assertEqual(process_cleanup.call_args.kwargs['target_year'], 2024)
         summary_logs = [call for call in save_log.call_args_list
                         if call.args[2].startswith('Sonarr cleanup series=')]
         self.assertEqual(len(summary_logs), 1)
