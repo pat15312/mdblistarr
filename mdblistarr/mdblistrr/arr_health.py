@@ -1,5 +1,6 @@
 """Persisted, read-only operational health for Sonarr and Radarr."""
 import json
+from bisect import insort
 from datetime import timedelta
 
 from django.db.models import Min
@@ -14,6 +15,7 @@ from .models import (
 
 PRODUCTS = ('sonarr', 'radarr')
 CLEANUP_CANDIDATE_DISPLAY_LIMIT = 100
+CLEANUP_EPISODE_LABEL_DISPLAY_LIMIT = 100
 ACTIVE_CANDIDATE_STATUSES = ('pending', 'submitted')
 IN_FLIGHT_COMMAND_STATUSES = ('submitting', 'queued', 'started')
 UNCERTAIN_COMMAND_STATUSES = ('ambiguous', 'unavailable')
@@ -197,7 +199,8 @@ def _cleanup_detail(row, is_sonarr):
 def _episode_labels(value):
     if not isinstance(value, (list, tuple)):
         return [], 'Unknown'
-    keys = set()
+    keys = []
+    truncated = False
     for item in value:
         if not isinstance(item, (list, tuple)) or len(item) != 2:
             return [], 'Unknown'
@@ -205,11 +208,20 @@ def _episode_labels(value):
         if (not isinstance(season, int) or isinstance(season, bool) or season < 0 or
                 not isinstance(episode, int) or isinstance(episode, bool) or episode < 0):
             return [], 'Unknown'
-        keys.add((season, episode))
+        key = (season, episode)
+        if key not in keys:
+            # Keep only the earliest display keys, even for oversized persisted lists.
+            insort(keys, key)
+            if len(keys) > CLEANUP_EPISODE_LABEL_DISPLAY_LIMIT:
+                keys.pop()
+                truncated = True
     if not keys:
         return [], 'Unknown'
     labels = [f'S{season:02d}E{episode:02d}' for season, episode in sorted(keys)]
-    return labels, ', '.join(labels)
+    display = ', '.join(labels)
+    if truncated:
+        display += ' … (additional episodes omitted)'
+    return labels, display
 
 
 def reduce_overall_status(statuses):

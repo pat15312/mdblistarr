@@ -484,3 +484,32 @@ class TargetScopedMetricsAndViewTests(TestCase):
             self.assertContains(response, f'Showing first 100 of 101 {state} candidates.', count=2)
         self.assertContains(response, 'Pending cleanup candidates (101)', count=2)
         self.assertContains(response, 'S00E03')
+
+
+    def test_sonarr_episode_labels_are_bounded_without_changing_persisted_keys(self):
+        from .arr_health import CLEANUP_EPISODE_LABEL_DISPLAY_LIMIT
+        limit = CLEANUP_EPISODE_LABEL_DISPLAY_LIMIT
+        keys = [[1, number] for number in range(limit + 50, 0, -1)] * 2
+        candidate = self._cleanup_candidate('sonarr', 10, linked_episode_keys=keys)
+        item = self._product('sonarr')['cleanup']['ready_candidates'][0]
+        expected = [f'S01E{number:02d}' for number in range(1, limit + 1)]
+        self.assertEqual(item['episode_labels'], expected)
+        self.assertEqual(item['episodes_display'], ', '.join(expected) + ' … (additional episodes omitted)')
+        self.assertNotIn('linked_episode_keys', item)
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.linked_episode_keys, keys)
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse('arr_health_view'))
+        self.assertContains(response, 'additional episodes omitted')
+        self.assertNotContains(response, f'S01E{limit + 1:02d}')
+        # Duplicates alone do not trigger truncation at the boundary.
+        candidate.linked_episode_keys = [[1, number] for number in range(1, limit + 1)] * 2
+        candidate.save()
+        item = self._product('sonarr')['cleanup']['ready_candidates'][0]
+        self.assertEqual(item['episodes_display'], ', '.join(expected))
+        # Validation still examines the tail; malformed input never masquerades as complete.
+        candidate.linked_episode_keys = keys + [['PRIVATE_TAIL', 1]]
+        candidate.save()
+        item = self._product('sonarr')['cleanup']['ready_candidates'][0]
+        self.assertEqual(item['episode_labels'], [])
+        self.assertEqual(item['episodes_display'], 'Unknown')
