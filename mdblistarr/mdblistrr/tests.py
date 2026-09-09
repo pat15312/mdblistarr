@@ -1125,9 +1125,9 @@ class SonarrDuplicateCleanupTests(TestCase):
             fields = ('pk', 'target_instance_id', 'tvdb_id', 'target_series_id', 'episode_file_id',
                       'linked_episode_keys', 'first_eligible_at', 'ready_at', 'status')
             before = tuple(getattr(candidate, name) for name in fields)
-            process_cleanup_for_series(**args, target_title='  Corrected  ', target_year=2025)
+            process_cleanup_for_series(**args, target_title=f'  Corrected {state}  ', target_year=2025)
             candidate.refresh_from_db()
-            self.assertEqual((candidate.target_title, candidate.target_year), ('Corrected', 2025))
+            self.assertEqual((candidate.target_title, candidate.target_year), (f'Corrected {state}', 2025))
             self.assertEqual(tuple(getattr(candidate, name) for name in fields), before)
             self.assertEqual(SonarrCleanupCandidate.objects.count(), 1)
         self.assertEqual(source_api.mock_calls, [])
