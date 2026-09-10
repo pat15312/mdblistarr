@@ -270,7 +270,7 @@ def post_radarr_payload(force=False):
             ]
             collection_remove = [{'ids': {'tmdb': rec['tmdb']}} for rec in records if rec.get('exists') is False]
 
-            chunk_size = 250
+            chunk_size = 200  # MDBList collection API batch limit.
             total_added = 0
             for i in range(0, len(collection_add), chunk_size):
                 chunk = collection_add[i:i + chunk_size]
@@ -460,7 +460,7 @@ def post_sonarr_payload(force=False):
                 if rec.get('exists') is False and rec['tvdb'] not in collection_add_by_tvdb
             ]
 
-            chunk_size = 250
+            chunk_size = 200  # MDBList collection API batch limit (shows, not episodes).
             total_shows, total_seasons = 0, 0
             for i in range(0, len(collection_add), chunk_size):
                 chunk = collection_add[i:i + chunk_size]
