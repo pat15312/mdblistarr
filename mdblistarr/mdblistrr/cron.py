@@ -16,7 +16,7 @@ from .arr import RadarrAPI
 from .sonarr_reconcile import determine_series_completeness, calculate_episode_monitoring
 from .radarr_reconcile import calculate_movie_monitoring, validate_movie_response
 from .sonarr_cleanup import process_cleanup_for_series
-from .media_display import refresh_search_titles
+from .media_display import backfill_candidate_titles, refresh_search_titles
 from .sonarr_search import (update_search_candidates_for_series, submit_pending_search_candidates,
     reconcile_search_commands_for_series, poll_episode_search_commands,
     resolve_failed_candidates_for_removed_series)
@@ -883,6 +883,7 @@ def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
                 _try_finish_reconciliation_status('sonarr', 502, 'target_validation_failed',
                     source_instance_id=source.id, target_instance_id=target.id, source_ok=True, target_ok=False)
                 return {'result': 502, 'message': target_error}
+            backfill_candidate_titles('sonarr', target, source_series, target_series)
             source_by_tvdb = {s.get('tvdbId'): s for s in source_series}
             totals = calculate_episode_monitoring([], [])
             totals.series_compared = totals.episodes_inspected = totals.episodes_unchanged = 0
@@ -1154,6 +1155,7 @@ def _reconcile_radarr_ondemand(force=False, scheduled_for=None, health_context=N
             _try_finish_reconciliation_status('radarr', 502, 'target_validation_failed',
                 source_instance_id=source.id, target_instance_id=target.id, source_ok=True, target_ok=False)
             return {'result': 502, 'message': reason}
+        backfill_candidate_titles('radarr', target, source_movies, target_movies)
         result = calculate_movie_monitoring(source_movies, target_movies)
         applied_true = _apply_radarr_monitor_batches(target_api, result.monitor_true_ids, True, result)
         applied_false = _apply_radarr_monitor_batches(target_api, result.monitor_false_ids, False, result)
