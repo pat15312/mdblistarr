@@ -37,7 +37,7 @@ Paths below are relative to the repository root.
 | `mdblistarr/mdblistrr/sonarr_cleanup.py` | Exact episode-file candidate lifecycle and destructive verification |
 | `mdblistarr/mdblistrr/radarr_cleanup.py` | Exact movie-file candidate lifecycle, edition checks and destructive verification |
 | `mdblistarr/mdblistrr/health_details.py` | Paginated, local-only search and cleanup detail views |
-| `mdblistarr/mdblistrr/media_display.py` | Best-effort search title refresh from existing target snapshots, without lifecycle changes |
+| `mdblistarr/mdblistrr/media_display.py` | Best-effort title refresh and historical candidate backfill from existing Arr snapshots, without lifecycle changes |
 | `mdblistarr/mdblistrr/arr_health.py` | Best-effort reconciliation snapshots and local health aggregation |
 | `mdblistarr/mdblistrr/reconciliation_schedule.py` | Canonical due slots and persisted scheduling state independent of health |
 | `mdblistarr/mdblistrr/instance_config.py` | Shared role labels and queue-import requirement checks |

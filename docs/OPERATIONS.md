@@ -112,6 +112,8 @@ Positive search and cleanup counts open a paginated detail modal (25 records per
 
 Timestamps are explicitly labelled: eligibility, readiness, deletion/cancellation, command submission/queue/start, unavailable-since, terminal-state recording or last check. Where no dedicated event timestamp exists (candidate errors, retry exhaustion and already-absent cleanup), details show the record's last update time and label it as **not event time**. Missing timestamps remain Unknown. Titles are display metadata, refreshed from already-read target resources; older search records receive an empty title in migration 0013 and show TVDb/TMDb identifiers until refreshed. Display-only search title updates do not change lifecycle timestamps or outcomes.
 
+Missing titles on historical cleanup and search candidates are backfilled during reconciliation by matching TVDb/TMDb IDs against the already-read target snapshot, with the configured Permanent source as a fallback. This includes deleted, cancelled and already-absent files, even when cleanup is disabled or the target media record has been removed. Existing names, lifecycle states and all timestamps are preserved; malformed or conflicting identities defer backfilling. After upgrading, allow the next reconciliation to run, or use **Run reconciliation now** for the enabled product, then reopen the modal. If neither configured instance retains a usable title for that ID, the identifier remains visible; opening a modal never performs a live metadata lookup.
+
 See [health aggregation](../mdblistarr/mdblistrr/arr_health.py) and [health regressions](../mdblistarr/mdblistrr/test_arr_health.py).
 
 ### Log browsing
