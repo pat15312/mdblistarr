@@ -55,6 +55,8 @@ def _identity_changed(cand, key, tvdb_id, target_series_id):
 
 
 def _reset_pending(cand, *, tvdb_id, target_series_id, key, now):
+    if _identity_changed(cand, key, tvdb_id, target_series_id):
+        cand.target_title = ''
     cand.target_series_id = target_series_id
     cand.tvdb_id = tvdb_id
     cand.season_number = key[0]
@@ -68,7 +70,7 @@ def _reset_pending(cand, *, tvdb_id, target_series_id, key, now):
     cand.attempt_count = 0
     cand.retry_not_before = None
     cand.last_error = ''
-    cand.save(update_fields=['target_series_id', 'tvdb_id', 'season_number', 'episode_number', 'status', 'first_eligible_at', 'last_confirmed_at', 'submitted_at', 'cancelled_at', 'current_command', 'attempt_count', 'retry_not_before', 'last_error', 'updated_at'])
+    cand.save(update_fields=['target_title', 'target_series_id', 'tvdb_id', 'season_number', 'episode_number', 'status', 'first_eligible_at', 'last_confirmed_at', 'submitted_at', 'cancelled_at', 'current_command', 'attempt_count', 'retry_not_before', 'last_error', 'updated_at'])
 
 
 def _mark_submitted(cand, *, submitted_at, now):

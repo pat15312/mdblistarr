@@ -447,7 +447,7 @@ class TargetScopedMetricsAndViewTests(TestCase):
         self.assertContains(response, '&lt;b&gt;Title&lt;/b&gt; (2024)', count=2)
         for text in ('TVDb 12345', 'TMDb 1584', 'EpisodeFile ID', 'MovieFile ID', 'S01E01', 'Unknown', '>678<', '>12345<', '>1584<', date_format(timezone.localtime(bad.ready_at), 'Y-m-d H:i:s T')):
             self.assertContains(response, text)
-        self.assertContains(response, 'Pending cleanup candidates (1)', count=2)
+        self.assertEqual(html_text(response).count('Pending cleanup candidates (1)'), 2)
         body = response.content.decode()
         self.assertNotIn('<b>Title</b>', body)
         self.assertNotIn('PRIVATE_ERROR', body)
@@ -469,7 +469,7 @@ class TargetScopedMetricsAndViewTests(TestCase):
         self.assertNotContains(empty, 'Ready for deletion')
         self.assertNotContains(empty, '<details')
         self.assertNotContains(empty, '<table')
-        self.assertContains(empty, 'Cleanup — current persistent state', count=2)
+        self.assertContains(empty, 'Cleanup - current persistent state', count=2)
 
     def test_cleanup_rendered_truncation_and_specials(self):
         from .arr_health import CLEANUP_CANDIDATE_DISPLAY_LIMIT
@@ -481,8 +481,8 @@ class TargetScopedMetricsAndViewTests(TestCase):
         SonarrCleanupCandidate.objects.update(linked_episode_keys=[[0, 3]])
         response = self.client.get(reverse('arr_health_view'))
         for state in ('ready', 'pending'):
-            self.assertContains(response, f'Showing first 100 of 101 {state} candidates.', count=2)
-        self.assertContains(response, 'Pending cleanup candidates (101)', count=2)
+            self.assertEqual(html_text(response).count(f'Showing first 100 of 101 {state} candidates.'), 2)
+        self.assertEqual(html_text(response).count('Pending cleanup candidates (101)'), 2)
         self.assertContains(response, 'S00E03')
 
 
@@ -513,3 +513,8 @@ class TargetScopedMetricsAndViewTests(TestCase):
         item = self._product('sonarr')['cleanup']['ready_candidates'][0]
         self.assertEqual(item['episode_labels'], [])
         self.assertEqual(item['episodes_display'], 'Unknown')
+
+
+def html_text(response):
+    from lxml import html
+    return ' '.join(html.fromstring(response.content).text_content().split())

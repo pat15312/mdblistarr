@@ -120,6 +120,32 @@ def _configured_instance(model, instance_id):
         'id', 'name', 'is_library_source', 'is_ondemand_target').first() if instance_id else None
 
 
+def _search_groups(candidate_model, command_model, target_id):
+    candidates = candidate_model.objects.filter(target_instance_id=target_id)
+    commands = command_model.objects.filter(target_instance_id=target_id)
+    groups = {
+        'pending': candidates.filter(status='pending'),
+        'submitted': candidates.filter(status='submitted'),
+        'retry_exhausted': candidates.filter(status='failed'),
+        'active_errors': candidates.filter(status__in=ACTIVE_CANDIDATE_STATUSES).exclude(last_error=''),
+        'in_flight': commands.filter(status__in=IN_FLIGHT_COMMAND_STATUSES),
+        'uncertain': commands.filter(status__in=UNCERTAIN_COMMAND_STATUSES),
+        'unreconciled_terminal_failures': commands.filter(
+            status__in=TERMINAL_FAILURE_STATUSES, outcome_reconciled_at__isnull=True),
+    }
+    for state in IN_FLIGHT_COMMAND_STATUSES + UNCERTAIN_COMMAND_STATUSES:
+        groups[state] = commands.filter(status=state)
+    return groups
+
+
+def _cleanup_groups(model, target_id):
+    candidates = model.objects.filter(target_instance_id=target_id)
+    groups = {state: candidates.filter(status=state)
+              for state in ('pending', 'ready', 'deleted', 'cancelled', 'already_absent')}
+    groups['active_errors'] = candidates.filter(status__in=('pending', 'ready')).exclude(last_error='')
+    return groups
+
+
 def _search_metrics(candidate_model, command_model, target_id):
     empty = {key: 0 for key in ('pending', 'submitted', 'retry_exhausted', 'active_errors',
         'submitting', 'queued', 'started', 'in_flight', 'ambiguous', 'unavailable',
@@ -127,22 +153,10 @@ def _search_metrics(candidate_model, command_model, target_id):
     empty['oldest_pending_at'] = None
     if not target_id:
         return empty
-    candidates = candidate_model.objects.filter(target_instance_id=target_id)
-    commands = command_model.objects.filter(target_instance_id=target_id)
+    groups = _search_groups(candidate_model, command_model, target_id)
     metrics = dict(empty)
-    metrics.update({
-        'pending': candidates.filter(status='pending').count(),
-        'submitted': candidates.filter(status='submitted').count(),
-        'retry_exhausted': candidates.filter(status='failed').count(),
-        'active_errors': candidates.filter(status__in=ACTIVE_CANDIDATE_STATUSES).exclude(last_error='').count(),
-        'oldest_pending_at': candidates.filter(status='pending').aggregate(value=Min('first_eligible_at'))['value'],
-    })
-    for state in IN_FLIGHT_COMMAND_STATUSES + UNCERTAIN_COMMAND_STATUSES:
-        metrics[state] = commands.filter(status=state).count()
-    metrics['in_flight'] = sum(metrics[state] for state in IN_FLIGHT_COMMAND_STATUSES)
-    metrics['uncertain'] = sum(metrics[state] for state in UNCERTAIN_COMMAND_STATUSES)
-    metrics['unreconciled_terminal_failures'] = commands.filter(
-        status__in=TERMINAL_FAILURE_STATUSES, outcome_reconciled_at__isnull=True).count()
+    metrics.update({key: rows.count() for key, rows in groups.items()})
+    metrics['oldest_pending_at'] = groups['pending'].aggregate(value=Min('first_eligible_at'))['value']
     # This is a deterministic count of actionable conditions, not historical work.
     # The categories are intentionally additive; it is not an entity-level count
     # across candidate/command relationships, which would require extra joins.
@@ -162,9 +176,7 @@ def _cleanup_metrics(model, target_id):
     if not target_id:
         return metrics
     candidates = model.objects.filter(target_instance_id=target_id)
-    for state in ('pending', 'ready', 'deleted', 'cancelled', 'already_absent'):
-        metrics[state] = candidates.filter(status=state).count()
-    metrics['active_errors'] = candidates.filter(status__in=('pending', 'ready')).exclude(last_error='').count()
+    metrics.update({key: rows.count() for key, rows in _cleanup_groups(model, target_id).items()})
     metrics['oldest_pending_at'] = candidates.filter(status='pending').aggregate(value=Min('first_eligible_at'))['value']
     metrics['oldest_ready_at'] = candidates.filter(status='ready').aggregate(value=Min('ready_at'))['value']
     fields = ['id', 'status', 'target_title', 'target_year', 'first_eligible_at',

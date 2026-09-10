@@ -1,0 +1,57 @@
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const element = document.getElementById('health-details-modal');
+  const body = document.getElementById('health-details-body');
+  const title = document.getElementById('health-details-title');
+  if (!element || !window.bootstrap) return;
+  const modal = bootstrap.Modal.getOrCreateInstance(element);
+  let trigger;
+  let controller;
+
+  async function load(url) {
+    if (controller) controller.abort();
+    const request = new AbortController();
+    controller = request;
+    title.textContent = 'Arr Health details';
+    body.textContent = 'Loading details…';
+    body.setAttribute('aria-busy', 'true');
+    try {
+      const response = await fetch(url, {
+        headers: {'X-Requested-With': 'XMLHttpRequest'}, signal: request.signal,
+      });
+      if (!response.ok || response.redirected) throw new Error('Unable to load');
+      const html = await response.text();
+      if (request.signal.aborted) return;
+      body.innerHTML = html;
+      const heading = body.querySelector('[data-detail-title]');
+      title.textContent = heading.textContent;
+      heading.remove();
+      title.focus();
+    } catch (error) {
+      if (error.name === 'AbortError') return;
+      body.textContent = 'Details could not be loaded. ';
+      const link = document.createElement('a');
+      link.href = url;
+      link.textContent = 'Open details page';
+      body.append(link);
+    } finally {
+      if (controller === request) body.removeAttribute('aria-busy');
+    }
+  }
+
+  document.addEventListener('click', (event) => {
+    const link = event.target.closest('a[data-health-detail], #health-details-body nav a');
+    if (!link || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    if (link.hasAttribute('data-health-detail')) {
+      trigger = link;
+      modal.show();
+    }
+    load(link.href);
+  });
+  element.addEventListener('hidden.bs.modal', () => {
+    if (controller) controller.abort();
+    if (trigger) trigger.focus();
+  });
+});
+</script>
