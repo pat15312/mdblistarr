@@ -10,11 +10,11 @@ First-run setup remains available whenever no active user with **both staff and 
 
 Startup can bootstrap explicit administrator credentials, but does not overwrite an existing usable administrator. It first disables the legacy insecure `admin/admin` account. Administrator passwords are not automatically generated. See [administrator state](../mdblistarr/mdblistrr/admin_state.py), [setup view](../mdblistarr/mdblistrr/views.py) and [secure startup](../mdblistarr/mdblistrr/management/commands/secure_startup.py).
 
-Login, setup and `/healthz` are public endpoints; static assets are also exempt from the administration gate. JSON requests to protected routes distinguish setup required (503), authentication required (401) and insufficient privileges (403). State-changing actions use POST and Django CSRF protection.
+Login, setup and `/healthz` are public endpoints; static assets are also exempt from the administration gate. JSON requests to protected routes distinguish setup required (503), authentication required (401) and insufficient privileges (403). Configuration submissions, OAuth actions and manual operational actions use POST and Django CSRF protection. This does not imply every GET is free of incidental persistence: the home view initialises the sync-hour preference when absent.
 
 ## Secret storage and resolution
 
-Arr API keys and the designated MDBList API/access/refresh-token preferences are encrypted at rest using authenticated Fernet encryption. Copying the SQLite database alone therefore does not reveal those integration credentials. URLs, instance names, general preferences and logs are not all encrypted. Administrator passwords use Django's password handling rather than the integration-secret field scheme.
+Arr API keys and the designated MDBList API/access/refresh-token preferences are encrypted at rest using authenticated Fernet encryption. Decrypting those encrypted fields requires the matching key; this is not a guarantee that credentials cannot appear elsewhere in the database, particularly through the legacy logging paths qualified below. URLs, instance names, general preferences and logs are not all encrypted. Administrator passwords use Django's password handling rather than the integration-secret field scheme.
 
 The two runtime cryptographic secrets have distinct jobs:
 
