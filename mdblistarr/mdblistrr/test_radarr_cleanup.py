@@ -55,6 +55,43 @@ class CandidateLifecycleTests(TestCase):
         defaults=dict(target_instance=self.target,source_movies=[self.source_movie],target_movies=[self.target_movie],
             confirmed_unmonitored_ids={2},monitoring_blocked_ids=set(),source_api=Mock(),target_api=Mock(),grace_hours=24,max_deletions=25)
         defaults.update(kw); return process_radarr_cleanup(**defaults)
+    def test_display_metadata_refresh_preserves_pending_and_ready_evidence(self):
+        from dataclasses import fields
+        from .radarr_cleanup import CleanupEvidence
+        evidence_names = [field.name for field in fields(CleanupEvidence)]
+        self.assertNotIn('target_title', evidence_names)
+        self.assertNotIn('target_year', evidence_names)
+        self.target_movie.update(title='  Original  ', year=2003)
+        self.cleanup()
+        candidate = RadarrCleanupCandidate.objects.get()
+        self.assertEqual((candidate.target_title, candidate.target_year), ('Original', 2003))
+        for state in ('pending', 'ready'):
+            candidate.status = state
+            candidate.first_eligible_at = timezone.now() - timezone.timedelta(hours=1 if state == 'pending' else 48)
+            candidate.ready_at = None if state == 'pending' else timezone.now() - timezone.timedelta(hours=24)
+            candidate.save()
+            before = (candidate.pk, candidate.first_eligible_at, candidate.ready_at,
+                      tuple(getattr(candidate, name) for name in evidence_names))
+            self.target_movie.update(title='  Corrected title  ', year=2004)
+            self.cleanup()
+            candidate.refresh_from_db()
+            self.assertEqual((candidate.target_title, candidate.target_year), ('Corrected title', 2004))
+            self.assertEqual(candidate.status, state)
+            self.assertEqual((candidate.pk, candidate.first_eligible_at, candidate.ready_at,
+                              tuple(getattr(candidate, name) for name in evidence_names)), before)
+            self.assertEqual(RadarrCleanupCandidate.objects.count(), 1)
+            self.target_movie.update(title='Original', year=2003)
+            self.cleanup()
+
+    def test_display_metadata_normalization_never_fails_cleanup(self):
+        for title, year, expected in ((None, True, ('', None)), ([], '2003', ('', None)),
+                                      ('  ', 0, ('', None)), ('x' * 300, -1, ('x' * 255, None))):
+            with self.subTest(title=title, year=year):
+                self.target_movie.update(title=title, year=year)
+                self.cleanup()
+                candidate = RadarrCleanupCandidate.objects.get()
+                self.assertEqual((candidate.target_title, candidate.target_year), expected)
+
     def test_disabled_maintains_pending_without_delete(self):
         target_api=Mock(); out=self.cleanup(target_api=target_api)
         self.assertEqual(out.cleanup_candidates_new,1); self.assertEqual(RadarrCleanupCandidate.objects.get().status,'pending'); target_api.delete_movie_file.assert_not_called()

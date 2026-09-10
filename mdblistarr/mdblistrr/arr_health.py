@@ -1,5 +1,6 @@
 """Persisted, read-only operational health for Sonarr and Radarr."""
 import json
+from bisect import insort
 from datetime import timedelta
 
 from django.db.models import Min
@@ -13,6 +14,8 @@ from .models import (
 )
 
 PRODUCTS = ('sonarr', 'radarr')
+CLEANUP_CANDIDATE_DISPLAY_LIMIT = 100
+CLEANUP_EPISODE_LABEL_DISPLAY_LIMIT = 100
 ACTIVE_CANDIDATE_STATUSES = ('pending', 'submitted')
 IN_FLIGHT_COMMAND_STATUSES = ('submitting', 'queued', 'started')
 UNCERTAIN_COMMAND_STATUSES = ('ambiguous', 'unavailable')
@@ -152,7 +155,10 @@ def _search_metrics(candidate_model, command_model, target_id):
 
 def _cleanup_metrics(model, target_id):
     metrics = {key: 0 for key in ('pending', 'ready', 'active_errors', 'deleted', 'cancelled', 'already_absent')}
-    metrics.update({'oldest_pending_at': None, 'oldest_ready_at': None})
+    metrics.update({'oldest_pending_at': None, 'oldest_ready_at': None,
+                    'ready_candidates': [], 'pending_candidates': [],
+                    'ready_candidates_truncated': False,
+                    'pending_candidates_truncated': False})
     if not target_id:
         return metrics
     candidates = model.objects.filter(target_instance_id=target_id)
@@ -161,7 +167,61 @@ def _cleanup_metrics(model, target_id):
     metrics['active_errors'] = candidates.filter(status__in=('pending', 'ready')).exclude(last_error='').count()
     metrics['oldest_pending_at'] = candidates.filter(status='pending').aggregate(value=Min('first_eligible_at'))['value']
     metrics['oldest_ready_at'] = candidates.filter(status='ready').aggregate(value=Min('ready_at'))['value']
+    fields = ['id', 'status', 'target_title', 'target_year', 'first_eligible_at',
+              'ready_at', 'last_error']
+    is_sonarr = model is SonarrCleanupCandidate
+    fields += (['tvdb_id', 'target_series_id', 'episode_file_id', 'linked_episode_keys']
+               if is_sonarr else ['tmdb_id', 'target_movie_id', 'movie_file_id'])
+    for state, timestamp in (('ready', 'ready_at'), ('pending', 'first_eligible_at')):
+        # Bound each status in SQL; aggregate counts still include the full backlog.
+        rows = candidates.filter(status=state).order_by(timestamp, 'id').values(*fields)[:CLEANUP_CANDIDATE_DISPLAY_LIMIT]
+        metrics[f'{state}_candidates'] = [_cleanup_detail(row, is_sonarr) for row in rows]
+        metrics[f'{state}_candidates_truncated'] = metrics[state] > CLEANUP_CANDIDATE_DISPLAY_LIMIT
     return metrics
+
+
+def _cleanup_detail(row, is_sonarr):
+    episode_keys = row.pop('linked_episode_keys', None)
+    external_id = row['tvdb_id' if is_sonarr else 'tmdb_id']
+    file_id = row['episode_file_id' if is_sonarr else 'movie_file_id']
+    title = row['target_title'].strip() if isinstance(row['target_title'], str) else ''
+    display_title = title or f"{'TVDb' if is_sonarr else 'TMDb'} {external_id}"
+    if title and row['target_year']:
+        display_title += f" ({row['target_year']})"
+    has_error = bool(row.pop('last_error', ''))
+    item = {**row, 'display_title': display_title, 'external_id': external_id,
+            'file_id': file_id, 'has_error': has_error}
+    if is_sonarr:
+        item['episode_labels'], item['episodes_display'] = _episode_labels(episode_keys)
+    return item
+
+
+def _episode_labels(value):
+    if not isinstance(value, (list, tuple)):
+        return [], 'Unknown'
+    keys = []
+    truncated = False
+    for item in value:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            return [], 'Unknown'
+        season, episode = item
+        if (not isinstance(season, int) or isinstance(season, bool) or season < 0 or
+                not isinstance(episode, int) or isinstance(episode, bool) or episode < 0):
+            return [], 'Unknown'
+        key = (season, episode)
+        if key not in keys:
+            # Keep only the earliest display keys, even for oversized persisted lists.
+            insort(keys, key)
+            if len(keys) > CLEANUP_EPISODE_LABEL_DISPLAY_LIMIT:
+                keys.pop()
+                truncated = True
+    if not keys:
+        return [], 'Unknown'
+    labels = [f'S{season:02d}E{episode:02d}' for season, episode in sorted(keys)]
+    display = ', '.join(labels)
+    if truncated:
+        display += ' … (additional episodes omitted)'
+    return labels, display
 
 
 def reduce_overall_status(statuses):

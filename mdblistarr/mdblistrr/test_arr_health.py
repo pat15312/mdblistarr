@@ -304,3 +304,212 @@ class TargetScopedMetricsAndViewTests(TestCase):
             self.assertNotIn(secret, body)
         sonarr.assert_not_called(); radarr.assert_not_called(); mdblist.assert_not_called()
         self.assertEqual(self.client.post(url).status_code, 405)
+
+    def _cleanup_candidate(self, product, file_id, status='ready', **overrides):
+        now = timezone.now()
+        common = dict(status=status, first_eligible_at=now, last_confirmed_at=now,
+                      ready_at=now if status == 'ready' else None)
+        if product == 'sonarr':
+            model = SonarrCleanupCandidate
+            common.update(target_instance=self.s_target, tvdb_id=12345,
+                          target_series_id=20, episode_file_id=file_id,
+                          linked_episode_keys=[[1, 1]])
+        else:
+            model = RadarrCleanupCandidate
+            common.update(target_instance=self.r_target, tmdb_id=1584,
+                          source_movie_id=10, source_movie_file_id=11,
+                          target_movie_id=30, movie_file_id=file_id)
+        common.update(overrides)
+        return model.objects.create(**common)
+
+    def test_cleanup_details_defaults_identity_and_terminal_counts(self):
+        for product, prefix, external_id in (('sonarr', 'TVDb', 12345), ('radarr', 'TMDb', 1584)):
+            with self.subTest(product=product):
+                ready = self._cleanup_candidate(product, 101, last_error='PRIVATE_ERROR')
+                self.assertEqual(ready.target_title, '')
+                self.assertIsNone(ready.target_year)
+                pending = self._cleanup_candidate(product, 102, 'pending', target_title='Title', target_year=2024)
+                for index, status in enumerate(('deleted', 'cancelled', 'already_absent'), 103):
+                    self._cleanup_candidate(product, index, status)
+                data = self._product(product)['cleanup']
+                for key in ('ready', 'pending', 'deleted', 'cancelled', 'already_absent', 'active_errors'):
+                    self.assertEqual(data[key], 1)
+                self.assertEqual(data['oldest_ready_at'], ready.ready_at)
+                self.assertEqual(data['oldest_pending_at'], pending.first_eligible_at)
+                for state, row in (('ready', ready), ('pending', pending)):
+                    self.assertFalse(data[f'{state}_candidates_truncated'])
+                    self.assertEqual(len(data[f'{state}_candidates']), 1)
+                    item = data[f'{state}_candidates'][0]
+                    self.assertEqual(item['id'], row.pk)
+                    self.assertEqual(item['status'], state)
+                    self.assertEqual(item['external_id'], external_id)
+                    self.assertEqual(item['file_id'], 101 if state == 'ready' else 102)
+                    self.assertIs(item['has_error'], state == 'ready')
+                    self.assertNotIn('last_error', item)
+                    self.assertNotIn('linked_episode_keys', item)
+                    self.assertEqual(item['display_title'], f'{prefix} {external_id}' if state == 'ready' else 'Title (2024)')
+                    self.assertEqual(item['ready_at'], row.ready_at)
+                    self.assertEqual(item['first_eligible_at'], row.first_eligible_at)
+                    if product == 'sonarr':
+                        self.assertEqual((item['tvdb_id'], item['target_series_id'], item['episode_file_id']), (12345, 20, item['file_id']))
+                    else:
+                        self.assertEqual((item['tmdb_id'], item['target_movie_id'], item['movie_file_id']), (1584, 30, item['file_id']))
+
+    def test_cleanup_current_target_and_invalid_configuration(self):
+        for product, instance_model, target in (('sonarr', SonarrInstance, self.s_target), ('radarr', RadarrInstance, self.r_target)):
+            old = instance_model.objects.create(name='Previous', url='http://old', apikey='x', is_library_source=False, is_ondemand_target=True)
+            for state, fid in (('ready', 1), ('pending', 2)):
+                current = self._cleanup_candidate(product, fid, state)
+                self._cleanup_candidate(product, fid, state, target_instance=old)
+                self.assertEqual([x['id'] for x in self._product(product)['cleanup'][f'{state}_candidates']], [current.pk])
+            for invalid_id in (999999, old.pk):
+                if invalid_id == old.pk:
+                    old.is_ondemand_target = False
+                    old.save()
+                Preferences.set_value(f'{product}_reconciliation_target_id', str(invalid_id))
+                data = self._product(product)['cleanup']
+                for state in ('ready', 'pending'):
+                    self.assertEqual(data[state], 0)
+                    self.assertEqual(data[f'{state}_candidates'], [])
+                    self.assertFalse(data[f'{state}_candidates_truncated'])
+            Preferences.set_value(f'{product}_reconciliation_target_id', str(target.pk))
+
+    def test_cleanup_limits_ordering_and_sql_are_bounded_per_status(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        from .arr_health import CLEANUP_CANDIDATE_DISPLAY_LIMIT, _cleanup_metrics
+        limit = CLEANUP_CANDIDATE_DISPLAY_LIMIT
+        self.assertEqual(limit, 100)
+        now = timezone.now()
+        for product, model, target in (('sonarr', SonarrCleanupCandidate, self.s_target), ('radarr', RadarrCleanupCandidate, self.r_target)):
+            expected = {}
+            for state, timestamp in (('ready', 'ready_at'), ('pending', 'first_eligible_at')):
+                rows = []
+                # Reverse chronological insertion, with timestamp ties across the cutoff.
+                for index in range(limit + 7):
+                    row = self._cleanup_candidate(product, (1000 if state == 'ready' else 2000) + index, state,
+                        **{timestamp: now - timedelta(hours=index // 3)})
+                    rows.append(row)
+                expected[state] = [r.pk for r in sorted(rows, key=lambda r: (getattr(r, timestamp), r.pk))][:limit]
+            with CaptureQueriesContext(connection) as queries:
+                data = _cleanup_metrics(model, target.pk)
+            selects = [q['sql'] for q in queries if 'target_title' in q['sql']]
+            self.assertEqual(len(selects), 2)
+            for sql, (state, timestamp) in zip(selects, (('ready', 'ready_at'), ('pending', 'first_eligible_at'))):
+                self.assertIn(f'LIMIT {limit}', sql)
+                self.assertRegex(sql, r'ORDER BY .+ ASC, .+ ASC LIMIT')
+                self.assertIn(f"= '{state}'", sql)
+                self.assertEqual(data[state], limit + 7)
+                self.assertEqual([x['id'] for x in data[f'{state}_candidates']], expected[state])
+                self.assertTrue(data[f'{state}_candidates_truncated'])
+            for state in ('ready', 'pending'):
+                model.objects.filter(status=state).exclude(pk__in=expected[state]).delete()
+            boundary = _cleanup_metrics(model, target.pk)
+            for state in ('ready', 'pending'):
+                self.assertEqual(len(boundary[f'{state}_candidates']), limit)
+                self.assertFalse(boundary[f'{state}_candidates_truncated'])
+
+    def test_sonarr_episode_display_validates_persisted_json(self):
+        cases = [([[1, 1]], 'S01E01'), ([[1, 2], [1, 1], [1, 2]], 'S01E01, S01E02'),
+                 ([[0, 3]], 'S00E03'), ([[100, 123]], 'S100E123')]
+        cases += [(bad, 'Unknown') for bad in ('PRIVATE_JSON', {'private': 'PRIVATE_JSON'}, [], [[True, 1]], [[1, False]], [[-1, 1]], [[1, '2']], [[1]], [[1, 2, 3]], [[1, 1], 'bad'])]
+        candidate = self._cleanup_candidate('sonarr', 10)
+        for keys, expected in cases:
+            with self.subTest(keys=keys):
+                candidate.linked_episode_keys = keys
+                candidate.save()
+                item = self._product('sonarr')['cleanup']['ready_candidates'][0]
+                self.assertNotIn('linked_episode_keys', item)
+                self.assertEqual(item['episodes_display'], expected)
+                self.assertEqual(item['episode_labels'], [] if expected == 'Unknown' else expected.split(', '))
+
+    def test_cleanup_rendering_and_zero_network_contract(self):
+        from contextlib import ExitStack
+        from django.utils.formats import date_format
+        self.client.force_login(self.staff)
+        for product in ('sonarr', 'radarr'):
+            self._cleanup_candidate(product, 678, target_title='<b>Title</b>', target_year=2024,
+                                    last_error='PRIVATE_ERROR')
+            self._cleanup_candidate(product, 679, 'pending')
+        bad = self._cleanup_candidate('sonarr', 680, linked_episode_keys={'PRIVATE_JSON': [1]})
+        with ExitStack() as stack:
+            # Patch constructors on the classes themselves, catching already-imported aliases too.
+            guards = [stack.enter_context(patch(path, side_effect=AssertionError('Health must not contact external services')))
+                      for path in ('mdblistrr.arr.SonarrAPI.__init__', 'mdblistrr.arr.RadarrAPI.__init__',
+                                   'mdblistrr.arr.MdblistAPI.__init__', 'mdblistrr.connect.Connect.__init__',
+                                   'requests.sessions.Session.request', 'socket.create_connection')]
+            health = build_arr_health()
+            response = self.client.get(reverse('arr_health_view'))
+            for guard in guards:
+                guard.assert_not_called()
+        self.assertEqual(len(health['products']), 2)
+        self.assertContains(response, 'Ready for deletion', count=2)
+        self.assertContains(response, '&lt;b&gt;Title&lt;/b&gt; (2024)', count=2)
+        for text in ('TVDb 12345', 'TMDb 1584', 'EpisodeFile ID', 'MovieFile ID', 'S01E01', 'Unknown', '>678<', '>12345<', '>1584<', date_format(timezone.localtime(bad.ready_at), 'Y-m-d H:i:s T')):
+            self.assertContains(response, text)
+        self.assertContains(response, 'Pending cleanup candidates (1)', count=2)
+        body = response.content.decode()
+        self.assertNotIn('<b>Title</b>', body)
+        self.assertNotIn('PRIVATE_ERROR', body)
+        self.assertNotIn('PRIVATE_JSON', body)
+        self.assertNotIn('Showing first', body)
+        from lxml import html
+        document = html.fromstring(body)
+        for heading in document.xpath('//h4[text()="Ready for deletion"]'):
+            self.assertEqual(heading.xpath('ancestor::details'), [])
+        for details in document.xpath('//details'):
+            self.assertNotIn('open', details.attrib)
+            self.assertNotIn('Ready for deletion', details.text_content())
+        for model in (SonarrCleanupCandidate, RadarrCleanupCandidate):
+            model.objects.filter(status='pending').delete()
+        self.assertNotContains(self.client.get(reverse('arr_health_view')), '<details')
+        for model in (SonarrCleanupCandidate, RadarrCleanupCandidate):
+            model.objects.all().delete()
+        empty = self.client.get(reverse('arr_health_view'))
+        self.assertNotContains(empty, 'Ready for deletion')
+        self.assertNotContains(empty, '<details')
+        self.assertNotContains(empty, '<table')
+        self.assertContains(empty, 'Cleanup — current persistent state', count=2)
+
+    def test_cleanup_rendered_truncation_and_specials(self):
+        from .arr_health import CLEANUP_CANDIDATE_DISPLAY_LIMIT
+        self.client.force_login(self.staff)
+        for product in ('sonarr', 'radarr'):
+            for state, offset in (('ready', 0), ('pending', 1000)):
+                for index in range(CLEANUP_CANDIDATE_DISPLAY_LIMIT + 1):
+                    self._cleanup_candidate(product, offset + index + 1, state)
+        SonarrCleanupCandidate.objects.update(linked_episode_keys=[[0, 3]])
+        response = self.client.get(reverse('arr_health_view'))
+        for state in ('ready', 'pending'):
+            self.assertContains(response, f'Showing first 100 of 101 {state} candidates.', count=2)
+        self.assertContains(response, 'Pending cleanup candidates (101)', count=2)
+        self.assertContains(response, 'S00E03')
+
+
+    def test_sonarr_episode_labels_are_bounded_without_changing_persisted_keys(self):
+        from .arr_health import CLEANUP_EPISODE_LABEL_DISPLAY_LIMIT
+        limit = CLEANUP_EPISODE_LABEL_DISPLAY_LIMIT
+        keys = [[1, number] for number in range(limit + 50, 0, -1)] * 2
+        candidate = self._cleanup_candidate('sonarr', 10, linked_episode_keys=keys)
+        item = self._product('sonarr')['cleanup']['ready_candidates'][0]
+        expected = [f'S01E{number:02d}' for number in range(1, limit + 1)]
+        self.assertEqual(item['episode_labels'], expected)
+        self.assertEqual(item['episodes_display'], ', '.join(expected) + ' … (additional episodes omitted)')
+        self.assertNotIn('linked_episode_keys', item)
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.linked_episode_keys, keys)
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse('arr_health_view'))
+        self.assertContains(response, 'additional episodes omitted')
+        self.assertNotContains(response, f'S01E{limit + 1:02d}')
+        # Duplicates alone do not trigger truncation at the boundary.
+        candidate.linked_episode_keys = [[1, number] for number in range(1, limit + 1)] * 2
+        candidate.save()
+        item = self._product('sonarr')['cleanup']['ready_candidates'][0]
+        self.assertEqual(item['episodes_display'], ', '.join(expected))
+        # Validation still examines the tail; malformed input never masquerades as complete.
+        candidate.linked_episode_keys = keys + [['PRIVATE_TAIL', 1]]
+        candidate.save()
+        item = self._product('sonarr')['cleanup']['ready_candidates'][0]
+        self.assertEqual(item['episode_labels'], [])
+        self.assertEqual(item['episodes_display'], 'Unknown')
