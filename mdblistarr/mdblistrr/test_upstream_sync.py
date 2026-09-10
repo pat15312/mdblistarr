@@ -3,11 +3,101 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from .arr import RadarrAPI, SonarrAPI
+from .cron import post_radarr_payload, post_sonarr_payload
+from .models import Preferences
+
+
+class CollectionBatchLimitTests(TestCase):
+    collected_at = '2020-01-02T00:00:00Z'
+
+    def setUp(self):
+        Preferences.set_value('sync_hour', '0')
+        Preferences.set_value('sync_library_status', '1')
+
+    def assert_collection_batches(self, method, media, expected, sizes):
+        batches = [call.args[0][media] for call in method.call_args_list]
+        self.assertEqual([len(batch) for batch in batches], sizes)
+        self.assertEqual([item for batch in batches for item in batch], expected)
+
+    def check_sync(self, product, count, sizes):
+        added_ids = range(1, count + 1)
+        removed_ids = range(count + 1, count * 2 + 1)
+        api = Mock()
+        if product == 'radarr':
+            media, id_key = 'movies', 'tmdb'
+            sync = post_radarr_payload
+            api_class = 'RadarrAPI'
+            api.get_movies.return_value = [
+                {'tmdbId': item_id, 'hasFile': item_id <= count,
+                 'movieFile': {'dateAdded': self.collected_at}}
+                for item_id in range(1, count * 2 + 1)
+            ]
+            api.get_exclusions.return_value = []
+            expected_add = [
+                {'ids': {id_key: item_id}, 'collected_at': self.collected_at}
+                for item_id in added_ids
+            ]
+        else:
+            media, id_key = 'shows', 'tvdb'
+            sync = post_sonarr_payload
+            api_class = 'SonarrAPI'
+            api.get_series.return_value = [
+                {'id': item_id, 'tvdbId': item_id}
+                for item_id in range(1, count * 2 + 1)
+            ]
+            api.get_import_list_exclusions.return_value = []
+            api.get_episode_files.side_effect = lambda item_id: (
+                [{'id': item_id, 'dateAdded': self.collected_at}]
+                if item_id <= count else []
+            )
+            api.get_episodes.side_effect = lambda item_id: [
+                {'seasonNumber': 1, 'episodeNumber': number,
+                 'airDateUtc': '2020-01-01T00:00:00Z',
+                 'hasFile': item_id <= count, 'episodeFileId': item_id}
+                for number in (1, 2)
+            ]
+            expected_add = [
+                {'ids': {id_key: item_id}, 'seasons': [
+                    {'number': 1, 'episodes': [
+                        {'number': number, 'collected_at': self.collected_at}
+                        for number in (1, 2)
+                    ]}
+                ]}
+                for item_id in added_ids
+            ]
+
+        mdblist = Mock()
+        mdblist.post_arr_payload.return_value = {'response': 'Ok'}
+        mdblist.post_collection.return_value = {'updated': {media: 0}}
+        mdblist.post_collection_remove.return_value = {'removed': {media: 0}}
+        with (
+            patch('mdblistrr.cron.reset_mdblistarr'),
+            patch('mdblistrr.cron.get_mdblistarr', return_value=Mock(mdblist=mdblist)),
+            patch(f'mdblistrr.cron.get_{product}_sync_instances', return_value=[Mock(id=1)]),
+            patch(f'mdblistrr.cron.{api_class}', return_value=api),
+        ):
+            self.assertEqual(sync(force=True), {'response': 'Ok'})
+
+        self.assert_collection_batches(mdblist.post_collection, media, expected_add, sizes)
+        self.assert_collection_batches(
+            mdblist.post_collection_remove, media,
+            [{'ids': {id_key: item_id}} for item_id in removed_ids], sizes,
+        )
+
+    def test_radarr_collection_additions_and_removals_respect_batch_limit(self):
+        for count, sizes in ((0, []), (200, [200]), (201, [200, 1]), (401, [200, 200, 1])):
+            with self.subTest(count=count):
+                self.check_sync('radarr', count, sizes)
+
+    def test_sonarr_collection_additions_and_removals_preserve_episode_payloads(self):
+        for count, sizes in ((0, []), (200, [200]), (201, [200, 1]), (401, [200, 200, 1])):
+            with self.subTest(count=count):
+                self.check_sync('sonarr', count, sizes)
 
 
 class ArrPathPrefixTests(SimpleTestCase):

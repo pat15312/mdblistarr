@@ -130,6 +130,8 @@ For an upstream integration:
 
 General compatibility, MDBList API, Arr API, dependency, proxy, path-prefix and timezone improvements are useful candidates when compatible. Upstream evolution does not authorise additional Arr products or weaken fork safeguards. The fork's public version describes the forked product, even when it incorporates an upstream release with a different number.
 
+Record scoped integration decisions and already-covered changes in the [upstream review record](UPSTREAM_REVIEW.md) so subsequent reviews can reuse the comparison.
+
 ## Release-policy changes
 
 Keep this process lightweight. Change it deliberately when established release practice justifies a revision; do not let versioning drift informally. Not every merged PR requires an immediate release or version bump.
