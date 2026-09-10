@@ -36,6 +36,8 @@ Paths below are relative to the repository root.
 | `mdblistarr/mdblistrr/radarr_search.py` | MoviesSearch candidates, durable command submission and recovery/retry lifecycle |
 | `mdblistarr/mdblistrr/sonarr_cleanup.py` | Exact episode-file candidate lifecycle and destructive verification |
 | `mdblistarr/mdblistrr/radarr_cleanup.py` | Exact movie-file candidate lifecycle, edition checks and destructive verification |
+| `mdblistarr/mdblistrr/health_details.py` | Paginated, local-only search and cleanup detail views |
+| `mdblistarr/mdblistrr/media_display.py` | Best-effort search title refresh from existing target snapshots, without lifecycle changes |
 | `mdblistarr/mdblistrr/arr_health.py` | Best-effort reconciliation snapshots and local health aggregation |
 | `mdblistarr/mdblistrr/reconciliation_schedule.py` | Canonical due slots and persisted scheduling state independent of health |
 | `mdblistarr/mdblistrr/instance_config.py` | Shared role labels and queue-import requirement checks |
@@ -48,7 +50,7 @@ Paths below are relative to the repository root.
 | `mdblistarr/mdblistrr/crypto.py` | Fernet encryption and decryption of integration secrets |
 | `mdblistarr/mdblistrr/management/commands/encrypt_secrets.py` | Validate ciphertext and encrypt legacy plaintext credentials |
 | `mdblistarr/mdblistrr/management/commands/secure_startup.py` | Disable legacy insecure admin credentials and bootstrap an administrator if needed |
-| `mdblistarr/mdblistrr/log.py` | Render the most recent 200 application log entries |
+| `mdblistarr/mdblistrr/log.py` | Filter and paginate persisted application log entries |
 
 File boundaries are implementation details, not a restriction on future refactoring. See the [source directory](../mdblistarr/mdblistrr).
 
@@ -113,6 +115,7 @@ The current application migration sequence is in [migrations](../mdblistarr/mdbl
 | `0010` | Radarr cleanup candidates |
 | `0011` | Reconciliation health snapshots |
 | `0012` | Cleanup candidate title/year display metadata for both products |
+| `0013` | Search candidate title display metadata for both products |
 
 Role migrations default library-source membership on and queue-import/On-Demand flags off where introduced. Existing Radarr queue-import values survive `0008`. Startup credential conversion is handled by `encrypt_secrets`, not solely by schema migrations. Due-slot state is stored in `Preferences` and did not require a separate migration.
 

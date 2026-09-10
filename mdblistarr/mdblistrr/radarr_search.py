@@ -50,6 +50,8 @@ def _submission_time(fixed_now):
 
 
 def _reset_pending(cand, *, tmdb_id, now):
+    if cand.tmdb_id != tmdb_id:
+        cand.target_title = ''
     cand.tmdb_id = tmdb_id
     cand.status = SEARCH_STATUS_PENDING
     cand.first_eligible_at = now
@@ -60,7 +62,7 @@ def _reset_pending(cand, *, tmdb_id, now):
     cand.attempt_count = 0
     cand.retry_not_before = None
     cand.last_error = ''
-    cand.save(update_fields=['tmdb_id','status','first_eligible_at','last_confirmed_at','submitted_at','cancelled_at','current_command','attempt_count','retry_not_before','last_error','updated_at'])
+    cand.save(update_fields=['target_title', 'tmdb_id','status','first_eligible_at','last_confirmed_at','submitted_at','cancelled_at','current_command','attempt_count','retry_not_before','last_error','updated_at'])
 
 
 def _mark_submitted(cand, *, submitted_at, now):

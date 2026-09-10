@@ -31,9 +31,9 @@
           {% with run=product.last_run %}
           {% if run and not product.snapshot_matches_configuration %}<div class="alert alert-warning py-2 small">This snapshot belongs to the previous source/target configuration. Its timestamps and outcome are historical and do not validate the current pair.</div>{% endif %}
           <dl class="row small">
-            <dt class="col-6">Last attempt started</dt><dd class="col-6">{% if run.last_started_at %}{{ run.last_started_at|date:"Y-m-d H:i:s T" }} — {{ run.last_started_at|naturaltime }}{% else %}Never{% endif %}</dd>
-            <dt class="col-6">Last attempt completed</dt><dd class="col-6">{% if run.last_completed_at %}{{ run.last_completed_at|date:"Y-m-d H:i:s T" }} — {{ run.last_completed_at|naturaltime }}{% else %}Never{% endif %}</dd>
-            <dt class="col-6">Last successful run</dt><dd class="col-6">{% if run.last_success_at %}{{ run.last_success_at|date:"Y-m-d H:i:s T" }} — {{ run.last_success_at|naturaltime }}{% else %}Never{% endif %}</dd>
+            <dt class="col-6">Last attempt started</dt><dd class="col-6">{% if run.last_started_at %}{{ run.last_started_at|date:"Y-m-d H:i:s T" }} - {{ run.last_started_at|naturaltime }}{% else %}Never{% endif %}</dd>
+            <dt class="col-6">Last attempt completed</dt><dd class="col-6">{% if run.last_completed_at %}{{ run.last_completed_at|date:"Y-m-d H:i:s T" }} - {{ run.last_completed_at|naturaltime }}{% else %}Never{% endif %}</dd>
+            <dt class="col-6">Last successful run</dt><dd class="col-6">{% if run.last_success_at %}{{ run.last_success_at|date:"Y-m-d H:i:s T" }} - {{ run.last_success_at|naturaltime }}{% else %}Never{% endif %}</dd>
             <dt class="col-6">Snapshot configuration</dt><dd class="col-6">{{ product.snapshot_context }}</dd>
             <dt class="col-6">Latest outcome / code</dt><dd class="col-6">{{ run.last_outcome|default:"never"|title }}{% if run.last_result_code %} / {{ run.last_result_code }}{% endif %}</dd>
             <dt class="col-6">Source validated on last reconciliation</dt><dd class="col-6">{% if not product.snapshot_matches_configuration and run %}Not yet validated for current configuration{% elif product.source_validation is True %}Yes{% elif product.source_validation is False %}No{% else %}Unknown{% endif %}</dd>
@@ -45,38 +45,38 @@
             {% for metric in product.latest_activity %}<div class="col mb-1"><span class="text-body-secondary">{{ metric.label }}:</span> {{ metric.value }}</div>{% empty %}<p class="text-body-secondary">{% if product.last_run and not product.snapshot_matches_configuration %}No activity has been recorded for the current configuration.{% else %}No structured monitoring activity recorded.{% endif %}</p>{% endfor %}
           </div>
 
-          <h3 class="h6 border-top pt-3">Search — current state</h3>
-          <p class="small mb-1">Pending: <strong>{{ product.search.pending }}</strong> · In flight: <strong>{{ product.search.in_flight }}</strong> · Needs attention: <strong>{{ product.search.needs_attention }}</strong></p>
-          {% if product.search.in_flight %}<p class="small text-body-secondary mb-1">In flight: submitting {{ product.search.submitting }}, queued {{ product.search.queued }}, started {{ product.search.started }}</p>{% endif %}
-          <p class="small">Retry exhausted: <strong>{{ product.search.retry_exhausted }}</strong> · Ambiguous/unavailable: <strong>{{ product.search.uncertain }}</strong> · Unreconciled failures: <strong>{{ product.search.unreconciled_terminal_failures }}</strong>{% if product.search.active_errors %} · Active candidate errors: <strong>{{ product.search.active_errors }}</strong>{% endif %}{% if product.search.oldest_pending_at %} · Oldest pending: {{ product.search.oldest_pending_at|naturaltime }}{% endif %}</p>
+          <h3 class="h6 border-top pt-3">Search - current state</h3>
+          <p class="small mb-1">Pending: <strong>{% include "health_count.html" with count=product.search.pending section="search" metric="pending" label="Pending" %}</strong> · In flight: <strong>{% include "health_count.html" with count=product.search.in_flight section="search" metric="in_flight" label="In flight" %}</strong> · Needs attention: <strong>{% include "health_count.html" with count=product.search.needs_attention section="search" metric="needs_attention" label="Needs attention" %}</strong></p>
+          {% if product.search.in_flight %}<p class="small text-body-secondary mb-1">In flight: submitting {% include "health_count.html" with count=product.search.submitting section="search" metric="submitting" label="Submitting" %}, queued {% include "health_count.html" with count=product.search.queued section="search" metric="queued" label="Queued" %}, started {% include "health_count.html" with count=product.search.started section="search" metric="started" label="Started" %}</p>{% endif %}
+          <p class="small">Retry exhausted: <strong>{% include "health_count.html" with count=product.search.retry_exhausted section="search" metric="retry_exhausted" label="Retry exhausted" %}</strong> · Ambiguous/unavailable: <strong>{% include "health_count.html" with count=product.search.uncertain section="search" metric="uncertain" label="Ambiguous/unavailable" %}</strong> · Unreconciled failures: <strong>{% include "health_count.html" with count=product.search.unreconciled_terminal_failures section="search" metric="unreconciled_terminal_failures" label="Unreconciled failures" %}</strong>{% if product.search.active_errors %} · Active candidate errors: <strong>{% include "health_count.html" with count=product.search.active_errors section="search" metric="active_errors" label="Active errors" %}</strong>{% endif %}{% if product.search.oldest_pending_at %} · Oldest pending: {{ product.search.oldest_pending_at|naturaltime }}{% endif %}</p>
 
-          <h3 class="h6 border-top pt-3">Cleanup — current persistent state</h3>
-          <p class="small mb-1">Pending: <strong>{{ product.cleanup.pending }}</strong> · Ready: <strong>{{ product.cleanup.ready }}</strong> · Active errors: <strong>{{ product.cleanup.active_errors }}</strong></p>
-          <p class="small">Historical: deleted {{ product.cleanup.deleted }}, cancelled {{ product.cleanup.cancelled }}, already absent {{ product.cleanup.already_absent }}{% if product.cleanup.oldest_pending_at %} · Oldest pending: {{ product.cleanup.oldest_pending_at|naturaltime }}{% endif %}{% if product.cleanup.oldest_ready_at %} · Oldest ready: {{ product.cleanup.oldest_ready_at|naturaltime }}{% endif %}</p>
-          {% if product.configuration.cleanup_enabled and product.configuration.cleanup_dry_run and product.cleanup.ready %}<div class="alert alert-info py-2 small">Dry run: {{ product.cleanup.ready }} files are currently ready for deletion after persisted safety checks.</div>{% endif %}
+          <h3 class="h6 border-top pt-3">Cleanup - current persistent state</h3>
+          <p class="small mb-1">Pending: <strong>{% include "health_count.html" with count=product.cleanup.pending section="cleanup" metric="pending" label="Pending" %}</strong> · Ready: <strong>{% include "health_count.html" with count=product.cleanup.ready section="cleanup" metric="ready" label="Ready" %}</strong> · Active errors: <strong>{% include "health_count.html" with count=product.cleanup.active_errors section="cleanup" metric="active_errors" label="Active errors" %}</strong></p>
+          <p class="small">Historical: deleted {% include "health_count.html" with count=product.cleanup.deleted section="cleanup" metric="deleted" label="Deleted" %}, cancelled {% include "health_count.html" with count=product.cleanup.cancelled section="cleanup" metric="cancelled" label="Cancelled" %}, already absent {% include "health_count.html" with count=product.cleanup.already_absent section="cleanup" metric="already_absent" label="Already absent" %}{% if product.cleanup.oldest_pending_at %} · Oldest pending: {{ product.cleanup.oldest_pending_at|naturaltime }}{% endif %}{% if product.cleanup.oldest_ready_at %} · Oldest ready: {{ product.cleanup.oldest_ready_at|naturaltime }}{% endif %}</p>
+          {% if product.configuration.cleanup_enabled and product.configuration.cleanup_dry_run and product.cleanup.ready %}<div class="alert alert-info py-2 small">Dry run: {% include "health_count.html" with count=product.cleanup.ready section="cleanup" metric="ready" label="Ready" %} files are currently ready for deletion after persisted safety checks.</div>{% endif %}
           {% if product.product == 'radarr' and product.latest_counters.cleanup_edition_conflicts %}<div class="alert alert-secondary py-2 small">{{ product.latest_counters.cleanup_edition_conflicts }} duplicates were excluded because edition evidence differed.</div>{% endif %}
           {% if product.cleanup.ready_candidates %}
           <h4 class="h6">Ready for deletion</h4>
-          {% if product.cleanup.ready_candidates_truncated %}<p class="small text-body-secondary">Showing first {{ product.cleanup.ready_candidates|length }} of {{ product.cleanup.ready }} ready candidates.</p>{% endif %}
+          {% if product.cleanup.ready_candidates_truncated %}<p class="small text-body-secondary">Showing first {{ product.cleanup.ready_candidates|length }} of {% include "health_count.html" with count=product.cleanup.ready section="cleanup" metric="ready" label="Ready" %} ready candidates.</p>{% endif %}
           <div class="table-responsive"><table class="table table-sm small align-middle"><thead><tr>
             <th>{% if product.product == 'sonarr' %}Series{% else %}Movie{% endif %}</th>
             {% if product.product == 'sonarr' %}<th>Episodes</th><th>TVDb ID</th><th>EpisodeFile ID</th>{% else %}<th>TMDb ID</th><th>MovieFile ID</th>{% endif %}<th>Ready since</th>
           </tr></thead><tbody>{% for candidate in product.cleanup.ready_candidates %}<tr>
             <td>{{ candidate.display_title }}{% if candidate.has_error %} <span class="badge text-bg-warning">Error</span>{% endif %}</td>
             {% if product.product == 'sonarr' %}<td>{{ candidate.episodes_display }}</td>{% endif %}<td>{{ candidate.external_id }}</td><td>{{ candidate.file_id }}</td>
-            <td>{% if candidate.ready_at %}{{ candidate.ready_at|date:"Y-m-d H:i:s T" }} — {{ candidate.ready_at|naturaltime }}{% else %}Unknown{% endif %}</td>
+            <td>{% if candidate.ready_at %}{{ candidate.ready_at|date:"Y-m-d H:i:s T" }} - {{ candidate.ready_at|naturaltime }}{% else %}Unknown{% endif %}</td>
           </tr>{% endfor %}</tbody></table></div>
           {% endif %}
           {% if product.cleanup.pending_candidates %}
-          <details class="mb-3"><summary class="small fw-semibold">Pending cleanup candidates ({{ product.cleanup.pending }})</summary>
-          {% if product.cleanup.pending_candidates_truncated %}<p class="small text-body-secondary">Showing first {{ product.cleanup.pending_candidates|length }} of {{ product.cleanup.pending }} pending candidates.</p>{% endif %}
+          <details class="mb-3"><summary class="small fw-semibold">Pending cleanup candidates ({% include "health_count.html" with count=product.cleanup.pending section="cleanup" metric="pending" label="Pending" %})</summary>
+          {% if product.cleanup.pending_candidates_truncated %}<p class="small text-body-secondary">Showing first {{ product.cleanup.pending_candidates|length }} of {% include "health_count.html" with count=product.cleanup.pending section="cleanup" metric="pending" label="Pending" %} pending candidates.</p>{% endif %}
           <div class="table-responsive mt-2"><table class="table table-sm small align-middle"><thead><tr>
             <th>{% if product.product == 'sonarr' %}Series{% else %}Movie{% endif %}</th>
             {% if product.product == 'sonarr' %}<th>Episodes</th><th>TVDb ID</th><th>EpisodeFile ID</th>{% else %}<th>TMDb ID</th><th>MovieFile ID</th>{% endif %}<th>Eligible since</th>
           </tr></thead><tbody>{% for candidate in product.cleanup.pending_candidates %}<tr>
             <td>{{ candidate.display_title }}{% if candidate.has_error %} <span class="badge text-bg-warning">Error</span>{% endif %}</td>
             {% if product.product == 'sonarr' %}<td>{{ candidate.episodes_display }}</td>{% endif %}<td>{{ candidate.external_id }}</td><td>{{ candidate.file_id }}</td>
-            <td>{% if candidate.first_eligible_at %}{{ candidate.first_eligible_at|date:"Y-m-d H:i:s T" }} — {{ candidate.first_eligible_at|naturaltime }}{% else %}Unknown{% endif %}</td>
+            <td>{% if candidate.first_eligible_at %}{{ candidate.first_eligible_at|date:"Y-m-d H:i:s T" }} - {{ candidate.first_eligible_at|naturaltime }}{% else %}Unknown{% endif %}</td>
           </tr>{% endfor %}</tbody></table></div></details>
           {% endif %}
 
@@ -88,4 +88,17 @@
   {% endfor %}
   </div>
 </main>
+<div class="modal fade" id="health-details-modal" tabindex="-1" aria-labelledby="health-details-title" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title fs-5" id="health-details-title" tabindex="-1">Arr Health details</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="health-details-body" aria-live="polite"></div>
+      <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button></div>
+    </div>
+  </div>
+</div>
+{% include 'health_script.html' %}
 {% endblock %}

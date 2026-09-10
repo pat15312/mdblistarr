@@ -1,0 +1,1 @@
+{% if count > 0 %}<a href="{% url 'arr_health_details_view' product.product section metric %}" data-health-detail aria-label="{{ product.name }} {{ section }} {{ label }}: {{ count }}">{{ count }}</a>{% else %}{{ count }}{% endif %}

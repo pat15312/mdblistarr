@@ -43,6 +43,16 @@ def arr_health_view(request):
     return render(request, 'health.html', {'health': build_arr_health()})
 
 
+@require_GET
+@staff_member_required
+def arr_health_details_view(request, product, section, metric):
+    from .health_details import build_health_details
+    context = build_health_details(product, section, metric, request.GET.get('page'))
+    template = ('health_detail_content.html' if request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+                else 'health_detail.html')
+    return render(request, template, context)
+
+
 SYNC_HOUR_CHOICES = [(str(h), f"{h:02d}:00 UTC") for h in range(24)]
 SYNC_INSTANCE_SCOPE_CHOICES = [
     ('first', 'First configured instance only'),

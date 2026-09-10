@@ -108,7 +108,15 @@ Pending searches and running commands represent work, not necessarily faults. Hi
 
 Cleanup detail lists show at most **100 Ready and 100 Pending candidates per product**, ordered by their corresponding timestamp then ID. Sonarr episode labels are also capped at 100 per candidate. Aggregate totals include all matching rows, and truncation is indicated. Raw stored error text is not rendered in the ordinary health UI. Display metadata on older candidates may remain blank until refreshed by reconciliation.
 
+Positive search and cleanup counts open a paginated detail modal (25 records per page), with a standalone detail page available when JavaScript is unavailable. Details use the same target and state predicates as the counts. Command entries show linked media (at most 100 items per command, with truncation indicated); one command can represent multiple episodes or movies. “Needs attention” remains an additive count of conditions, so related candidates and commands can appear separately.
+
+Timestamps are explicitly labelled: eligibility, readiness, deletion/cancellation, command submission/queue/start, unavailable-since, terminal-state recording or last check. Where no dedicated event timestamp exists (candidate errors, retry exhaustion and already-absent cleanup), details show the record's last update time and label it as **not event time**. Missing timestamps remain Unknown. Titles are display metadata, refreshed from already-read target resources; older search records receive an empty title in migration 0013 and show TVDb/TMDb identifiers until refreshed. Display-only search title updates do not change lifecycle timestamps or outcomes.
+
 See [health aggregation](../mdblistarr/mdblistrr/arr_health.py) and [health regressions](../mdblistarr/mdblistrr/test_arr_health.py).
+
+### Log browsing
+
+`/log` defaults to 25 rows per page, with 10 and 50 also available. Pagination covers all retained matching logs. From and To date/time filters are inclusive and independently optional; All, Sonarr and Radarr source filters combine with the range. Apply filters or change the page size and apply to return to page one; Reset clears all filters. The displayed timezone is Django's configured timezone (`TZ`, UTC by default), not the browser's timezone. Invalid or reversed ranges show errors rather than an unfiltered result; ambiguous or nonexistent local daylight-saving times are rejected.
 
 ## Environment variables
 

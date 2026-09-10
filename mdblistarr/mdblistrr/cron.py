@@ -16,6 +16,7 @@ from .arr import RadarrAPI
 from .sonarr_reconcile import determine_series_completeness, calculate_episode_monitoring
 from .radarr_reconcile import calculate_movie_monitoring, validate_movie_response
 from .sonarr_cleanup import process_cleanup_for_series
+from .media_display import refresh_search_titles
 from .sonarr_search import (update_search_candidates_for_series, submit_pending_search_candidates,
     reconcile_search_commands_for_series, poll_episode_search_commands,
     resolve_failed_candidates_for_removed_series)
@@ -973,6 +974,7 @@ def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
                     target_instance=target, tvdb_id=show.get('tvdbId'), target_series_id=show['id'],
                     target_episodes=tgt_eps, stats=stats, applied_monitor_true_ids=applied_true,
                     series_monitored_confirmed=stats.desired_series_monitoring is True)
+                refresh_search_titles('sonarr', target, [show])
                 for key in search_candidate_totals:
                     search_candidate_totals[key] += candidate_counts.get(key, 0)
                 for event in candidate_events:
@@ -1164,6 +1166,7 @@ def _reconcile_radarr_ondemand(force=False, scheduled_for=None, health_context=N
             target_instance=target, target_movies=target_movies, eligible_movie_ids=eligible_ids,
             confirmed_monitored_ids=confirmed, newly_monitored_ids=applied_true,
             submission_blocked_movie_ids=submission_blocked_movie_ids)
+        refresh_search_titles('radarr', target, target_movies)
         active = RadarrMovieSearchCommand.objects.filter(target_instance=target).exclude(
             status__in=('completed','superseded')).exclude(
             status__in=('failed','aborted','cancelled','orphaned'), outcome_reconciled_at__isnull=False).exists()

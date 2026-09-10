@@ -1,0 +1,13 @@
+<nav aria-label="Pagination" class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+  <span class="small">{{ page_obj.start_index }}-{{ page_obj.end_index }} of {{ page_obj.paginator.count }} · Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+  <div class="btn-group">
+    {% if page_obj.has_previous %}
+      <a class="btn btn-sm btn-outline-secondary" href="{{ request.path }}{% querystring page=1 %}">First</a>
+      <a class="btn btn-sm btn-outline-secondary" href="{{ request.path }}{% querystring page=page_obj.previous_page_number %}">Previous</a>
+    {% endif %}
+    {% if page_obj.has_next %}
+      <a class="btn btn-sm btn-outline-secondary" href="{{ request.path }}{% querystring page=page_obj.next_page_number %}">Next</a>
+      <a class="btn btn-sm btn-outline-secondary" href="{{ request.path }}{% querystring page=page_obj.paginator.num_pages %}">Last</a>
+    {% endif %}
+  </div>
+</nav>
