@@ -96,7 +96,7 @@ Start with focused tests while iterating, then run the full application suite fo
 | Radarr monitoring and manual actions | `test_radarr_reconciliation` |
 | Radarr candidate/command lifecycle | `test_radarr_search` |
 | Radarr destructive verification and editions | `test_radarr_cleanup` |
-| Log pagination/filters, health drill-downs and display metadata | `test_frontend`, `test_media_display` |
+| Log pagination/filters, health drill-downs and display metadata | `test_frontend`, `test_media_display`, `test_title_recovery` |
 | Health classification, detail limits and zero-network rendering | `test_arr_health` |
 | Best-effort health integration and core-result preservation | `test_arr_health_reconciliation` |
 | Due-slot persistence, delay and lock contention | `test_reconciliation_schedule` |

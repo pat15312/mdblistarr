@@ -8,6 +8,7 @@ urlpatterns = [
     path('', home_view, name='home_view'),
     path('health', views.arr_health_view, name='arr_health_view'),
     path('health/<str:product>/<str:section>/<str:metric>', views.arr_health_details_view, name='arr_health_details_view'),
+    path('health/<str:product>/<str:section>/<str:metric>/titles', views.arr_health_refresh_titles, name='arr_health_refresh_titles'),
     path('log', log_view, name='log_view'),
     path('test_radarr_connection/', views.test_radarr_connection, name='test_radarr_connection'),
     path('test_sonarr_connection/', views.test_sonarr_connection, name='test_sonarr_connection'),

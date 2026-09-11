@@ -2,12 +2,12 @@
   <span class="small">{{ page_obj.start_index }}-{{ page_obj.end_index }} of {{ page_obj.paginator.count }} · Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
   <div class="btn-group">
     {% if page_obj.has_previous %}
-      <a class="btn btn-sm btn-outline-secondary" href="{{ request.path }}{% querystring page=1 %}">First</a>
-      <a class="btn btn-sm btn-outline-secondary" href="{{ request.path }}{% querystring page=page_obj.previous_page_number %}">Previous</a>
+      <a class="btn btn-sm btn-outline-secondary" href="{{ pagination_path|default:request.path }}{% querystring page=1 title_after=None %}">First</a>
+      <a class="btn btn-sm btn-outline-secondary" href="{{ pagination_path|default:request.path }}{% querystring page=page_obj.previous_page_number title_after=None %}">Previous</a>
     {% endif %}
     {% if page_obj.has_next %}
-      <a class="btn btn-sm btn-outline-secondary" href="{{ request.path }}{% querystring page=page_obj.next_page_number %}">Next</a>
-      <a class="btn btn-sm btn-outline-secondary" href="{{ request.path }}{% querystring page=page_obj.paginator.num_pages %}">Last</a>
+      <a class="btn btn-sm btn-outline-secondary" href="{{ pagination_path|default:request.path }}{% querystring page=page_obj.next_page_number title_after=None %}">Next</a>
+      <a class="btn btn-sm btn-outline-secondary" href="{{ pagination_path|default:request.path }}{% querystring page=page_obj.paginator.num_pages title_after=None %}">Last</a>
     {% endif %}
   </div>
 </nav>

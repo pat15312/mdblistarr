@@ -1,5 +1,6 @@
 """Best-effort display metadata; never used to make lifecycle decisions."""
 import logging
+import time
 
 from django.db import transaction
 from django.db.models import Case, CharField, Value, When
@@ -9,10 +10,84 @@ from .models import (SonarrEpisodeSearchCandidate, RadarrMovieSearchCandidate,
                      SonarrCleanupCandidate, RadarrCleanupCandidate)
 
 logger = logging.getLogger(__name__)
+TITLE_LOOKUP_LIMIT = 25
+TITLE_LOOKUP_SECONDS = 20
 
 
 def safe_title(value):
     return ' '.join(sanitize_text(value).split())[:255] if isinstance(value, str) else ''
+
+
+def recover_missing_titles(product, target_id, external_ids):
+    """Explicit metadata-only action; never called by health rendering.
+
+    Use Arr's catalogue lookup so removed library records can still be named.
+    IDs come from the server-selected detail page, not submitted form fields.
+    """
+    from .arr import SonarrAPI, RadarrAPI
+
+    result = dict(recovered=0, updated=0, unresolved=0, failed=0, deferred=0, next_after=0)
+    ids = sorted({value for value in external_ids if type(value) is int and value > 0})
+    if not ids or not target_id:
+        return result
+    sonarr = product == 'sonarr'
+    if product not in ('sonarr', 'radarr'):
+        raise ValueError('Unsupported product')
+    key, field = ('tvdbId', 'tvdb_id') if sonarr else ('tmdbId', 'tmdb_id')
+    models = ((SonarrCleanupCandidate, SonarrEpisodeSearchCandidate) if sonarr else
+              (RadarrCleanupCandidate, RadarrMovieSearchCandidate))
+    try:
+        api = (SonarrAPI if sonarr else RadarrAPI)(instance_id=target_id)
+    except Exception:
+        result['failed'] = len(ids)
+        return result
+    deadline = time.monotonic() + TITLE_LOOKUP_SECONDS
+    for index, external_id in enumerate(ids):
+        if index >= TITLE_LOOKUP_LIMIT or time.monotonic() >= deadline:
+            result['deferred'] = len(ids) - index
+            result['next_after'] = ids[index - 1] if index else 0
+            break
+        try:
+            payload = api.lookup_display_metadata(external_id)
+            if isinstance(payload, dict) and payload.get('error'):
+                result['failed'] += 1
+                result['deferred'] = len(ids) - index - 1
+                result['next_after'] = external_id if result['deferred'] else 0
+                break  # Avoid repeatedly contacting an unavailable service.
+            # Catalogue items may have local id=0: only the exact TVDb/TMDb
+            # identity is authoritative for this display-only operation.
+            item = payload[0] if isinstance(payload, list) and len(payload) == 1 else None
+            title = safe_title(item.get('title')) if isinstance(item, dict) else ''
+            if (not title or type(item.get(key)) is not int or item[key] != external_id or
+                    any(item.get(name) for name in ('error', 'errorMessage', 'result'))):
+                result['unresolved'] += 1
+                continue
+            updated = 0
+            with transaction.atomic():
+                for model in models:
+                    updated += model.objects.filter(target_instance_id=target_id, target_title='',
+                        **{field: external_id}).update(target_title=title)
+            result['recovered'] += 1
+            result['updated'] += updated
+        except Exception:
+            result['failed'] += 1
+            result['deferred'] = len(ids) - index - 1
+            result['next_after'] = external_id if result['deferred'] else 0
+            break
+    return result
+
+
+def title_recovery_message(result):
+    message = (f"Recovered {result['recovered']} title(s); updated {result['updated']} local record(s). "
+               f"Unresolved: {result['unresolved']}. Failed: {result['failed']}. "
+               f"Deferred: {result['deferred']}.")
+    if result['unresolved']:
+        message += ' Arr did not return a unique matching title for some IDs.'
+    if result['failed']:
+        message += ' Could not retrieve or save metadata. Check the configured Arr connection and database.'
+    if result['deferred']:
+        message += ' Refresh again to process remaining titles.'
+    return message
 
 
 def _title_index(media, external_key):
