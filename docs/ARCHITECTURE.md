@@ -37,7 +37,7 @@ Paths below are relative to the repository root.
 | `mdblistarr/mdblistrr/sonarr_cleanup.py` | Exact episode-file candidate lifecycle and destructive verification |
 | `mdblistarr/mdblistrr/radarr_cleanup.py` | Exact movie-file candidate lifecycle, edition checks and destructive verification |
 | `mdblistarr/mdblistrr/health_details.py` | Paginated, local-only search and cleanup detail views |
-| `mdblistarr/mdblistrr/media_display.py` | Best-effort title refresh and historical candidate backfill from existing Arr snapshots, without lifecycle changes |
+| `mdblistarr/mdblistrr/media_display.py` | Best-effort title backfill from existing snapshots and explicit catalogue title recovery, without lifecycle changes |
 | `mdblistarr/mdblistrr/arr_health.py` | Best-effort reconciliation snapshots and local health aggregation |
 | `mdblistarr/mdblistrr/reconciliation_schedule.py` | Canonical due slots and persisted scheduling state independent of health |
 | `mdblistarr/mdblistrr/instance_config.py` | Shared role labels and queue-import requirement checks |
@@ -130,6 +130,8 @@ The locks use `fcntl.flock`, with reconciliation and schedule locks normally und
 ## Observability
 
 Reconciliation uses best-effort begin/finish wrappers, including guarded warning logging. A health-recording failure must not alter the core result or exception. Rendering `/health` reads local configuration, snapshots and lifecycle records without constructing external probes. Schedule correctness does not depend on health snapshots.
+
+Missing-name recovery is a separate staff-only, CSRF-protected POST action under the detail URL (`/titles`). GET detail rendering never calls it. It selects missing external IDs from the same paginated local detail data, performs bounded Arr catalogue GETs, and updates only blank `target_title` fields inside a per-ID transaction. Catalogue resources can have local `id=0`; exact TVDb/TMDb matching supplies display metadata only and is never reconciliation evidence. See [Operations](OPERATIONS.md#operational-health) for limits and failure reporting.
 
 The basic `/healthz` endpoint is separate. See [Operations](OPERATIONS.md#operational-health) for endpoint meaning, classifications and display limits.
 

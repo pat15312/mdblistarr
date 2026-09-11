@@ -1,6 +1,7 @@
 {% extends 'layout.html' %}
 {% block body %}
 <main class="container mb-5">
+  {% for message in messages %}<p class="alert alert-info" role="status">{{ message }}</p>{% endfor %}
   {% include 'health_detail_content.html' %}
   <a class="btn btn-outline-secondary mt-3" href="{% url 'arr_health_view' %}">Back to Arr Health</a>
 </main>

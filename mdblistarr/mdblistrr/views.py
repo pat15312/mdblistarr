@@ -47,10 +47,35 @@ def arr_health_view(request):
 @staff_member_required
 def arr_health_details_view(request, product, section, metric):
     from .health_details import build_health_details
+    from .arr_health import _safe_id
     context = build_health_details(product, section, metric, request.GET.get('page'))
+    context['title_refresh_after'] = _safe_id(request.GET.get('title_after')) or 0
     template = ('health_detail_content.html' if request.headers.get('X-Requested-With') == 'XMLHttpRequest'
                 else 'health_detail.html')
     return render(request, template, context)
+
+
+@require_POST
+@staff_member_required
+def arr_health_refresh_titles(request, product, section, metric):
+    from .health_details import build_health_details
+    from .arr_health import _safe_id
+    from .media_display import recover_missing_titles, title_recovery_message
+    context = build_health_details(product, section, metric, request.POST.get('page'))
+    after = _safe_id(request.POST.get('after')) or 0
+    ids = [external_id for external_id in context['missing_title_ids'] if external_id > after]
+    result = recover_missing_titles(product, context['target_id'], ids)
+    message = title_recovery_message(result)
+    page_number = context['page_obj'].number
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        context = build_health_details(product, section, metric, page_number)
+        context['title_refresh_message'] = message
+        context['title_refresh_after'] = result['next_after']
+        context['pagination_path'] = reverse('arr_health_details_view', args=[product, section, metric])
+        return render(request, 'health_detail_content.html', context)
+    messages.info(request, message)
+    return redirect(reverse('arr_health_details_view', args=[product, section, metric]) +
+                    f"?page={page_number}&title_after={result['next_after']}")
 
 
 SYNC_HOUR_CHOICES = [(str(h), f"{h:02d}:00 UTC") for h in range(24)]

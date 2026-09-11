@@ -8,15 +8,16 @@ document.addEventListener('DOMContentLoaded', () => {
   let trigger;
   let controller;
 
-  async function load(url) {
+  async function load(url, formData) {
     if (controller) controller.abort();
     const request = new AbortController();
     controller = request;
     title.textContent = 'Arr Health details';
-    body.textContent = 'Loading details…';
+    body.textContent = formData ? 'Refreshing missing titles…' : 'Loading details…';
     body.setAttribute('aria-busy', 'true');
     try {
       const response = await fetch(url, {
+        method: formData ? 'POST' : 'GET', body: formData,
         headers: {'X-Requested-With': 'XMLHttpRequest'}, signal: request.signal,
       });
       if (!response.ok || response.redirected) throw new Error('Unable to load');
@@ -31,13 +32,20 @@ document.addEventListener('DOMContentLoaded', () => {
       if (error.name === 'AbortError') return;
       body.textContent = 'Details could not be loaded. ';
       const link = document.createElement('a');
-      link.href = url;
+      link.href = formData ? url.replace(/\/titles$/, '') : url;
       link.textContent = 'Open details page';
       body.append(link);
     } finally {
       if (controller === request) body.removeAttribute('aria-busy');
     }
   }
+
+  body.addEventListener('submit', (event) => {
+    const form = event.target.closest('form[data-title-refresh]');
+    if (!form) return;
+    event.preventDefault();
+    load(form.action, new FormData(form));
+  });
 
   document.addEventListener('click', (event) => {
     const link = event.target.closest('a[data-health-detail], #health-details-body nav a');

@@ -34,7 +34,8 @@ def _media(candidate, sonarr, cleanup=False):
         identity += f' · {episodes}'
     if cleanup:
         identity += f" · File {candidate.episode_file_id if sonarr else candidate.movie_file_id}"
-    return {'title': title, 'identity': identity}
+    return {'title': title, 'identity': identity, 'external_id': external_id,
+            'title_missing': not safe_title(candidate.target_title)}
 
 
 def _timestamp(row, kind, category):
@@ -109,5 +110,8 @@ def build_health_details(product, section, metric, page_number=None):
             **_timestamp(row, kind, category),
         })
     page.object_list = entries
+    missing_title_ids = sorted({item['external_id'] for entry in entries for item in entry['media']
+                               if item['title_missing']})
     return {'title': f'{product.title()} - {section.title()} - {labels[metric]}',
-            'page_obj': page, 'section': section, 'metric': metric}
+            'page_obj': page, 'product': product, 'section': section, 'metric': metric,
+            'target_id': target_id, 'missing_title_ids': missing_title_ids}

@@ -1,5 +1,15 @@
 <h3 class="h5" data-detail-title tabindex="-1">{{ title }}</h3>
 <p class="small text-body-secondary">Current persisted state. Times include the configured timezone. Missing timestamps are shown as Unknown; record update times are not event times. Older records may have no stored title.</p>
+{% if title_refresh_message %}<p class="alert alert-info" role="status">{{ title_refresh_message }}</p>{% endif %}
+{% if missing_title_ids %}
+<form method="post" action="{% url 'arr_health_refresh_titles' product section metric %}" data-title-refresh class="mb-3">
+  {% csrf_token %}
+  <input type="hidden" name="page" value="{{ page_obj.number }}">
+  <input type="hidden" name="after" value="{{ title_refresh_after|default:0 }}">
+  <button type="submit" class="btn btn-outline-primary btn-sm">Refresh missing titles</button>
+  <p class="small text-body-secondary mt-2 mb-0">Look up missing names on this page through {{ product|title }} and save them locally. This also works for removed library items when their catalogue metadata is available. No reconciliation or file changes. Up to 25 distinct titles per refresh.</p>
+</form>
+{% endif %}
 {% if metric == 'needs_attention' %}<p class="small">This total counts conditions, not distinct titles. A candidate and its command can each contribute a condition.</p>{% elif section == 'search' %}<p class="small">Pending and retry/error totals count candidates (episodes for Sonarr, movies for Radarr). In-flight and failure/uncertainty totals count commands; a command may cover multiple items.</p>{% else %}<p class="small">Each entry represents one cleanup file candidate.</p>{% endif %}
 {% if page_obj %}
 <div class="table-responsive">

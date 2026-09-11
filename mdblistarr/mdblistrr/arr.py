@@ -13,6 +13,20 @@ def _api_headers(apikey):
 def _safe_error(prefix, exc):
     return f"{prefix}: {sanitize_text(exc)}"
 
+
+def _get_display_metadata(api, path, params):
+    """One bounded read for the explicit title-refresh action, with no retries."""
+    try:
+        response = api.connect.session.get(
+            f'{api.url}/api/v3/{path}', headers=_api_headers(api.apikey),
+            params=params, timeout=(3, 5), allow_redirects=False)
+        if not 200 <= response.status_code < 300:
+            return {'error': 'metadata_request_failed'}
+        return response.json()
+    except Exception:
+        # Do not expose response bodies, credentials, URLs or exception text.
+        return {'error': 'metadata_request_failed'}
+
 class SonarrAPI():
     def __init__(self, url=None, apikey=None, instance_id=None):
         self.connect = Connect()
@@ -78,6 +92,11 @@ class SonarrAPI():
             return json
         except Exception as e:
             return [{'result': f'Error connecting to Sonarr API: {sanitize_text(e)}'}]
+
+    def lookup_display_metadata(self, external_id):
+        if type(external_id) is not int or external_id <= 0:
+            return {'error': 'invalid_metadata_id'}
+        return _get_display_metadata(self, 'series/lookup', {'term': f'tvdb:{external_id}'})
 
     def get_episodes(self, series_id):
         """Fetch all episodes for a given series."""
@@ -265,6 +284,12 @@ class RadarrAPI():
             return json
         except Exception as e:
             return [{'result': f'Error connecting to Radarr API: {sanitize_text(e)}'}]
+
+    def lookup_display_metadata(self, external_id):
+        if type(external_id) is not int or external_id <= 0:
+            return {'error': 'invalid_metadata_id'}
+        result = _get_display_metadata(self, 'movie/lookup/tmdb', {'tmdbId': external_id})
+        return [result] if isinstance(result, dict) and not result.get('error') else result
 
     def get_movie(self, movie_id):
         if isinstance(movie_id, bool) or not isinstance(movie_id, int) or movie_id <= 0:
