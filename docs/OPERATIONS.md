@@ -80,7 +80,7 @@ Reconciliation recovers the scheduler's due heartbeat timestamp and persists slo
 - Changing interval discards incompatible saved slot state.
 - A successful manual forced run marks a slot serviced only when its timestamp exactly coincides with the interval boundary; other manual runs do not consume future scheduled work.
 
-Manual **Run reconciliation now** bypasses interval gating, but still respects enablement, role validation, locks and safety checks. Manual library sync bypasses its hour gate and scheduled random delay. These are authenticated POST actions, not health-page probes.
+Manual **Run reconciliation now** in each product's tab bypasses interval gating, but still respects enablement, role validation, locks and safety checks. Every reconciliation reads current library state directly from the configured Arr instances. The **Sync Radarr/Sonarr library to MDBList now** buttons in the **MDBList** tab upload library state to MDBList and bypass the daily sync hour gate and scheduled random delay. Library sync is independent of reconciliation. These are authenticated POST actions, not health-page probes.
 
 For implementation and lock scope, see [Architecture](ARCHITECTURE.md#scheduling-and-concurrency); regressions are in [schedule tests](../mdblistarr/mdblistrr/test_reconciliation_schedule.py).
 

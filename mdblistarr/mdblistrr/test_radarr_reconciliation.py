@@ -263,10 +263,15 @@ class RadarrFormUiManualTests(TestCase):
         self.assertLess(radarr_section.index('Missing-command grace period'), radarr_section.index('MoviesSearch commands:'))
         self.assertLess(radarr_section.index('MoviesSearch commands:'), radarr_section.index('Destructive cleanup safety:'))
         self.assertIn('alert alert-secondary py-2', radarr_section)
-        self.assertIn('Run Radarr library sync now', radarr_section)
+        mdblist_section = html.split('id="mdblist-pane"', 1)[1].split('id="radarr-pane"', 1)[0]
+        for product in ('Radarr', 'Sonarr'):
+            self.assertIn(f'Sync {product} library to MDBList now', mdblist_section)
+            self.assertIn(reverse(f'run_{product.lower()}_library_sync_now'), mdblist_section)
+        self.assertNotIn(reverse('run_radarr_library_sync_now'), radarr_section)
         sonarr_section = html.rsplit('On-Demand Reconciliation', 1)[1]
-        for text in ('When using a native Sonarr import list', 'Automatic Add', 'Monitor to None', 'Search for Missing Episodes', 'Monitor New Seasons', 'No New Seasons', 'EpisodeSearch commands:', 'Destructive cleanup safety:', 'Include specials in completeness checks', 'Run Sonarr reconciliation now', 'Run Sonarr library sync now'):
+        for text in ('When using a native Sonarr import list', 'Automatic Add', 'Monitor to None', 'Search for Missing Episodes', 'Monitor New Seasons', 'No New Seasons', 'EpisodeSearch commands:', 'Destructive cleanup safety:', 'Include specials in completeness checks', 'Run Sonarr reconciliation now'):
             self.assertIn(text, sonarr_section)
+        self.assertNotIn(reverse('run_sonarr_library_sync_now'), sonarr_section)
         self.assertLess(sonarr_section.index('Missing-command grace period'), sonarr_section.index('EpisodeSearch commands:'))
         self.assertLess(sonarr_section.index('EpisodeSearch commands:'), sonarr_section.index('Destructive cleanup safety:'))
         for form in (RadarrReconciliationForm(), SonarrReconciliationForm()):
