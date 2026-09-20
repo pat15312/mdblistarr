@@ -26,7 +26,10 @@
     <body>
         <div class="container">
             <div class="alert alert-dark" role="alert">
-            <h4 class="alert-heading">MDBListarr</h4>
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                <h4 class="alert-heading mb-0">MDBListarr</h4>
+                <button class="btn btn-outline-secondary btn-sm" type="button" id="btnSwitch">Toggle Dark Mode</button>
+            </div>
             <p>Companion app for mdblist.com for Radarr and Sonarr integration.</p>
             <hr>
             <p class="mb-0">Version: {% version %}</p>
@@ -63,11 +66,6 @@
 
         {% block body %}
         {% endblock %}
-        <div class="container">
-            <div class="d-grid gap-2 d-md-flex justify-content-md-end">
-            <button class="btn btn-dark shadow" id="btnSwitch">Toggle Dark Mode</button>
-            </div>
-        </div>
     
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js" integrity="sha384-w76AqPfDkMBDXo30jS1Sgez6pr3x5MlQ1ZAGC+nuZB+EYdgRZgiwxhTBTkF7CXvN" crossorigin="anonymous"></script>
         <script>
