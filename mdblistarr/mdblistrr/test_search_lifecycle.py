@@ -1,7 +1,11 @@
 from datetime import timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
+import json
+from requests import Response
 from django.test import TestCase
 from django.utils import timezone
+from .arr import SonarrAPI
 from .arr_health import _search_metrics
 from .models import (SonarrInstance, SonarrEpisodeSearchCandidate as Candidate,
     SonarrEpisodeSearchCommand as Command, SonarrEpisodeSearchCommandCandidate as Link)
@@ -360,6 +364,73 @@ class EpisodeSearchLifecycleTests(TestCase):
         api=FakeAPI(); api.individual[1]=self.resource(command_id=1,ids=(1,))
         mapped,failed,count=poll_episode_search_commands(api,self.target)
         self.assertFalse(failed); self.assertIn(1,mapped); self.assertEqual(count,COMMAND_FALLBACK_LIMIT); self.assertEqual(len(api.get_calls),COMMAND_FALLBACK_LIMIT)
+
+    def poll_http_response(self, status_code, payload):
+        """Exercise the real Sonarr wrapper and transport decoder, not FakeAPI."""
+        api = SonarrAPI(url='http://target', apikey='test-key')
+        response = Response()
+        response.status_code = status_code
+        response._content = json.dumps(payload).encode()
+        response.headers['content-type'] = 'application/json'
+        with patch.object(api, 'get_commands', return_value=[]), patch.object(
+                api.connect.session, 'get', return_value=response) as get:
+            result = poll_episode_search_commands(api, self.target)
+        get.assert_called_once()
+        self.assertEqual(get.call_args.args[0], 'http://target/api/v3/command/7')
+        return result
+
+    def test_json_404_fallback_reaches_independent_episode_evidence(self):
+        command = self.command()
+        mapped, failed, count = self.poll_http_response(404, {'message': 'NotFound'})
+        self.assertEqual((mapped, failed, count), ({}, False, 1))
+        counters, _, unsafe = reconcile_search_commands_for_series(
+            target_instance=self.target, target_series_id=20, command_map=mapped,
+            poll_failed=failed, target_episodes=[{'id': 1, 'hasFile': True}],
+            eligible_episode_ids=[1], now=self.now)
+        command.refresh_from_db()
+        self.assertEqual(command.status, 'completed')
+        self.assertEqual(counters['search_candidates_satisfied_by_file'], 1)
+        self.assertFalse(unsafe)
+
+    def test_json_404_without_evidence_stays_unavailable_after_grace(self):
+        command = self.command()
+        mapped, failed, _ = self.poll_http_response(404, {'message': 'NotFound'})
+        self.assertFalse(failed)
+        for now in (self.now, self.now + timedelta(hours=25)):
+            counters, _, unsafe = reconcile_search_commands_for_series(
+                target_instance=self.target, target_series_id=20, command_map=mapped,
+                poll_failed=failed, target_episodes=[{'id': 1, 'hasFile': False}],
+                eligible_episode_ids=[1], missing_grace_hours=24, now=now)
+            self.assertTrue(unsafe)
+            self.assertEqual(counters['search_command_poll_failures'], 0)
+        command.refresh_from_db()
+        candidate = Candidate.objects.get()
+        self.assertEqual(command.status, 'unavailable')
+        self.assertEqual((candidate.status, candidate.attempt_count), ('submitted', 1))
+        self.assertIsNone(candidate.retry_not_before)
+
+    def test_non_404_error_remains_a_poll_failure(self):
+        self.command()
+        for status_code in (401, 403, 500):
+            with self.subTest(status_code=status_code):
+                _, failed, count = self.poll_http_response(status_code, {'message': 'Unavailable'})
+                self.assertTrue(failed)
+                self.assertEqual(count, 1)
+        self.assertEqual(Candidate.objects.get().status, 'submitted')
+
+    def test_successful_http_fallback_still_reconciles_command(self):
+        command = self.command()
+        mapped, failed, count = self.poll_http_response(200, self.resource(status='completed'))
+        self.assertFalse(failed)
+        self.assertEqual(count, 1)
+        counters, _, unsafe = reconcile_search_commands_for_series(
+            target_instance=self.target, target_series_id=20, command_map=mapped,
+            poll_failed=failed, target_episodes=[{'id': 1, 'hasFile': False}],
+            eligible_episode_ids=[1], now=self.now)
+        command.refresh_from_db()
+        self.assertEqual(command.status, 'completed')
+        self.assertEqual(counters['search_commands_completed'], 1)
+        self.assertFalse(unsafe)
 
     def test_fallback_rotates_fairly_across_twenty_five_absent_commands(self):
         for i in range(1,26): self.command(command_id=i,episode_ids=(i,))
