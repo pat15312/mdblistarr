@@ -215,7 +215,8 @@ class SonarrAPI():
         if isinstance(command_id, bool) or not isinstance(command_id, int) or command_id <= 0:
             return {'error': 'command id must be a positive integer'}
         try:
-            return self.connect.get_json(f"{self.url}/api/v3/command/{command_id}", headers=_api_headers(self.apikey))
+            # Preserve 404 so polling recognises missing command history.
+            return self.connect.get_json_with_status(f"{self.url}/api/v3/command/{command_id}", headers=_api_headers(self.apikey))
         except Exception:
             return {'errorMessage': sanitize_text(traceback.format_exc())}
 
