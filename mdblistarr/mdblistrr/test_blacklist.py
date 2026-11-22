@@ -347,6 +347,33 @@ class TitleLifecycleTests(TestCase):
                 TitleCleanupEvent.objects.all().delete()
                 TitleCleanupCandidate.objects.all().delete()
 
+    def test_membership_removed_during_uncertainty_cancels_remaining_stages_after_recovery(self):
+        for product in ('sonarr', 'radarr'):
+            for restored_before_recovery in (False, True):
+                with self.subTest(product=product, restored=restored_before_recovery):
+                    candidate = self.setup_product(product)
+                    self.api.uncertain = True
+                    self.assertEqual(self.process().attempts, 1)
+                    original_membership = self.membership
+                    self.membership = BlacklistEvidence(configuration_signature(), {}, timezone.now())
+                    maintain_candidates(product, self.target, [self.api.row], self.membership, 0)
+                    # An unavailable original result cannot erase the observed cancellation.
+                    self.assertEqual(self.process().attempts, 0)
+                    if restored_before_recovery:
+                        self.membership = original_membership
+                        maintain_candidates(product, self.target, [self.api.row], self.membership, 0)
+                    self.api.files = []
+                    self.api.uncertain = False
+                    self.assertEqual(self.process().attempts, 0)
+                    candidate.refresh_from_db()
+                    self.assertEqual(candidate.status, 'cancelled')
+                    self.membership = original_membership
+                    maintain_candidates(product, self.target, [self.api.row], self.membership, 0)
+                    self.assertEqual(self.process().attempts, 0)
+                    self.assertEqual(len(self.api.deleted), 1)
+                    TitleCleanupEvent.objects.all().delete()
+                    TitleCleanupCandidate.objects.all().delete()
+
     def test_removed_blacklist_requalifies_duplicate_with_new_grace(self):
         from .sonarr_cleanup import process_cleanup_for_series
         from .radarr_cleanup import process_radarr_cleanup
