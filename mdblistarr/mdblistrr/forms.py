@@ -39,7 +39,7 @@ class RadarrReconciliationForm(forms.Form):
     cleanup_enabled = forms.BooleanField(label='Enable automatic duplicate-file cleanup', required=False)
     cleanup_dry_run = forms.BooleanField(label='Dry-run cleanup', required=False, initial=True)
     cleanup_grace_hours = forms.ChoiceField(label='Cleanup grace period', initial='24', required=False, choices=[('0','Immediately'),('1','1 hour'),('6','6 hours'),('12','12 hours'),('24','24 hours'),('48','48 hours'),('168','7 days')])
-    cleanup_max_deletions_per_run = forms.IntegerField(label='Maximum file deletions per reconciliation run', min_value=1, max_value=500, initial=25, required=False)
+    cleanup_max_deletions_per_run = forms.IntegerField(label='Maximum cleanup deletion attempts per reconciliation run', min_value=1, max_value=500, initial=25, required=False)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -105,7 +105,7 @@ class SonarrReconciliationForm(forms.Form):
     cleanup_enabled = forms.BooleanField(label='Enable automatic duplicate-file cleanup', required=False)
     cleanup_dry_run = forms.BooleanField(label='Dry-run cleanup', required=False)
     cleanup_grace_hours = forms.ChoiceField(label='Cleanup grace period', choices=[('0','Immediately'),('1','1 hour'),('6','6 hours'),('12','12 hours'),('24','24 hours'),('48','48 hours'),('168','7 days')])
-    cleanup_max_deletions_per_run = forms.IntegerField(label='Maximum file deletions per reconciliation run', min_value=1, max_value=500)
+    cleanup_max_deletions_per_run = forms.IntegerField(label='Maximum cleanup deletion attempts per reconciliation run', min_value=1, max_value=500)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
