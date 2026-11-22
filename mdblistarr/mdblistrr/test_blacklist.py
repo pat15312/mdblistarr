@@ -13,7 +13,7 @@ from django.utils import timezone
 from .blacklist import (BlacklistError, BlacklistEvidence, ListClient, list_path,
     add_source, refresh_blacklists, configuration_signature)
 from .models import (BlacklistSource, Preferences, TitleCleanupCandidate, TitleCleanupEvent,
-    SonarrInstance, RadarrInstance, SonarrCleanupCandidate, SonarrEpisodeSearchCommand)
+    SonarrInstance, RadarrInstance, SonarrCleanupCandidate, RadarrCleanupCandidate, SonarrEpisodeSearchCommand)
 from .title_cleanup import maintain_candidates, process_title_cleanup
 from .sonarr_reconcile import calculate_episode_monitoring
 from .radarr_reconcile import calculate_movie_monitoring
@@ -253,6 +253,136 @@ class TitleLifecycleTests(TestCase):
         with patch('mdblistrr.title_cleanup.refresh_blacklists', return_value=self.membership):
             return process_title_cleanup(product=self.product, target=self.target, api=self.api,
                 membership=self.membership, remaining_budget=budget)
+
+    def duplicate(self, file_id=20, **overrides):
+        sonarr = self.product == 'sonarr'
+        model = SonarrCleanupCandidate if sonarr else RadarrCleanupCandidate
+        identity = ({'tvdb_id': 200, 'target_series_id': 10, 'episode_file_id': file_id,
+                     'linked_episode_keys': [[1, 1]]} if sonarr else {
+                     'tmdb_id': 100, 'target_movie_id': 10, 'movie_file_id': file_id,
+                     'source_movie_id': 1, 'source_movie_file_id': 3})
+        old = timezone.now() - timedelta(days=3)
+        values = dict(target_instance=self.target, status='ready', first_eligible_at=old,
+                      last_confirmed_at=old, ready_at=old, **identity)
+        values.update(overrides)
+        return model.objects.create(**values)
+
+    def test_blacklist_supersedes_only_exact_active_duplicate_candidates(self):
+        for product in ('sonarr', 'radarr'):
+            with self.subTest(product=product):
+                candidate = self.setup_product(product)
+                duplicate = self.duplicate(last_error='pre-delete validation unavailable')
+                original = duplicate.first_eligible_at, duplicate.last_confirmed_at
+                historical = self.duplicate(21, status='deleted', deleted_at=timezone.now())
+                mismatch = self.duplicate(22, **({'tvdb_id': 201} if product == 'sonarr' else {'tmdb_id': 101}))
+                other_title = self.duplicate(23, **({'target_series_id': 11} if product == 'sonarr' else {'target_movie_id': 11}))
+                other_target = type(self.target).objects.create(name='Other', url='http://other.invalid',
+                    apikey='other', is_ondemand_target=True, is_library_source=False)
+                other_instance = self.duplicate(24, target_instance=other_target)
+                maintain_candidates(product, self.target, [self.api.row], self.membership, 0)
+                duplicate.refresh_from_db()
+                self.assertEqual((duplicate.status, duplicate.ready_at, duplicate.reason), ('cancelled', None, 'permanent_duplicate'))
+                self.assertEqual((duplicate.first_eligible_at, duplicate.last_confirmed_at), original)
+                self.assertEqual(duplicate.last_error, 'pre-delete validation unavailable')
+                event = candidate.events.get(outcome='permanent_duplicate_candidates_superseded')
+                self.assertEqual(event.evidence, {'candidate_ids': [duplicate.pk], 'uncertain_file_ids': []})
+                for row, status in ((historical, 'deleted'), (mismatch, 'ready'), (other_title, 'ready'), (other_instance, 'ready')):
+                    row.refresh_from_db()
+                    self.assertEqual(row.status, status)
+                # The duplicate no longer inflates Ready; title history remains one record.
+                self.assertEqual(self.process().attempts, 2)
+                duplicate.refresh_from_db()
+                self.assertEqual(duplicate.status, 'cancelled')
+                candidate.refresh_from_db()
+                self.assertEqual(candidate.status, 'deleted')
+                details = build_health_details(product, 'cleanup', 'deleted')
+                self.assertEqual(details['page_obj'].paginator.count, 2)
+                TitleCleanupEvent.objects.all().delete()
+                TitleCleanupCandidate.objects.all().delete()
+
+    def test_superseded_uncertain_duplicate_delete_is_never_repeated(self):
+        for product, error in (('sonarr', 'cleanup delete uncertain: api=timeout'),
+                               ('radarr', 'post-delete verification could not prove exact file absent')):
+            with self.subTest(product=product):
+                candidate = self.setup_product(product)
+                duplicate = self.duplicate(last_error=error)
+                maintain_candidates(product, self.target, [self.api.row], self.membership, 0)
+                self.assertEqual(self.process().attempts, 0)
+                candidate.refresh_from_db()
+                self.assertIn('previous duplicate-file deletion', candidate.last_error)
+                duplicate.refresh_from_db()
+                self.assertEqual(duplicate.last_error, error)
+                # Persisted audit evidence still fences the file after the legacy error changes.
+                duplicate.last_error = ''
+                duplicate.save()
+                self.assertEqual(self.process().attempts, 0)
+                self.api.files = []
+                self.api.fail_reads = True
+                self.assertEqual(self.process().attempts, 0)
+                self.api.fail_reads = False
+                self.assertEqual(self.process().attempts, 1)
+                self.assertEqual(self.api.deleted, [(self.api.resource + '/10',
+                    {'deleteFiles': 'false', 'addImportExclusion': 'false'})])
+                TitleCleanupEvent.objects.all().delete()
+                TitleCleanupCandidate.objects.all().delete()
+
+    def test_supersession_audit_cannot_shadow_original_crashed_request(self):
+        for product in ('sonarr', 'radarr'):
+            with self.subTest(product=product):
+                candidate = self.setup_product(product)
+                self.api.uncertain = True
+                self.assertEqual(self.process().attempts, 1)
+                candidate.refresh_from_db()
+                candidate.status = 'files_submitting'  # crash before uncertainty classification
+                candidate.save()
+                self.duplicate()
+                maintain_candidates(product, self.target, [self.api.row], self.membership, 0)
+                self.api.files = []
+                self.assertEqual(self.process().attempts, 0)
+                candidate.refresh_from_db()
+                self.assertEqual(candidate.status, 'files_removed')
+                self.assertEqual(len(self.api.deleted), 1)
+                self.assertEqual(candidate.events.get(outcome='permanent_duplicate_candidates_superseded').phase,
+                    'duplicate_superseded')
+                TitleCleanupEvent.objects.all().delete()
+                TitleCleanupCandidate.objects.all().delete()
+
+    def test_removed_blacklist_requalifies_duplicate_with_new_grace(self):
+        from .sonarr_cleanup import process_cleanup_for_series
+        from .radarr_cleanup import process_radarr_cleanup
+        from .test_radarr_cleanup import movie
+        for product in ('sonarr', 'radarr'):
+            with self.subTest(product=product):
+                candidate = self.setup_product(product)
+                duplicate = self.duplicate()
+                maintain_candidates(product, self.target, [self.api.row], self.membership, 0)
+                empty = BlacklistEvidence(configuration_signature(), {}, timezone.now())
+                maintain_candidates(product, self.target, [self.api.row], empty, 24)
+                candidate.refresh_from_db()
+                self.assertEqual(candidate.status, 'cancelled')
+                native = Mock()
+                before = timezone.now()
+                if product == 'sonarr':
+                    episode = {'seasonNumber': 1, 'episodeNumber': 1, 'hasFile': True,
+                               'monitored': False, 'airDateUtc': '2026-01-01T00:00:00Z'}
+                    source = [dict(episode, id=1, episodeFileId=3)]
+                    target = [dict(episode, id=30, episodeFileId=20)]
+                    process_cleanup_for_series(target_instance=self.target, tvdb_id=200, target_series_id=10,
+                        source_episodes=source, target_episodes=target, stats=calculate_episode_monitoring(source, target),
+                        source_api=Mock(), target_api=native, source_series_id=1,
+                        cleanup_enabled=True, dry_run=False, grace_hours=24)
+                else:
+                    process_radarr_cleanup(target_instance=self.target, source_movies=[movie(1, 100, 3)],
+                        target_movies=[movie(10, 100, 20)], confirmed_unmonitored_ids={10}, monitoring_blocked_ids=set(),
+                        source_api=Mock(), target_api=native, cleanup_enabled=True, dry_run=False, grace_hours=24)
+                duplicate.refresh_from_db()
+                self.assertEqual(duplicate.status, 'pending')
+                self.assertGreaterEqual(duplicate.first_eligible_at, before)
+                self.assertIsNone(duplicate.ready_at)
+                self.assertIsNone(duplicate.cancelled_at)
+                self.assertEqual(native.method_calls, [])
+                TitleCleanupEvent.objects.all().delete()
+                TitleCleanupCandidate.objects.all().delete()
 
     def test_configuration_and_native_identity_rechecked_after_lock_wait(self):
         from contextlib import contextmanager

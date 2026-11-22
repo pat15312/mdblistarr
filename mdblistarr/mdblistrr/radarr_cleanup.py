@@ -231,7 +231,7 @@ def process_radarr_cleanup(*, target_instance, source_movies, target_movies, con
     if not cleanup_enabled: return counters
     if dry_run:
         for cand in ready:
-            if cand.id not in lifecycle_blocked_candidate_ids and cand.target_movie_id in confirmed_unmonitored_ids and not search_lifecycle_unsafe(target_instance,cand.target_movie_id):
+            if cand.id not in lifecycle_blocked_candidate_ids and cand.target_movie_id in confirmed_unmonitored_ids and cand.target_movie_id not in monitoring_blocked_ids and not search_lifecycle_unsafe(target_instance,cand.target_movie_id):
                 counters.cleanup_would_delete+=1
         return counters
     for index,cand in enumerate(ready):

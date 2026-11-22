@@ -18,7 +18,8 @@ from django.utils.dateparse import parse_datetime
 
 from .blacklist import BlacklistError, digest, positive_id, refresh_blacklists
 from .models import (Preferences, SonarrInstance, RadarrInstance, TitleCleanupCandidate,
-    TitleCleanupEvent, SonarrEpisodeSearchCommand, RadarrMovieSearchCommand)
+    TitleCleanupEvent, SonarrEpisodeSearchCommand, RadarrMovieSearchCommand,
+    SonarrCleanupCandidate, RadarrCleanupCandidate)
 from .media_display import safe_title
 from .cleanup_lock import configuration_lock, RequestNotSent
 
@@ -210,6 +211,41 @@ def transition(candidate, status, outcome, evidence=None):
         TitleCleanupEvent.objects.create(candidate=candidate, phase=status, outcome=outcome, evidence=evidence or {})
 
 
+@transaction.atomic
+def supersede_duplicate_candidates(candidate):
+    """Cancel future file work without erasing a previous uncertain request."""
+    sonarr = candidate.product == 'sonarr'
+    model = SonarrCleanupCandidate if sonarr else RadarrCleanupCandidate
+    identity = ({'target_series_id': candidate.target_media_id, 'tvdb_id': candidate.external_id}
+                if sonarr else {'target_movie_id': candidate.target_media_id, 'tmdb_id': candidate.external_id})
+    rows = list(model.objects.filter(target_instance_id=candidate.target_instance_id,
+        reason='permanent_duplicate', status__in=('pending', 'ready'), **identity))
+    if not rows:
+        return
+    uncertain = []
+    for row in rows:
+        if row.last_error.startswith(('cleanup post-delete verification uncertain',
+                'cleanup delete uncertain', 'post-delete verification could not prove exact file absent')):
+            uncertain.append(row.episode_file_id if sonarr else row.movie_file_id)
+    model.objects.filter(pk__in=[row.pk for row in rows]).update(
+        status='cancelled', cancelled_at=timezone.now(), ready_at=None, updated_at=timezone.now())
+    TitleCleanupEvent.objects.create(candidate=candidate, phase='duplicate_superseded',
+        outcome='permanent_duplicate_candidates_superseded', evidence={
+            'candidate_ids': [row.pk for row in rows], 'uncertain_file_ids': sorted(set(uncertain))})
+
+
+def verify_superseded_requests(candidate, api, files):
+    """Changing removal reason must never retry an ambiguous file DELETE."""
+    uncertain = set()
+    for event in candidate.events.filter(outcome='permanent_duplicate_candidates_superseded'):
+        uncertain.update(event.evidence['uncertain_file_ids'])
+    resource = 'episodefile' if candidate.product == 'sonarr' else 'moviefile'
+    for file_id in sorted(uncertain):
+        if (any(row['id'] == file_id for row in files)
+                or read(api, f'{resource}/{file_id}', allow_absent=True) is not None):
+            raise CleanupDeferred('A previous duplicate-file deletion is unverified; it will not be repeated.')
+
+
 def maintain_candidates(product, target, titles, membership, grace_hours):
     """No network or writes to Arr; preserve historical candidates and original intent."""
     if not membership.current():
@@ -246,6 +282,7 @@ def maintain_candidates(product, target, titles, membership, grace_hours):
             transition(candidate, 'pending', 'membership_restored_new_grace')
         if candidate.status in TERMINAL:
             continue
+        supersede_duplicate_candidates(candidate)
         candidate.last_confirmed_at = now
         candidate.source_ids = membership.members[(product, external_id)]
         candidate.target_title = safe_title(row.get('title')) or candidate.target_title
@@ -315,6 +352,7 @@ def process_title_cleanup(*, product, target, api, membership, remaining_budget,
             if identity['external_id'] != candidate.external_id or current['monitored']:
                 raise CleanupDeferred('Exact title identity or unmonitored state changed.')
             files = file_inventory(product, api, identity)
+            verify_superseded_requests(candidate, api, files)
             changed = (identity != candidate.evidence.get('media')
                        or ('files' in candidate.evidence and files != candidate.evidence['files']))
             if changed:
@@ -370,6 +408,7 @@ def process_title_cleanup(*, product, target, api, membership, remaining_budget,
                     raise CleanupDeferred('Target changed immediately before deletion.')
                 if file_inventory(product, api, identity) != files:
                     raise CleanupDeferred('Files changed immediately before deletion.')
+                verify_superseded_requests(candidate, api, files)
                 activity_safe(product, api, target, candidate.target_media_id)
                 if files:
                     config = read(api, 'config/mediamanagement')

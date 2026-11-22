@@ -28,6 +28,8 @@ Failed, partial, malformed or conflicting responses never become empty lists. Th
 
 Whole-title cleanup has a related persistent candidate/event model because permanent-source file identities do not apply. Its reason is `blacklisted`. It retains the target product, instance fingerprint, native and external title IDs, title/path/creation identity, exact file identities, grace timestamps and original request history. No permanent evidence is fabricated.
 
+An exact matching pending/ready duplicate-file candidate is cancelled when blacklist cleanup takes responsibility for the title. Its original reason, identities and error evidence remain intact, with a supersession event on the title candidate. A previous uncertain file DELETE blocks blacklist removal until that exact file is independently verified absent. Removing blacklist membership lets normal duplicate reconciliation qualify the file again with a new grace period.
+
 Before live work, validate the target's real storage topology. Native file removal must operate on the intended On-Demand library files or file symlinks. Directory symlinks, mounts that turn unlink into deletion of retained remote objects, or unknown storage semantics require deferral and operator investigation. MDBListarr does not inspect or manage external NzbDAV/InfiniDysk/rclone objects. Generic Arr API evidence cannot certify the underlying filesystem.
 
 The application deliberately does **not** issue recursive title deletion with `deleteFiles=true`. Sonarr/Radarr can remove the catalogue record before asynchronous folder deletion completes; folder traversal may have wider effects on directory links. Instead it:

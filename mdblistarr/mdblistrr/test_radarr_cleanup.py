@@ -55,6 +55,10 @@ class CandidateLifecycleTests(TestCase):
         defaults=dict(target_instance=self.target,source_movies=[self.source_movie],target_movies=[self.target_movie],
             confirmed_unmonitored_ids={2},monitoring_blocked_ids=set(),source_api=Mock(),target_api=Mock(),grace_hours=24,max_deletions=25)
         defaults.update(kw); return process_radarr_cleanup(**defaults)
+    def test_dry_run_excludes_monitoring_blocked_ready_candidate(self):
+        self.cleanup(grace_hours=0)
+        result = self.cleanup(cleanup_enabled=True, dry_run=True, grace_hours=0, monitoring_blocked_ids={2})
+        self.assertEqual(result.cleanup_would_delete, 0)
     def test_display_metadata_refresh_preserves_pending_and_ready_evidence(self):
         from dataclasses import fields
         from .radarr_cleanup import CleanupEvidence
