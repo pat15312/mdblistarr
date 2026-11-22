@@ -1,0 +1,36 @@
+<div class="tab-pane fade {% if active_tab == 'blacklist' %}show active{% endif %}" id="blacklist-pane" role="tabpanel" aria-labelledby="blacklist-tab" tabindex="0">
+  <h3>Blacklist <small class="text-muted">Configuration Options</small></h3>
+  <p>Use MDBList lists to stop monitoring and searching for unwanted titles already in your On Demand libraries. Your existing MDBList connection is used. Permanent libraries and MDBList discovery lists are unchanged.</p>
+  <form method="post" action="{% url 'configure_blacklist' %}" class="mb-4">
+    {% csrf_token %}<input type="hidden" name="action" value="add">
+    <label for="blacklist-reference" class="form-label">MDBList list URL or numeric ID</label>
+    <div class="d-flex flex-wrap gap-2">
+      <input id="blacklist-reference" name="list_reference" type="text" maxlength="512" required class="form-control" style="max-width:40rem" aria-describedby="blacklist-reference-help">
+      <button class="btn btn-primary" type="submit">Add blacklist</button>
+    </div>
+    <p id="blacklist-reference-help" class="form-text">Public, owned private and Unlisted share links are supported. Mixed movie and TV lists are matched by TMDb and TVDb identity. Up to 20 sources.</p>
+  </form>
+  <div class="table-responsive">
+    <table class="table align-middle">
+      <caption>Configured blacklist sources. Counts describe the last complete successful snapshot.</caption>
+      <thead><tr><th scope="col">List / ID</th><th scope="col">Movies / series</th><th scope="col">Last successful refresh</th><th scope="col">Refresh status</th><th scope="col">Action</th></tr></thead>
+      <tbody>{% for source in blacklist_sources %}<tr>
+        <td>{{ source.name }}<br><small>{{ source.list_id }}</small></td>
+        <td>{{ source.movie_count }} movies / {{ source.series_count }} series</td>
+        <td>{% if source.last_success_at %}{{ source.last_success_at|date:"Y-m-d H:i:s T" }}{% else %}Never{% endif %}</td>
+        <td>{% if source.last_error %}<span class="text-danger">{{ source.last_error }}</span><br><small>Last successful snapshot retained; deletion is blocked until fresh verification.</small>{% else %}Last refresh succeeded{% endif %}</td>
+        <td><form method="post" action="{% url 'configure_blacklist' %}">{% csrf_token %}<input type="hidden" name="action" value="remove"><input type="hidden" name="source_id" value="{{ source.pk }}"><button class="btn btn-sm btn-outline-danger" type="submit" aria-label="Remove {{ source.name }} from blacklist configuration">Remove</button></form></td>
+      </tr>{% empty %}<tr><td colspan="5">No blacklist sources configured.</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  <form method="post" action="{% url 'configure_blacklist' %}" class="mb-4">{% csrf_token %}<input type="hidden" name="action" value="refresh"><button type="submit" class="btn btn-outline-secondary">Refresh lists now</button></form>
+  <h4 class="h5">Automatic cleanup</h4>
+  <p>Blacklisted titles remain excluded from reconciliation monitoring and searches even when removal is disabled. Dry run evaluates candidates without deleting files or catalogue entries. Each product must have reconciliation enabled.</p>
+  <form method="post" action="{% url 'configure_blacklist' %}" class="mb-4">
+    {% csrf_token %}<input type="hidden" name="action" value="settings">
+    {% for field in blacklist_form %}<div class="mb-3">{{ field }} {{ field.label_tag }}{{ field.errors }}</div>{% endfor %}
+    <p class="form-text">Whole-title cleanup removes associated media files through Arr, then removes the movie or series catalogue entry. It shares each product's existing deletion-attempt cap with duplicate cleanup. Empty folders and unrelated sidecar files are left in place. Unsafe activity or Arr deletion settings defer removal; see Arr Health for the reason.</p>
+    <button type="submit" class="btn btn-success">Save Blacklist Configuration</button>
+  </form>
+  <p>Use <a href="{% url 'arr_health_view' %}">Arr Health</a> to inspect pending titles, blocked removals and deletion history. Removing a title from all configured lists cancels pending removal and allows normal reconciliation to resume. Previously deleted titles are not restored automatically.</p>
+</div>

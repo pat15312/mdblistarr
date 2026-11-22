@@ -422,3 +422,7 @@ Changes to any of the following should be treated as behavioural/safety changes 
 - post-delete verification;
 - edition handling;
 - health classification or health's zero-network contract.
+
+## Blacklist title cleanup
+
+[Blacklist cleanup](BLACKLIST.md) is a separately configured removal reason alongside permanent duplication. Verified blacklist membership overrides ordinary episode/season/series and movie monitoring/search eligibility, including target-only titles. It does not require permanent ownership. It uses a related whole-title candidate and staged native file/catalogue removal with persistent original intent, fresh membership, exact target validation and the existing per-product attempt budget. Permanent-duplicate file candidates and their eligibility contracts remain unchanged.

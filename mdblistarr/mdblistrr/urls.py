@@ -2,10 +2,12 @@ from django.urls import path
 from .views import home_view
 from . import views
 from .log import log_view
+from .blacklist_views import configure_blacklist
 
 urlpatterns = [
     path('setup/', views.setup_view, name='setup'),
     path('', home_view, name='home_view'),
+    path('blacklist/configure', configure_blacklist, name='configure_blacklist'),
     path('health', views.arr_health_view, name='arr_health_view'),
     path('health/<str:product>/<str:section>/<str:metric>', views.arr_health_details_view, name='arr_health_details_view'),
     path('health/<str:product>/<str:section>/<str:metric>/titles', views.arr_health_refresh_titles, name='arr_health_refresh_titles'),

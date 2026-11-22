@@ -23,8 +23,12 @@
         <li class="nav-item" role="presentation">
             <button class="nav-link {% if active_tab == 'sonarr' %}active{% endif %}" id="sonarr-tab" data-bs-toggle="tab" data-bs-target="#sonarr-pane" type="button" role="tab" aria-controls="sonarr-pane" aria-selected="{% if active_tab == 'sonarr' %}true{% else %}false{% endif %}">Sonarr</button>
         </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link {% if active_tab == 'blacklist' %}active{% endif %}" id="blacklist-tab" data-bs-toggle="tab" data-bs-target="#blacklist-pane" type="button" role="tab" aria-controls="blacklist-pane" aria-selected="{% if active_tab == 'blacklist' %}true{% else %}false{% endif %}">Blacklist</button>
+        </li>
     </ul>
     <div class="tab-content pt-3" id="configTabsContent">
+        {% include 'includes/blacklist_config.html' %}
         <div class="tab-pane fade {% if active_tab == 'mdblist' %}show active{% endif %}" id="mdblist-pane" role="tabpanel" aria-labelledby="mdblist-tab" tabindex="0">
             <p></p>
             <h3>MDBList <small class="text-muted">Configuration Options</small></h3>

@@ -10,11 +10,11 @@
   <p class="small text-body-secondary mt-2 mb-0">Look up missing names on this page through {{ product|title }} and save them locally. This also works for removed library items when their catalogue metadata is available. No reconciliation or file changes. Up to 25 distinct titles per refresh.</p>
 </form>
 {% endif %}
-{% if metric == 'needs_attention' %}<p class="small">This total counts conditions, not distinct titles. A candidate and its command can each contribute a condition.</p>{% elif section == 'search' %}<p class="small">Pending and retry/error totals count candidates (episodes for Sonarr, movies for Radarr). In-flight and failure/uncertainty totals count commands; a command may cover multiple items.</p>{% else %}<p class="small">Each entry represents one cleanup file candidate.</p>{% endif %}
+{% if metric == 'needs_attention' %}<p class="small">This total counts conditions, not distinct titles. A candidate and its command can each contribute a condition.</p>{% elif section == 'search' %}<p class="small">Pending and retry/error totals count candidates (episodes for Sonarr, movies for Radarr). In-flight and failure/uncertainty totals count commands; a command may cover multiple items.</p>{% else %}<p class="small">Each entry is one file or whole-title cleanup candidate, labelled by reason and action. The state shows whether the action completed; pending actions have not completed.</p>{% endif %}
 {% if page_obj %}
 <div class="table-responsive">
 <table class="table table-sm align-middle">
-  <thead><tr><th scope="col">Record / state</th><th scope="col">Movie / TV show</th><th scope="col">Relevant date/time</th></tr></thead>
+  <thead><tr><th scope="col">Record / state</th><th scope="col">Movie / TV show</th>{% if section == 'cleanup' %}<th scope="col">Reason</th><th scope="col">Action / outcome</th>{% endif %}<th scope="col">Relevant date/time</th></tr></thead>
   <tbody>
   {% for entry in page_obj %}
     <tr>
@@ -23,6 +23,7 @@
         {% for item in entry.media %}<div class="mb-2"><strong>{{ item.title }}</strong><br><span class="small text-body-secondary">{{ item.identity }}</span></div>{% empty %}No linked media metadata available.{% endfor %}
         {% if entry.media_truncated %}<p class="small">Showing first {{ entry.media|length }} of {{ entry.media_count }} linked items.</p>{% endif %}
       </td>
+      {% if section == 'cleanup' %}<td>{{ entry.reason }}</td><td>{{ entry.action }}<br>{{ entry.status }}{% if entry.outcome %}<br>{{ entry.outcome }}{% endif %}</td>{% endif %}
       <td>{{ entry.timestamp_label }}<br>{% if entry.timestamp %}{{ entry.timestamp|date:"Y-m-d H:i:s T" }}{% else %}Unknown{% endif %}</td>
     </tr>
   {% endfor %}

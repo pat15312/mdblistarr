@@ -39,7 +39,7 @@ A complete stolen backup containing both database and encryption key can expose 
 
 ## Reconciliation and destructive boundaries
 
-Permanent/library sources must remain read-only from reconciliation. Controlled monitoring, searches and exact duplicate-file deletion belong on On-Demand targets. Cleanup is not a retention, pruning or filesystem-management service. NzbDAV and other download-side components remain outside this boundary.
+Permanent/library sources must remain read-only from reconciliation. Controlled monitoring, searches and exact duplicate-file and configured blacklist title deletion belong on On-Demand targets. Cleanup is not a retention, pruning or filesystem-management service. NzbDAV and other download-side components remain outside this boundary.
 
 Destructive actions require stronger proof: stable exact target-file identity, a persisted grace period, immediate revalidation and post-delete verification, with bounded attempts. All linked Sonarr episodes must satisfy duplicate conditions. Radarr edition compatibility is additional evidence beyond same-TMDB identity. Preserve product-specific safeguards described in [Arr behaviour](ARR_BEHAVIOUR.md).
 
@@ -80,3 +80,7 @@ Use generic or synthetic examples. Clearly fake test credentials are acceptable.
 Changes to authentication, secrets, transport, proxy handling, searches or cleanup should identify the trust introduced, authoritative evidence, possible duplicate side effects, source-write risk, destructive identity and recovery implications. Test both allowed and blocked cases using the [development workflow](DEVELOPMENT.md).
 
 Keep dependencies current and review useful upstream security fixes. Rebuild images after relevant dependency/base-image changes. Application tests and the current container smoke test do not constitute a dependency vulnerability scan or a complete host-security assessment.
+
+## Blacklist boundary
+
+[Blacklist](BLACKLIST.md) accepts only supported HTTPS MDBList paths or numeric IDs; production membership uses the authenticated API with bounded requests and no redirects. Share paths are encrypted and included in startup secret validation. Failed or conflicting evidence blocks decisions. Staff authentication and CSRF protect configuration POSTs, and rendering reads persisted state only. Whole-title cleanup never issues recursive `deleteFiles=true` or direct filesystem operations; it requires fresh membership and native evidence, preserves original intent and never repeats uncertain requests.

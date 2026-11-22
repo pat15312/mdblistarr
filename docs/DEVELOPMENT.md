@@ -101,6 +101,7 @@ Start with focused tests while iterating, then run the full application suite fo
 | Best-effort health integration and core-result preservation | `test_arr_health_reconciliation` |
 | Due-slot persistence, delay and lock contention | `test_reconciliation_schedule` |
 | Cleanup summaries and bounded output | `test_cleanup_logging` |
+| Blacklist API, identity, staged removal, mutation guards and Health | `test_blacklist` |
 | Retained upstream compatibility | `test_upstream_sync` |
 
 For example:

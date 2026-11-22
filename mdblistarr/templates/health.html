@@ -7,6 +7,9 @@
     <span class="badge fs-6 {% if health.overall == 'healthy' %}text-bg-success{% elif health.overall == 'error' %}text-bg-danger{% elif health.overall == 'attention' %}text-bg-warning{% elif health.overall == 'running' %}text-bg-info{% else %}text-bg-secondary{% endif %}">{{ health.overall|title }}</span>
   </div>
   <p class="text-body-secondary">Health reflects MDBListarr's persisted state and the last reconciliation; it is not a live Arr connectivity probe.</p>
+  {% if health.blacklist_sources %}<details class="mb-3"><summary>Blacklist source refresh status</summary><ul class="small mt-2">
+  {% for source in health.blacklist_sources %}<li>{{ source.name }} ({{ source.list_id }}): last successful refresh {{ source.last_success_at|date:"Y-m-d H:i:s T"|default:"Never" }}.{% if source.last_error %} <strong>{{ source.last_error }}</strong> Last successful membership is retained but cannot authorise deletion.{% endif %}</li>{% endfor %}
+  </ul></details>{% endif %}
   <div class="row g-4">
   {% for product in health.products %}
     <div class="col-12 col-xl-6">
@@ -23,7 +26,7 @@
             <dt class="col-6">On-Demand target</dt><dd class="col-6">{{ product.configuration.target_name }}</dd>
             <dt class="col-6">Interval</dt><dd class="col-6">{{ product.configuration.interval_minutes }} minutes</dd>
             <dt class="col-6">Search</dt><dd class="col-6">{% if product.configuration.search_enabled %}Enabled{% else %}Disabled{% endif %}</dd>
-            <dt class="col-6">Cleanup mode</dt><dd class="col-6"><span class="badge {% if product.configuration.cleanup_mode == 'Live' %}border border-danger text-danger{% elif product.configuration.cleanup_mode == 'Dry run' %}text-bg-info{% else %}text-bg-secondary{% endif %}">{{ product.configuration.cleanup_mode }}</span></dd>
+            <dt class="col-6">Duplicate cleanup mode</dt><dd class="col-6"><span class="badge {% if product.configuration.cleanup_mode == 'Live' %}border border-danger text-danger{% elif product.configuration.cleanup_mode == 'Dry run' %}text-bg-info{% else %}text-bg-secondary{% endif %}">{{ product.configuration.cleanup_mode }}</span></dd>
             <dt class="col-6">Cleanup grace / cap</dt><dd class="col-6">{{ product.configuration.cleanup_grace_hours }} hours / {{ product.configuration.cleanup_max_deletions }} per run</dd>
           </dl>
 
@@ -51,13 +54,20 @@
           <p class="small">Retry exhausted: <strong>{% include "health_count.html" with count=product.search.retry_exhausted section="search" metric="retry_exhausted" label="Retry exhausted" %}</strong> · Ambiguous/unavailable: <strong>{% include "health_count.html" with count=product.search.uncertain section="search" metric="uncertain" label="Ambiguous/unavailable" %}</strong> · Unreconciled failures: <strong>{% include "health_count.html" with count=product.search.unreconciled_terminal_failures section="search" metric="unreconciled_terminal_failures" label="Unreconciled failures" %}</strong>{% if product.search.active_errors %} · Active candidate errors: <strong>{% include "health_count.html" with count=product.search.active_errors section="search" metric="active_errors" label="Active errors" %}</strong>{% endif %}{% if product.search.oldest_pending_at %} · Oldest pending: {{ product.search.oldest_pending_at|naturaltime }}{% endif %}</p>
 
           <h3 class="h6 border-top pt-3">Cleanup - current persistent state</h3>
+          <p class="small">Blacklist cleanup: <strong>{{ product.configuration.blacklist_mode }}</strong></p>
+          <p class="small text-body-secondary">File candidates: {{ product.cleanup.file_pending }} pending, {{ product.cleanup.file_ready }} ready, {{ product.cleanup.file_deleted }} deleted. Whole-title candidates: {{ product.cleanup.title_pending }} pending, {{ product.cleanup.title_ready }} ready, {{ product.cleanup.title_deleted }} deleted. Combined counts below count cleanup candidates, not individual media files.</p>
+          {% if product.cleanup.title_in_flight %}<p class="small">Unverified title removals: {% include "health_count.html" with count=product.cleanup.title_in_flight section="cleanup" metric="in_flight" label="Unverified title removals" %}. Original requests are reconciled without repeating deletion.</p>{% endif %}
+          {% if product.cleanup.title_candidates %}
+          <div class="table-responsive"><table class="table table-sm small"><caption>Active blacklisted titles (up to 100, oldest first)</caption><thead><tr><th scope="col">Title / identity</th><th scope="col">State</th><th scope="col">Ready at</th><th scope="col">Outcome / block reason</th></tr></thead><tbody>
+          {% for candidate in product.cleanup.title_candidates %}<tr><td>{{ candidate.target_title }}<br>{% if product.product == 'sonarr' %}TVDb{% else %}TMDb{% endif %} {{ candidate.external_id }}</td><td>{{ candidate.get_status_display }}</td><td>{{ candidate.ready_at|date:"Y-m-d H:i:s T" }}</td><td>{{ candidate.last_error|default:'Awaiting next eligible cleanup evaluation' }}{% if candidate.verified_file_removals %}<br>{{ candidate.verified_file_removals }} associated file removal(s) verified.{% endif %}</td></tr>{% endfor %}
+          </tbody></table></div>{% endif %}
           <p class="small mb-1">Pending: <strong>{% include "health_count.html" with count=product.cleanup.pending section="cleanup" metric="pending" label="Pending" %}</strong> · Ready: <strong>{% include "health_count.html" with count=product.cleanup.ready section="cleanup" metric="ready" label="Ready" %}</strong> · Active errors: <strong>{% include "health_count.html" with count=product.cleanup.active_errors section="cleanup" metric="active_errors" label="Active errors" %}</strong></p>
           <p class="small">Historical: deleted {% include "health_count.html" with count=product.cleanup.deleted section="cleanup" metric="deleted" label="Deleted" %}, cancelled {% include "health_count.html" with count=product.cleanup.cancelled section="cleanup" metric="cancelled" label="Cancelled" %}, already absent {% include "health_count.html" with count=product.cleanup.already_absent section="cleanup" metric="already_absent" label="Already absent" %}{% if product.cleanup.oldest_pending_at %} · Oldest pending: {{ product.cleanup.oldest_pending_at|naturaltime }}{% endif %}{% if product.cleanup.oldest_ready_at %} · Oldest ready: {{ product.cleanup.oldest_ready_at|naturaltime }}{% endif %}</p>
-          {% if product.configuration.cleanup_enabled and product.configuration.cleanup_dry_run and product.cleanup.ready %}<div class="alert alert-info py-2 small">Dry run: {% include "health_count.html" with count=product.cleanup.ready section="cleanup" metric="ready" label="Ready" %} files are currently ready for deletion after persisted safety checks.</div>{% endif %}
+          {% if product.configuration.cleanup_enabled and product.configuration.cleanup_dry_run and product.cleanup.file_ready %}<div class="alert alert-info py-2 small">Dry run: {% include "health_count.html" with count=product.cleanup.file_ready section="cleanup" metric="ready" label="Ready" %} duplicate files are currently ready for deletion after persisted safety checks.</div>{% endif %}
           {% if product.product == 'radarr' and product.latest_counters.cleanup_edition_conflicts %}<div class="alert alert-secondary py-2 small">{{ product.latest_counters.cleanup_edition_conflicts }} duplicates were excluded because edition evidence differed.</div>{% endif %}
           {% if product.cleanup.ready_candidates %}
-          <h4 class="h6">Ready for deletion</h4>
-          {% if product.cleanup.ready_candidates_truncated %}<p class="small text-body-secondary">Showing first {{ product.cleanup.ready_candidates|length }} of {% include "health_count.html" with count=product.cleanup.ready section="cleanup" metric="ready" label="Ready" %} ready candidates.</p>{% endif %}
+          <h4 class="h6">Duplicate files ready for deletion</h4>
+          {% if product.cleanup.ready_candidates_truncated %}<p class="small text-body-secondary">Showing first {{ product.cleanup.ready_candidates|length }} of {% include "health_count.html" with count=product.cleanup.file_ready section="cleanup" metric="ready" label="Ready" %} ready file candidates.</p>{% endif %}
           <div class="table-responsive"><table class="table table-sm small align-middle"><thead><tr>
             <th>{% if product.product == 'sonarr' %}Series{% else %}Movie{% endif %}</th>
             {% if product.product == 'sonarr' %}<th>Episodes</th><th>TVDb ID</th><th>EpisodeFile ID</th>{% else %}<th>TMDb ID</th><th>MovieFile ID</th>{% endif %}<th>Ready since</th>
@@ -68,8 +78,8 @@
           </tr>{% endfor %}</tbody></table></div>
           {% endif %}
           {% if product.cleanup.pending_candidates %}
-          <details class="mb-3"><summary class="small fw-semibold">Pending cleanup candidates ({% include "health_count.html" with count=product.cleanup.pending section="cleanup" metric="pending" label="Pending" %})</summary>
-          {% if product.cleanup.pending_candidates_truncated %}<p class="small text-body-secondary">Showing first {{ product.cleanup.pending_candidates|length }} of {% include "health_count.html" with count=product.cleanup.pending section="cleanup" metric="pending" label="Pending" %} pending candidates.</p>{% endif %}
+          <details class="mb-3"><summary class="small fw-semibold">Pending duplicate-file candidates ({% include "health_count.html" with count=product.cleanup.file_pending section="cleanup" metric="pending" label="Pending" %})</summary>
+          {% if product.cleanup.pending_candidates_truncated %}<p class="small text-body-secondary">Showing first {{ product.cleanup.pending_candidates|length }} of {% include "health_count.html" with count=product.cleanup.file_pending section="cleanup" metric="pending" label="Pending" %} pending file candidates.</p>{% endif %}
           <div class="table-responsive mt-2"><table class="table table-sm small align-middle"><thead><tr>
             <th>{% if product.product == 'sonarr' %}Series{% else %}Movie{% endif %}</th>
             {% if product.product == 'sonarr' %}<th>Episodes</th><th>TVDb ID</th><th>EpisodeFile ID</th>{% else %}<th>TMDb ID</th><th>MovieFile ID</th>{% endif %}<th>Eligible since</th>

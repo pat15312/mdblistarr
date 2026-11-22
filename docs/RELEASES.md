@@ -135,3 +135,7 @@ Record scoped integration decisions and already-covered changes in the [upstream
 ## Release-policy changes
 
 Keep this process lightweight. Change it deliberately when established release practice justifies a revision; do not let versioning drift informally. Not every merged PR requires an immediate release or version bump.
+
+## 2.5.0 upgrade
+
+This minor release adds [MDBList blacklist cleanup](BLACKLIST.md), defaulting to disabled removal with dry run enabled. Migration `0014` adds source snapshots and a related title/event lifecycle without changing historical duplicate-file candidates. Back up consistent state and matching secrets before deployment. Native removal is staged and conservative; qualify target storage semantics and review Arr deletion settings before separately enabling live cleanup. Existing duplicate-cleanup settings and schedules are preserved.

@@ -443,11 +443,11 @@ class TargetScopedMetricsAndViewTests(TestCase):
             for guard in guards:
                 guard.assert_not_called()
         self.assertEqual(len(health['products']), 2)
-        self.assertContains(response, 'Ready for deletion', count=2)
+        self.assertContains(response, 'Duplicate files ready for deletion', count=2)
         self.assertContains(response, '&lt;b&gt;Title&lt;/b&gt; (2024)', count=2)
         for text in ('TVDb 12345', 'TMDb 1584', 'EpisodeFile ID', 'MovieFile ID', 'S01E01', 'Unknown', '>678<', '>12345<', '>1584<', date_format(timezone.localtime(bad.ready_at), 'Y-m-d H:i:s T')):
             self.assertContains(response, text)
-        self.assertEqual(html_text(response).count('Pending cleanup candidates (1)'), 2)
+        self.assertEqual(html_text(response).count('Pending duplicate-file candidates (1)'), 2)
         body = response.content.decode()
         self.assertNotIn('<b>Title</b>', body)
         self.assertNotIn('PRIVATE_ERROR', body)
@@ -455,18 +455,18 @@ class TargetScopedMetricsAndViewTests(TestCase):
         self.assertNotIn('Showing first', body)
         from lxml import html
         document = html.fromstring(body)
-        for heading in document.xpath('//h4[text()="Ready for deletion"]'):
+        for heading in document.xpath('//h4[text()="Duplicate files ready for deletion"]'):
             self.assertEqual(heading.xpath('ancestor::details'), [])
         for details in document.xpath('//details'):
             self.assertNotIn('open', details.attrib)
-            self.assertNotIn('Ready for deletion', details.text_content())
+            self.assertNotIn('Duplicate files ready for deletion', details.text_content())
         for model in (SonarrCleanupCandidate, RadarrCleanupCandidate):
             model.objects.filter(status='pending').delete()
         self.assertNotContains(self.client.get(reverse('arr_health_view')), '<details')
         for model in (SonarrCleanupCandidate, RadarrCleanupCandidate):
             model.objects.all().delete()
         empty = self.client.get(reverse('arr_health_view'))
-        self.assertNotContains(empty, 'Ready for deletion')
+        self.assertNotContains(empty, 'Duplicate files ready for deletion')
         self.assertNotContains(empty, '<details')
         self.assertNotContains(empty, '<table')
         self.assertContains(empty, 'Cleanup - current persistent state', count=2)
@@ -481,8 +481,8 @@ class TargetScopedMetricsAndViewTests(TestCase):
         SonarrCleanupCandidate.objects.update(linked_episode_keys=[[0, 3]])
         response = self.client.get(reverse('arr_health_view'))
         for state in ('ready', 'pending'):
-            self.assertEqual(html_text(response).count(f'Showing first 100 of 101 {state} candidates.'), 2)
-        self.assertEqual(html_text(response).count('Pending cleanup candidates (101)'), 2)
+            self.assertEqual(html_text(response).count(f'Showing first 100 of 101 {state} file candidates.'), 2)
+        self.assertEqual(html_text(response).count('Pending duplicate-file candidates (101)'), 2)
         self.assertContains(response, 'S00E03')
 
 

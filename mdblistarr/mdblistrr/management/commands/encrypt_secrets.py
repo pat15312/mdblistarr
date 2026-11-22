@@ -1,7 +1,7 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction, connection
 from mdblistrr.crypto import SecretDecryptionError, decrypt, encrypt, get_fernet, is_encrypted
-from mdblistrr.models import Preferences, RadarrInstance, SonarrInstance
+from mdblistrr.models import Preferences, RadarrInstance, SonarrInstance, BlacklistSource
 
 class Command(BaseCommand):
     help = "Validate encrypted secrets and encrypt plaintext application secrets in-place. Idempotent."
@@ -19,7 +19,7 @@ class Command(BaseCommand):
             get_fernet()  # fail immediately if missing or malformed
             changed = 0
             with transaction.atomic():
-                for model, field in [(RadarrInstance, 'apikey'), (SonarrInstance, 'apikey')]:
+                for model, field in [(RadarrInstance, 'apikey'), (SonarrInstance, 'apikey'), (BlacklistSource, 'api_path')]:
                     table = model._meta.db_table
                     with connection.cursor() as c:
                         c.execute(f"SELECT id, {field} FROM {table}")

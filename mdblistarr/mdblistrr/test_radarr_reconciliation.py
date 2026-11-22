@@ -256,7 +256,7 @@ class RadarrFormUiManualTests(TestCase):
         self.assertIn('Search newly eligible missing movies', html)
         self.assertIn('MoviesSearch commands:', html)
         self.assertIn('Destructive cleanup safety:',html); self.assertIn('Enable automatic duplicate-file cleanup',html)
-        self.assertIn('Dry-run cleanup',html); self.assertIn('Maximum file deletions per reconciliation run',html)
+        self.assertIn('Dry-run cleanup',html); self.assertIn('Maximum cleanup deletion attempts per reconciliation run',html)
         for text in ('On-Demand Reconciliation', 'When using a native Radarr import list', 'Monitor to None', 'Search on Add disabled'):
             self.assertIn(text, html)
         radarr_section = html.split('value="radarr_reconcile"', 1)[1].split('value="sonarr_select"', 1)[0]

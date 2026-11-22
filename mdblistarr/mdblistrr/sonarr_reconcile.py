@@ -138,7 +138,7 @@ class ReconcileStats:
     reason_by_key: dict = field(default_factory=dict)
 
 
-def calculate_episode_monitoring(source_episodes, target_episodes, include_specials=False, search_newly_eligible=False, now=None):
+def calculate_episode_monitoring(source_episodes, target_episodes, include_specials=False, search_newly_eligible=False, now=None, blacklisted=False):
     stats = ReconcileStats()
     if not isinstance(source_episodes, list) or not isinstance(target_episodes, list):
         stats.failures = 1
@@ -162,7 +162,10 @@ def calculate_episode_monitoring(source_episodes, target_episodes, include_speci
             return stats
         stats.episodes_inspected += 1
         ok, reason = is_relevant_episode(ep, include_specials, now)
-        if not ok:
+        if blacklisted:
+            desired = False
+            decision_reason = 'blacklisted'
+        elif not ok:
             desired = False
             decision_reason = reason
             if reason == 'special':

@@ -59,7 +59,7 @@ def validate_movie_response(movies, target=False, label='source'):
     return True, ''
 
 
-def calculate_movie_monitoring(source_movies, target_movies):
+def calculate_movie_monitoring(source_movies, target_movies, blacklisted_tmdb_ids=()):
     """Return monitoring changes using TMDB identity and Radarr availability only."""
     result = RadarrReconciliationResult()
     source_by_tmdb = {movie['tmdbId']: movie for movie in source_movies}
@@ -77,7 +77,7 @@ def calculate_movie_monitoring(source_movies, target_movies):
         if target_file:
             result.target_files_present += 1
         desired = False
-        if not permanent_file and not target_file:
+        if not permanent_file and not target_file and target['tmdbId'] not in blacklisted_tmdb_ids:
             if target['isAvailable'] is True:
                 desired = True
                 result.eligible_missing += 1

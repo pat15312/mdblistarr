@@ -57,7 +57,9 @@ These are current defaults from [models](../mdblistarr/mdblistrr/models.py), [fo
 | Duplicate cleanup | Off | Candidate maintenance still runs with reconciliation |
 | Cleanup dry-run | On | Must be disabled explicitly for live deletion |
 | Cleanup grace | 24 hours | 0, 1, 6, 12, 24, 48 or 168 hours |
-| Cleanup deletion-attempt cap | 25 | 1–500 attempts per reconciliation, per product |
+| Cleanup deletion-attempt cap | 25 | 1–500 attempts per reconciliation, per product, shared by duplicate and blacklist cleanup |
+| Blacklist removal / dry run | Off / On | Suppression and candidate evaluation continue when reconciliation is enabled |
+| Blacklist grace | 24 hours | Independently configurable, 0–168 hours |
 
 Turning on search submission can send already-pending work. Turning on live cleanup can act on candidates whose grace elapsed while deletion was disabled or in dry-run. Review the pending workload and [lifecycle rules](ARR_BEHAVIOUR.md#search-lifecycle) first. Disabling reconciliation stops that product's maintenance as well as its new actions.
 
@@ -220,3 +222,7 @@ Start with Arr Health, then application logs and source/target configuration. Ch
 Uncertain command state intentionally blocks automatic assumptions, and exhausted failures retire only after validated evidence resolves the current need. Do not delete lifecycle rows merely to clear an attention state; doing so can erase duplicate-submission safeguards. Review candidates in dry-run before enabling live cleanup.
 
 Some legacy log paths still include external payloads; review and sanitise logs before sharing them publicly. See [logging policy and implementation qualification](SECURITY.md#logging-and-observability).
+
+## Blacklist operations
+
+Use the fourth configuration tab to add authenticated MDBList sources. Review whole-title candidates and the unified reason/action history in the existing Arr Health Cleanup section. File and title quantities are labelled separately. See [Blacklist](BLACKLIST.md) for initial disabled/dry-run acceptance, supported list references, native storage prerequisites and recovery of uncertain requests.

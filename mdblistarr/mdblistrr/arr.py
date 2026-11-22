@@ -27,7 +27,10 @@ def _get_display_metadata(api, path, params):
         # Do not expose response bodies, credentials, URLs or exception text.
         return {'error': 'metadata_request_failed'}
 
-class SonarrAPI():
+from .title_transport import TitleCleanupTransport
+
+
+class SonarrAPI(TitleCleanupTransport):
     def __init__(self, url=None, apikey=None, instance_id=None):
         self.connect = Connect()
         self.name = None
@@ -220,7 +223,7 @@ class SonarrAPI():
         except Exception:
             return {'errorMessage': sanitize_text(traceback.format_exc())}
 
-class RadarrAPI():
+class RadarrAPI(TitleCleanupTransport):
     def __init__(self, url=None, apikey=None, instance_id=None):
         self.connect = Connect()
         self.name = None
@@ -479,7 +482,7 @@ class MdblistAPI():
                 'grant_type': 'refresh_token',
                 'refresh_token': self.refresh_token,
                 'client_id': self.client_id or MDBLIST_DEFAULT_CLIENT_ID,
-            })
+            }, timeout=(5, 20), allow_redirects=False)
             data = r.json()
             if data.get('access_token'):
                 self.access_token = data['access_token']
