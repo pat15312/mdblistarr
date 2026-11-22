@@ -258,10 +258,10 @@ def maintain_candidates(product, target, titles, membership, grace_hours):
             if candidate.status in ('pending', 'ready', 'files_removed'):
                 transition(candidate, 'cancelled', 'blacklist_membership_removed')
             else:
-                candidate.last_error = 'Membership removed; original uncertain request requires reconciliation.'
-                candidate.save(update_fields=['last_error', 'updated_at'])
                 candidate.events.get_or_create(phase='membership_removed',
                     outcome='blacklist_membership_removed_during_uncertain_request')
+                candidate.last_error = 'Membership removed; original uncertain request requires reconciliation.'
+                candidate.save(update_fields=['last_error', 'updated_at'])
         elif candidate.target_media_id not in present and candidate.status in ('pending', 'ready'):
             transition(candidate, 'already_absent', 'catalogue_absent_without_delete')
     for row in titles:
@@ -342,6 +342,10 @@ def process_title_cleanup(*, product, target, api, membership, remaining_budget,
             validate_target(product, target)
             if candidate.target_fingerprint != target_fingerprint(target):
                 raise CleanupDeferred('Original target configuration changed.')
+            if candidate.status not in ('files_submitting', 'title_submitting', 'uncertain') and candidate.events.filter(
+                    outcome='blacklist_membership_removed_during_uncertain_request').exists():
+                transition(candidate, 'cancelled', 'blacklist_membership_removed_after_recovery')
+                continue
             if candidate.status in ('files_submitting', 'title_submitting', 'uncertain'):
                 verify_original_request(candidate, api)
                 if candidate.status != 'deleted' and (

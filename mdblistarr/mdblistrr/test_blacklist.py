@@ -374,6 +374,36 @@ class TitleLifecycleTests(TestCase):
                     TitleCleanupEvent.objects.all().delete()
                     TitleCleanupCandidate.objects.all().delete()
 
+    def test_crash_between_recovery_and_cancellation_cannot_resume_deletion(self):
+        from .title_cleanup import transition
+        for product in ('sonarr', 'radarr'):
+            with self.subTest(product=product):
+                candidate = self.setup_product(product)
+                self.api.uncertain = True
+                self.assertEqual(self.process().attempts, 1)
+                original_membership = self.membership
+                self.membership = BlacklistEvidence(configuration_signature(), {}, timezone.now())
+                maintain_candidates(product, self.target, [self.api.row], self.membership, 0)
+                self.api.files = []
+                def crash_after_recovery(row, status, outcome, evidence=None):
+                    transition(row, status, outcome, evidence)
+                    if outcome == 'original_file_removal_verified':
+                        raise RuntimeError('synthetic crash after committed recovery')
+                with patch('mdblistrr.title_cleanup.transition', side_effect=crash_after_recovery):
+                    with self.assertRaises(RuntimeError):
+                        self.process()
+                candidate.refresh_from_db()
+                self.assertEqual(candidate.status, 'files_removed')
+                self.membership = original_membership
+                self.api.uncertain = False
+                maintain_candidates(product, self.target, [self.api.row], self.membership, 0)
+                self.assertEqual(self.process().attempts, 0)
+                candidate.refresh_from_db()
+                self.assertEqual(candidate.status, 'cancelled')
+                self.assertEqual(len(self.api.deleted), 1)
+                TitleCleanupEvent.objects.all().delete()
+                TitleCleanupCandidate.objects.all().delete()
+
     def test_removed_blacklist_requalifies_duplicate_with_new_grace(self):
         from .sonarr_cleanup import process_cleanup_for_series
         from .radarr_cleanup import process_radarr_cleanup
