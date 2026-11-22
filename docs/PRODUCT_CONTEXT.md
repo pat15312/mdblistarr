@@ -66,6 +66,7 @@ MDBListarr should:
 - optionally initiate precise searches for newly eligible missing media;
 - persist search state so uncertain external side effects can be recovered safely;
 - remove confirmed redundant duplicate files from the On-Demand target when cleanup is explicitly enabled;
+- suppress blacklisted On-Demand titles and optionally remove their managed files and catalogue entries using configured MDBList sources and a separately enabled safe lifecycle;
 - expose useful, bounded operational health without probing external services from the health page;
 - fail closed when required evidence is malformed, conflicting, unavailable, or uncertain;
 - remain easy to deploy without requiring unnecessary manual secret generation;
@@ -81,7 +82,7 @@ MDBListarr is not intended to:
 - become a filesystem manager;
 - directly manage a download client's storage;
 - become a general retention, pruning, or housekeeping engine;
-- delete media for reasons other than resolving confirmed On-Demand duplication unless a future explicit product decision changes that boundary;
+- delete media outside confirmed On-Demand duplication or explicitly configured blacklist membership;
 - depend on a particular downstream media server;
 - depend on NzbDAV, SABnzbd, or any other particular download-side component;
 - invent or maintain a speculative feature roadmap.
@@ -218,7 +219,7 @@ Sonarr is in scope for:
 - On-Demand monitoring reconciliation;
 - season and top-level series monitoring derived from episode intent;
 - explicit eligible-episode search lifecycle;
-- confirmed duplicate-file cleanup;
+- confirmed duplicate-file cleanup and [MDBList blacklist title cleanup](BLACKLIST.md);
 - operational health.
 
 Episode-level reasoning is essential to the product model.
@@ -230,7 +231,7 @@ Radarr is in scope for:
 - Permanent/library-source evidence;
 - On-Demand monitoring reconciliation;
 - explicit eligible-movie search lifecycle;
-- confirmed duplicate-file cleanup;
+- confirmed duplicate-file cleanup and [MDBList blacklist title cleanup](BLACKLIST.md);
 - operational health.
 
 Radarr should provide operational parity with Sonarr while preserving Radarr-specific movie and edition semantics.
@@ -294,7 +295,7 @@ Do not convert speculative possibilities into commitments or create architecture
 | Term | Meaning |
 | --- | --- |
 | **Permanent / library source** | Arr instance providing evidence of permanently retained media. Reconciliation reads from it and does not write to it. |
-| **On-Demand target** | Arr instance where MDBListarr may apply controlled monitoring, search, and validated duplicate cleanup. |
+| **On-Demand target** | Arr instance where MDBListarr may apply controlled monitoring, search, and validated duplicate or blacklist cleanup. |
 | **Reconciliation** | Comparing validated source/target state and bringing permitted target state towards the desired condition. |
 | **Eligible / wanted** | An item that current validated evidence says should be monitored/acquired on the target. |
 | **Search candidate** | Persisted representation of an eligible search need and its lifecycle. |

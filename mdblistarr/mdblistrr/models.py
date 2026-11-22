@@ -68,6 +68,58 @@ class Preferences(models.Model):
         return self.name
 
 
+class BlacklistSource(models.Model):
+    """Last complete list snapshot; a stored snapshot never authorises deletion."""
+    list_id = models.PositiveIntegerField(unique=True)
+    name = models.CharField(max_length=255)
+    # A share link is a capability. Keep it encrypted and out of rendered forms/logs.
+    api_path = EncryptedCharField(max_length=2048)
+    snapshot = models.JSONField(default=list)
+    snapshot_digest = models.CharField(max_length=64, blank=True)
+    movie_count = models.PositiveIntegerField(default=0)
+    series_count = models.PositiveIntegerField(default=0)
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class TitleCleanupCandidate(models.Model):
+    """Whole-title cleanup identity, separate from permanent-duplicate file evidence."""
+    product = models.CharField(max_length=10, choices=[('sonarr', 'Sonarr'), ('radarr', 'Radarr')])
+    target_instance_id = models.PositiveIntegerField()
+    target_fingerprint = models.CharField(max_length=64)
+    target_media_id = models.PositiveIntegerField()
+    external_id = models.PositiveIntegerField()
+    target_title = models.CharField(max_length=255, blank=True)
+    reason = models.CharField(max_length=64, default='blacklisted')
+    status = models.CharField(max_length=32, default='pending', choices=[
+        (s, s.replace('_', ' ').title()) for s in (
+            'pending', 'ready', 'files_submitting', 'files_removed',
+            'title_submitting', 'uncertain', 'deleted', 'cancelled', 'already_absent')])
+    first_eligible_at = models.DateTimeField()
+    last_confirmed_at = models.DateTimeField()
+    ready_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    evidence = models.JSONField(default=dict)
+    source_ids = models.JSONField(default=list)
+    last_error = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['product', 'target_instance_id', 'target_media_id'], name='unique_title_cleanup_target')]
+
+
+class TitleCleanupEvent(models.Model):
+    candidate = models.ForeignKey(TitleCleanupCandidate, on_delete=models.PROTECT, related_name='events')
+    phase = models.CharField(max_length=32)
+    outcome = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+    evidence = models.JSONField(default=dict)
+
+
 class ArrReconciliationStatus(models.Model):
     PRODUCT_SONARR = 'sonarr'
     PRODUCT_RADARR = 'radarr'

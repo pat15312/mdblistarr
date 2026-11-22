@@ -21,11 +21,12 @@ from django.views.decorators.http import require_http_methods, require_POST, req
 from .arr import MdblistAPI, RadarrAPI, SonarrAPI, MDBLIST_DEFAULT_CLIENT_ID
 from .connect import Connect
 from .connect import sanitize_text
+from .cleanup_lock import configuration_write_lock
 from .models import (Preferences, RadarrInstance, SonarrInstance, SonarrEpisodeSearchCommand,
-    SonarrEpisodeSearchCandidate, RadarrMovieSearchCommand, RadarrMovieSearchCandidate)
+    SonarrEpisodeSearchCandidate, RadarrMovieSearchCommand, RadarrMovieSearchCandidate, BlacklistSource)
 from .services import get_mdblistarr, reset_mdblistarr
 from .admin_state import usable_administrator_exists
-from .forms import InitialAdminSetupForm, SonarrReconciliationForm, RadarrReconciliationForm
+from .forms import InitialAdminSetupForm, SonarrReconciliationForm, RadarrReconciliationForm, BlacklistSettingsForm
 from .instance_config import ROLE_HELP_TEXT, ROLE_LABELS, queue_import_value_is_valid
 
 logger = logging.getLogger(__name__)
@@ -305,6 +306,7 @@ def setup_view(request):
         form = InitialAdminSetupForm()
     return render(request, 'setup.html', {'form': form})
 
+@configuration_write_lock
 def home_view(request):
     mdblistarr = get_mdblistarr()
     oauth_connected = bool(
@@ -551,6 +553,11 @@ def home_view(request):
         sonarr_selection_form.initial = {'server_selection': active_sonarr_id}
     
     context = {
+        'blacklist_sources': BlacklistSource.objects.order_by('name', 'list_id'),
+        'blacklist_form': BlacklistSettingsForm(initial={
+            'enabled': Preferences.get_value('blacklist_cleanup_enabled', '0') == '1',
+            'dry_run': Preferences.get_value('blacklist_cleanup_dry_run', '1') != '0',
+            'grace_hours': Preferences.get_value('blacklist_cleanup_grace_hours', '24')}),
         'mdblist_form': mdblist_form,
         'radarr_selection_form': radarr_selection_form,
         'sonarr_selection_form': sonarr_selection_form,
@@ -755,7 +762,7 @@ def set_active_tab(request):
     try:
         data = json.loads(request.body)
         tab = data.get("tab")
-        if tab in {"mdblist", "radarr", "sonarr"}:
+        if tab in {"mdblist", "radarr", "sonarr", "blacklist"}:
             request.session["active_tab"] = tab
             return JsonResponse({"status": "ok"})
     except json.JSONDecodeError:

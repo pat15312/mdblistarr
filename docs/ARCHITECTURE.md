@@ -36,6 +36,8 @@ Paths below are relative to the repository root.
 | `mdblistarr/mdblistrr/radarr_search.py` | MoviesSearch candidates, durable command submission and recovery/retry lifecycle |
 | `mdblistarr/mdblistrr/sonarr_cleanup.py` | Exact episode-file candidate lifecycle and destructive verification |
 | `mdblistarr/mdblistrr/radarr_cleanup.py` | Exact movie-file candidate lifecycle, edition checks and destructive verification |
+| `mdblistarr/mdblistrr/blacklist.py` | Authenticated complete snapshots, identity translation and union membership |
+| `mdblistarr/mdblistrr/title_cleanup.py`, `title_transport.py`, `cleanup_lock.py` | Related whole-title lifecycle, one-shot native transport and final configuration gate |
 | `mdblistarr/mdblistrr/health_details.py` | Paginated, local-only search and cleanup detail views |
 | `mdblistarr/mdblistrr/media_display.py` | Best-effort title backfill from existing snapshots and explicit catalogue title recovery, without lifecycle changes |
 | `mdblistarr/mdblistrr/arr_health.py` | Best-effort reconciliation snapshots and local health aggregation |
@@ -93,9 +95,11 @@ The database path is fixed at `/usr/src/db/db.sqlite3` in [settings](../mdblista
 | `SonarrEpisodeSearchCommandCandidate`, `RadarrMovieSearchCommandCandidate` | Explicit command/candidate relationships with submitted item IDs |
 | `SonarrCleanupCandidate` | Unique target instance/episode-file ID, series/TVDB identity, linked episode keys, timestamps and status |
 | `RadarrCleanupCandidate` | Unique target instance/movie-file ID, source/target movie and source file identity, TMDB ID, editions, timestamps and status |
+| `BlacklistSource` | Encrypted list reference and last complete successful membership, counts and refresh errors |
+| `TitleCleanupCandidate`, `TitleCleanupEvent` | Blacklist reason; product/target/native title identity, staged intent and immutable event history without fabricated permanent evidence |
 | `ArrReconciliationStatus` | One latest snapshot per product, including source/target IDs, nullable validation evidence, counters and latest start/completion/success |
 
-Cleanup title/year fields support display; they are not destructive evidence and metadata refresh must not reset grace or identity. Instance deletion cascades to its lifecycle records. The third-party scheduler also maintains its own run-log model, used to recover the scheduled heartbeat timestamp.
+Cleanup title/year fields support display; they are not destructive evidence and metadata refresh must not reset grace or identity. Instance deletion cascades to legacy file/search lifecycle records. Blacklist title history retains an integer target identity and fingerprint; it does not cascade with instance deletion. The third-party scheduler also maintains its own run-log model, used to recover the scheduled heartbeat timestamp.
 
 ### Migration overview
 
@@ -116,6 +120,7 @@ The current application migration sequence is in [migrations](../mdblistarr/mdbl
 | `0011` | Reconciliation health snapshots |
 | `0012` | Cleanup candidate title/year display metadata for both products |
 | `0013` | Search candidate title display metadata for both products |
+| `0014` | Blacklist sources, related whole-title candidates and protected event history |
 
 Role migrations default library-source membership on and queue-import/On-Demand flags off where introduced. Existing Radarr queue-import values survive `0008`. Startup credential conversion is handled by `encrypt_secrets`, not solely by schema migrations. Due-slot state is stored in `Preferences` and did not require a separate migration.
 
@@ -138,3 +143,5 @@ The basic `/healthz` endpoint is separate. See [Operations](OPERATIONS.md#operat
 ## Container and build boundary
 
 The [entrypoint](../django-entrypoint.sh) performs secret initialisation, optional explicit database reset, migrations, credential maintenance, administrator handling, scheduler startup and web startup in that order. It currently runs Django `runserver` with a background scheduler. Operational settings belong in [Operations](OPERATIONS.md); build/test procedures in [Development](DEVELOPMENT.md); CI publishing and versioning in [Releases](RELEASES.md).
+
+Blacklist configuration and native submission share a process-wide file lock. A validated membership union is reused across a reconciliation; final destructive stages obtain fresh evidence. See [Blacklist](BLACKLIST.md) for the distinct title lifecycle and its shared deletion budget.

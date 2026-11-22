@@ -3,7 +3,7 @@ import json
 from bisect import insort
 from datetime import timedelta
 
-from django.db.models import Min
+from django.db.models import Min, Count, Q
 from django.utils import timezone
 
 from .connect import sanitize_text
@@ -11,6 +11,7 @@ from .models import (
     ArrReconciliationStatus, Preferences, RadarrCleanupCandidate, RadarrInstance,
     RadarrMovieSearchCandidate, RadarrMovieSearchCommand, SonarrCleanupCandidate,
     SonarrEpisodeSearchCandidate, SonarrEpisodeSearchCommand, SonarrInstance,
+    TitleCleanupCandidate, BlacklistSource,
 )
 
 PRODUCTS = ('sonarr', 'radarr')
@@ -144,6 +145,30 @@ def _cleanup_groups(model, target_id):
               for state in ('pending', 'ready', 'deleted', 'cancelled', 'already_absent')}
     groups['active_errors'] = candidates.filter(status__in=('pending', 'ready')).exclude(last_error='')
     return groups
+
+
+def _title_cleanup_groups(product, target_id):
+    rows = TitleCleanupCandidate.objects.filter(product=product, target_instance_id=target_id)
+    groups = {state: rows.filter(status=state) for state in ('pending', 'deleted', 'cancelled', 'already_absent')}
+    groups['ready'] = rows.filter(status__in=('ready', 'files_removed'))
+    groups['active_errors'] = rows.exclude(status__in=('deleted', 'cancelled', 'already_absent')).exclude(last_error='')
+    groups['in_flight'] = rows.filter(status__in=('files_submitting', 'title_submitting', 'uncertain'))
+    return groups
+
+
+def _add_title_cleanup_metrics(metrics, product, target_id):
+    groups = _title_cleanup_groups(product, target_id)
+    for state in ('pending', 'ready', 'deleted', 'cancelled', 'already_absent', 'active_errors'):
+        metrics['file_' + state] = metrics[state]
+        metrics['title_' + state] = groups[state].count()
+        metrics[state] += metrics['title_' + state]
+    metrics['title_in_flight'] = groups['in_flight'].count()
+    metrics['title_candidates'] = list(TitleCleanupCandidate.objects.filter(
+        product=product, target_instance_id=target_id).exclude(
+        status__in=('deleted', 'cancelled', 'already_absent')).annotate(
+        verified_file_removals=Count('events', filter=Q(events__outcome='original_file_removal_verified'))
+        ).order_by('first_eligible_at', 'id')[:100])
+    return metrics
 
 
 def _search_metrics(candidate_model, command_model, target_id):
@@ -281,6 +306,7 @@ def _product_health(product, now):
     valid_target_id = target_id if target and target['is_ondemand_target'] and source_id != target_id else None
     search = _search_metrics(candidate_model, command_model, valid_target_id)
     cleanup = _cleanup_metrics(cleanup_model, valid_target_id)
+    _add_title_cleanup_metrics(cleanup, product, valid_target_id)
     status = ArrReconciliationStatus.objects.filter(product=product).values().first()
     snapshot_matches_configuration = bool(status and
         status['source_instance_id'] == source_id and status['target_instance_id'] == target_id)
@@ -294,6 +320,8 @@ def _product_health(product, now):
     counters = (status or {}).get('last_counters') or {}
     if enabled:
         issues.extend(config_errors)
+        if BlacklistSource.objects.exclude(last_error='').exists():
+            issues.append('Blacklist source refresh failed; fresh membership is required for cleanup.')
         if status and not snapshot_matches_configuration and not config_errors:
             issues.append('Configuration changed since the last reconciliation; the current source/target pair has not yet been validated.')
         if stale and snapshot_matches_configuration:
@@ -335,6 +363,8 @@ def _product_health(product, now):
         classification = 'healthy'
     cleanup_enabled = Preferences.get_value(f'{product}_cleanup_enabled', '0') == '1'
     cleanup_dry_run = Preferences.get_value(f'{product}_cleanup_dry_run', '1') != '0'
+    blacklist_enabled = Preferences.get_value('blacklist_cleanup_enabled', '0') == '1'
+    blacklist_dry_run = Preferences.get_value('blacklist_cleanup_dry_run', '1') != '0'
     return {
         'product': product, 'name': product.title(), 'classification': classification,
         'issues': issues, 'configuration_errors': config_errors,
@@ -343,6 +373,7 @@ def _product_health(product, now):
             'target_name': target['name'] if target else 'Not configured', 'interval_minutes': interval,
             'search_enabled': Preferences.get_value(f'{product}_search_newly_eligible', '0') == '1',
             'cleanup_enabled': cleanup_enabled, 'cleanup_dry_run': cleanup_dry_run,
+            'blacklist_mode': ('Disabled · dry-run evaluation' if blacklist_dry_run else 'Disabled') if not blacklist_enabled else ('Dry run' if blacklist_dry_run else 'Live'),
             'cleanup_mode': 'Disabled' if not cleanup_enabled else ('Dry run' if cleanup_dry_run else 'Live'),
             'cleanup_grace_hours': _safe_int(Preferences.get_value(f'{product}_cleanup_grace_hours', '24'), 24, 0, 168),
             'cleanup_max_deletions': _safe_int(Preferences.get_value(f'{product}_cleanup_max_deletions_per_run', '25'), 25, 1, 500),
@@ -364,4 +395,6 @@ def build_arr_health(now=None):
     now = now or timezone.now()
     products = [_product_health(product, now) for product in PRODUCTS]
     return {'overall': reduce_overall_status([item['classification'] for item in products]),
-            'products': products, 'generated_at': now}
+            'products': products, 'generated_at': now,
+            'blacklist_sources': list(BlacklistSource.objects.order_by('list_id').values(
+                'name', 'list_id', 'last_success_at', 'last_attempt_at', 'last_error'))}

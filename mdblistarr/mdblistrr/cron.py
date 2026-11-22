@@ -24,6 +24,9 @@ from .radarr_search import (update_movie_search_candidates,
     submit_pending_search_candidates as submit_pending_movie_search_candidates,
     reconcile_movie_search_commands, poll_movie_search_commands)
 from .radarr_cleanup import process_radarr_cleanup
+from .blacklist import refresh_blacklists, BlacklistError
+from .title_cleanup import (maintain_candidates, process_title_cleanup, validate_target,
+    CleanupDeferred, GuardedReconciliationAPI)
 from .instance_config import queue_import_requirements_are_valid
 from .arr_health import begin_reconciliation_status, finish_reconciliation_status
 from .reconciliation_schedule import (ReconciliationSchedule, normalise_interval,
@@ -884,6 +887,15 @@ def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
                     source_instance_id=source.id, target_instance_id=target.id, source_ok=True, target_ok=False)
                 return {'result': 502, 'message': target_error}
             backfill_candidate_titles('sonarr', target, source_series, target_series)
+            try:
+                blacklist = refresh_blacklists(force=False)
+                if blacklist.sources:
+                    validate_target('sonarr', target)
+                target_api = GuardedReconciliationAPI(target_api, 'sonarr', target, blacklist)
+            except (BlacklistError, CleanupDeferred) as exc:
+                _try_finish_reconciliation_status('sonarr', 502, str(exc),
+                    source_instance_id=source.id, target_instance_id=target.id, source_ok=True, target_ok=True)
+                return {'result': 502, 'message': str(exc)}
             source_by_tvdb = {s.get('tvdbId'): s for s in source_series}
             totals = calculate_episode_monitoring([], [])
             totals.series_compared = totals.episodes_inspected = totals.episodes_unchanged = 0
@@ -897,6 +909,8 @@ def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
             cleanup_stop_real_deletes = False
             cleanup_totals = {'cleanup_candidates_new':0,'cleanup_candidates_pending':0,'cleanup_candidates_ready':0,'cleanup_candidates_cancelled':0,'cleanup_would_delete':0,'cleanup_files_deleted':0,'cleanup_files_already_absent':0,'cleanup_deferred_by_limit':0,'cleanup_failures':0}
             cleanup_series_summaries = []
+            maintain_candidates('sonarr', target, target_series, blacklist,
+                max(0, min(168, int(Preferences.get_value('blacklist_cleanup_grace_hours', '24') or '24'))))
             search_candidate_totals = {'search_candidates_new':0,'search_candidates_pending':0,'search_candidates_submitted':0,'search_candidates_cancelled':0,'search_candidates_deferred':0,'search_candidates_recovered':0,'search_recovery_failures':0,'search_failures':0}
             removed_count, removed_events = resolve_failed_candidates_for_removed_series(
                 target_instance=target,
@@ -916,6 +930,8 @@ def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
             search_retry_delay = max(0, min(10080, int(Preferences.get_value('sonarr_search_retry_delay_minutes', '30') or '30')))
             command_missing_grace = max(1, min(720, int(Preferences.get_value('sonarr_search_missing_command_grace_hours', '24') or '24')))
             for show in target_series:
+                if not blacklist.current():
+                    raise CleanupDeferred('Blacklist configuration changed during reconciliation.')
                 if not isinstance(show, dict) or _positive_int_value(show.get('tvdbId')) is None or _positive_int_value(show.get('id')) is None or not isinstance(show.get('monitored'), bool) or _season_updates_for_series(show, {})[2]:
                     totals.failures += 1
                     totals.series_update_failures += 1
@@ -928,7 +944,11 @@ def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
                     src_eps = []
                     totals.series_target_only += 1
                 tgt_eps = target_api.get_episodes(show['id'])
-                stats = calculate_episode_monitoring(src_eps, tgt_eps, include_specials, search_enabled)
+                blacklisted = blacklist.contains('sonarr', show['tvdbId'])
+                stats = calculate_episode_monitoring(src_eps, tgt_eps, include_specials, search_enabled,
+                    blacklisted=blacklisted)
+                if blacklisted:
+                    stats.desired_season_monitoring.update({season['seasonNumber']: False for season in show['seasons']})
                 totals.episodes_inspected += stats.episodes_inspected
                 totals.episodes_unchanged += stats.episodes_unchanged
                 totals.specials_ignored += stats.specials_ignored
@@ -998,7 +1018,7 @@ def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
                     series_ok_for_cleanup = False
                     totals.failures += 1
 
-                if search_enabled:
+                if search_enabled and not blacklisted:
                     submitted, search_events, search_failed = submit_pending_search_candidates(target_api=target_api, target_instance=target, target_series_id=show['id'])
                     totals.searches_triggered += submitted['submitted']
                     totals.initial_searches_triggered += submitted['initial_submitted']
@@ -1010,7 +1030,7 @@ def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
                     if search_failed:
                         totals.failures += submitted['failures'] or 1
                         series_ok_for_cleanup = False
-                if series_ok_for_cleanup:
+                if series_ok_for_cleanup and not blacklisted:
                     cleanup = process_cleanup_for_series(
                         target_instance=target, tvdb_id=show.get('tvdbId'), target_series_id=show['id'],
                         source_episodes=src_eps, target_episodes=tgt_eps, stats=stats, target_api=target_api,
@@ -1029,6 +1049,10 @@ def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
                     totals.failures += cleanup.cleanup_failures
                     for event in cleanup.events:
                         save_log(provider, 1 if 'failure' not in event else 2, sanitize_text(event))
+            title_cleanup = process_title_cleanup(product='sonarr', target=target, api=target_api,
+                membership=blacklist, remaining_budget=cleanup_remaining_delete_attempts,
+                stop=cleanup_stop_real_deletes)
+            totals.failures += title_cleanup.failures
             log_cleanup_series_summaries(provider, cleanup_series_summaries)
             status = 207 if totals.failures else 200
             log_status = 2 if totals.failures else 1
@@ -1036,7 +1060,8 @@ def reconcile_sonarr_ondemand(force=False, scheduled_for=None):
             save_log(provider, log_status, f'Sonarr reconciliation: series compared={totals.series_compared} target_only={totals.series_target_only} episodes inspected={totals.episodes_inspected} newly_monitored={totals.episodes_newly_monitored} newly_unmonitored={totals.episodes_newly_unmonitored} unchanged={totals.episodes_unchanged} searches={totals.searches_triggered} specials_ignored={totals.specials_ignored} future_ignored={totals.future_episodes_ignored} unscheduled_ignored={totals.unscheduled_episodes_ignored} malformed={totals.malformed_episodes} seasons_newly_monitored={totals.seasons_newly_monitored} seasons_newly_unmonitored={totals.seasons_newly_unmonitored} seasons_unchanged={totals.seasons_unchanged} season_update_failures={totals.season_update_failures} series_newly_monitored={totals.series_newly_monitored} series_newly_unmonitored={totals.series_newly_unmonitored} series_unchanged={totals.series_unchanged} series_update_failures={totals.series_update_failures} initial_searches_triggered={totals.initial_searches_triggered} search_candidates_new={search_candidate_totals['search_candidates_new']} search_candidates_pending={search_candidate_totals['search_candidates_pending']} search_candidates_submitted={search_candidate_totals['search_candidates_submitted']} search_candidates_cancelled={search_candidate_totals['search_candidates_cancelled']} search_candidates_deferred={search_candidate_totals['search_candidates_deferred']} search_candidates_recovered={search_candidate_totals['search_candidates_recovered']} search_recovery_failures={search_candidate_totals['search_recovery_failures']} search_failures={search_candidate_totals['search_failures']} failures={totals.failures} cleanup_candidates_new={cleanup_totals['cleanup_candidates_new']} cleanup_candidates_pending={cleanup_totals['cleanup_candidates_pending']} cleanup_candidates_ready={cleanup_totals['cleanup_candidates_ready']} cleanup_candidates_cancelled={cleanup_totals['cleanup_candidates_cancelled']} cleanup_would_delete={cleanup_totals['cleanup_would_delete']} cleanup_files_deleted={cleanup_totals['cleanup_files_deleted']} cleanup_files_already_absent={cleanup_totals['cleanup_files_already_absent']} cleanup_deferred_by_limit={cleanup_totals['cleanup_deferred_by_limit']} cleanup_failures={cleanup_totals['cleanup_failures']} {command_summary}')
             monitoring_counters = {key: value for key, value in asdict(totals).items()
                 if isinstance(value, (int, float, bool))}
-            counters = {**monitoring_counters, **search_candidate_totals, **command_totals, **cleanup_totals}
+            counters = {**monitoring_counters, **search_candidate_totals, **command_totals, **cleanup_totals,
+                'blacklist_delete_attempts': title_cleanup.attempts, 'blacklist_cleanup_failures': title_cleanup.failures}
             message = 'partial_failure' if totals.failures else 'ok'
             _try_finish_reconciliation_status('sonarr', status, message, counters,
                 source.id, target.id, source_ok=True, target_ok=True)
@@ -1156,14 +1181,27 @@ def _reconcile_radarr_ondemand(force=False, scheduled_for=None, health_context=N
                 source_instance_id=source.id, target_instance_id=target.id, source_ok=True, target_ok=False)
             return {'result': 502, 'message': reason}
         backfill_candidate_titles('radarr', target, source_movies, target_movies)
-        result = calculate_movie_monitoring(source_movies, target_movies)
+        try:
+            blacklist = refresh_blacklists(force=False)
+            if blacklist.sources:
+                validate_target('radarr', target)
+            target_api = GuardedReconciliationAPI(target_api, 'radarr', target, blacklist)
+        except (BlacklistError, CleanupDeferred) as exc:
+            _try_finish_reconciliation_status('radarr', 502, str(exc),
+                source_instance_id=source.id, target_instance_id=target.id, source_ok=True, target_ok=True)
+            return {'result': 502, 'message': str(exc)}
+        blocked_tmdb_ids = {movie['tmdbId'] for movie in target_movies if blacklist.contains('radarr', movie['tmdbId'])}
+        blocked_movie_ids = {movie['id'] for movie in target_movies if movie['tmdbId'] in blocked_tmdb_ids}
+        maintain_candidates('radarr', target, target_movies, blacklist,
+            max(0, min(168, int(Preferences.get_value('blacklist_cleanup_grace_hours', '24') or '24'))))
+        result = calculate_movie_monitoring(source_movies, target_movies, blocked_tmdb_ids)
         applied_true = _apply_radarr_monitor_batches(target_api, result.monitor_true_ids, True, result)
         applied_false = _apply_radarr_monitor_batches(target_api, result.monitor_false_ids, False, result)
-        eligible_ids = {movie['id'] for movie in target_movies if movie['id'] not in result.monitor_false_ids and
+        eligible_ids = {movie['id'] for movie in target_movies if movie['id'] not in blocked_movie_ids and movie['id'] not in result.monitor_false_ids and
             not movie['hasFile'] and movie['isAvailable'] and
             not next((source_movie['hasFile'] for source_movie in source_movies if source_movie['tmdbId'] == movie['tmdbId']), False)}
         confirmed = {movie['id'] for movie in target_movies if movie.get('monitored') is True and movie['id'] in eligible_ids} | set(applied_true)
-        submission_blocked_movie_ids = set()
+        submission_blocked_movie_ids = set(blocked_movie_ids)
         search_counters, search_events, search_failed = update_movie_search_candidates(
             target_instance=target, target_movies=target_movies, eligible_movie_ids=eligible_ids,
             confirmed_monitored_ids=confirmed, newly_monitored_ids=applied_true,
@@ -1202,7 +1240,7 @@ def _reconcile_radarr_ondemand(force=False, scheduled_for=None, health_context=N
         cleanup = process_radarr_cleanup(
             target_instance=target, source_movies=source_movies, target_movies=target_movies,
             confirmed_unmonitored_ids=confirmed_unmonitored,
-            monitoring_blocked_ids=monitoring_blocked, source_api=source_api, target_api=target_api,
+            monitoring_blocked_ids=monitoring_blocked | blocked_movie_ids, source_api=source_api, target_api=target_api,
             cleanup_enabled=Preferences.get_value('radarr_cleanup_enabled','0') == '1',
             dry_run=Preferences.get_value('radarr_cleanup_dry_run','1') != '0',
             grace_hours=max(0,min(168,int(Preferences.get_value('radarr_cleanup_grace_hours','24') or 24))),
@@ -1210,9 +1248,15 @@ def _reconcile_radarr_ondemand(force=False, scheduled_for=None, health_context=N
             stop_real_deletes=bool(poll_failed or command_failed or result.monitor_update_failures),
         )
         result.failures += int(bool(cleanup.cleanup_failures))
+        title_cleanup = process_title_cleanup(product='radarr', target=target, api=target_api,
+            membership=blacklist, remaining_budget=max(0, max(1, min(500, int(
+                Preferences.get_value('radarr_cleanup_max_deletions_per_run', '25') or '25'))) - cleanup.delete_attempts_consumed),
+            stop=cleanup.stop_deletes_for_run)
+        result.failures += title_cleanup.failures
         all_counters = {**asdict(result), **search_counters, **command_counters,
             'initial_searches_triggered': submission['initial_submitted'],
-            'search_retries_submitted': submission['retry_submitted'], **cleanup.json_counters()}
+            'search_retries_submitted': submission['retry_submitted'], **cleanup.json_counters(),
+            'blacklist_delete_attempts': title_cleanup.attempts, 'blacklist_cleanup_failures': title_cleanup.failures}
         summary_counters = {**search_counters, **command_counters,
             'initial_searches_triggered': submission['initial_submitted'],
             'search_retries_submitted': submission['retry_submitted'], **cleanup.json_counters()}

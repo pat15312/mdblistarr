@@ -1,3 +1,4 @@
+from .cleanup_lock import RequestNotSent
 import ast
 import json
 from datetime import datetime, timedelta
@@ -498,7 +499,11 @@ def submit_pending_search_candidates(*, target_api, target_instance, batch_size=
                 for c in batch:
                     c.current_command = command; c.status = SEARCH_STATUS_SUBMITTED; c.last_confirmed_at = batch_now
                 RadarrMovieSearchCandidate.objects.bulk_update(batch, ['current_command','status','last_confirmed_at','updated_at'])
-            response = target_api.trigger_movies_search(ids)  # deliberately exactly one POST
+            request_not_sent = False
+            try:
+                response = target_api.trigger_movies_search(ids)  # deliberately exactly one POST
+            except RequestNotSent:
+                request_not_sent, response = True, {}
             try:
                 # Older Sonarr/PR #8 responses may omit body/status; validate all supplied identity data.
                 if not command_response_succeeded(response, ids):
@@ -526,9 +531,9 @@ def submit_pending_search_candidates(*, target_api, target_instance, batch_size=
                 events.append(f"MoviesSearch {'retry ' if attempt_number > 1 else ''}{status} command_id={command.radarr_command_id} movies={len(batch)} attempt={attempt_number}")
             except (ValueError, TypeError) as exc:
                 status_code = response.get('status_code') if isinstance(response, dict) else None
-                definite_rejection = isinstance(status_code, int) and not isinstance(status_code, bool) and not 200 <= status_code < 300
+                definite_rejection = request_not_sent or (isinstance(status_code, int) and not isinstance(status_code, bool) and not 200 <= status_code < 300)
                 command.status = 'superseded' if definite_rejection else 'ambiguous'
-                command.failure_reason = sanitize_text(exc)[:255]; command.save()
+                command.failure_reason = 'request_not_sent_blacklist_guard' if request_not_sent else sanitize_text(exc)[:255]; command.save()
                 if definite_rejection:
                     for candidate in batch:
                         candidate.status = SEARCH_STATUS_PENDING

@@ -3,12 +3,12 @@ from django.core.paginator import Paginator
 from django.db.models import CharField, Value
 from django.http import Http404
 
-from .arr_health import (_cleanup_groups, _search_groups, _configured_instance, _safe_id,
+from .arr_health import (_cleanup_groups, _title_cleanup_groups, _search_groups, _configured_instance, _safe_id,
     _episode_labels)
 from .media_display import safe_title
 from .models import (Preferences, SonarrInstance, RadarrInstance, SonarrCleanupCandidate,
     RadarrCleanupCandidate, SonarrEpisodeSearchCandidate, RadarrMovieSearchCandidate,
-    SonarrEpisodeSearchCommand, RadarrMovieSearchCommand)
+    SonarrEpisodeSearchCommand, RadarrMovieSearchCommand, TitleCleanupCandidate)
 
 SEARCH_LABELS = {
     'pending': 'Pending', 'in_flight': 'In flight', 'needs_attention': 'Needs attention',
@@ -18,7 +18,7 @@ SEARCH_LABELS = {
 }
 CLEANUP_LABELS = {
     'pending': 'Pending', 'ready': 'Ready', 'active_errors': 'Active errors',
-    'deleted': 'Deleted', 'cancelled': 'Cancelled', 'already_absent': 'Already absent',
+    'deleted': 'Deleted', 'cancelled': 'Cancelled', 'already_absent': 'Already absent', 'in_flight': 'Unverified title removals',
 }
 ATTENTION_GROUPS = ('retry_exhausted', 'active_errors', 'uncertain', 'unreconciled_terminal_failures')
 COMMAND_MEDIA_LIMIT = 100
@@ -48,7 +48,7 @@ def _timestamp(row, kind, category):
         }.get(row.status, ('terminal_at', 'Terminal state recorded'))
     elif category == 'pending':
         field, label = 'first_eligible_at', 'Eligible since'
-    elif kind == 'cleanup' and category in ('ready', 'deleted', 'cancelled'):
+    elif kind in ('cleanup', 'title') and category in ('ready', 'deleted', 'cancelled'):
         field, label = {'ready': ('ready_at', 'Ready since'), 'deleted': ('deleted_at', 'Deleted at'),
                         'cancelled': ('cancelled_at', 'Cancelled at')}[category]
     else:
@@ -79,11 +79,19 @@ def build_health_details(product, section, metric, page_number=None):
     queries = []
     models = {}
     for key in keys:
+        if key not in groups:
+            continue
         rows = groups[key]
         kind = 'cleanup' if section == 'cleanup' else 'command' if rows.model is command_model else 'candidate'
         models[kind] = rows.model
         queries.append(rows.order_by().annotate(
             kind=Value(kind, output_field=CharField()), category=Value(key, output_field=CharField())
+        ).values('id', 'kind', 'category'))
+    if section == 'cleanup':
+        title_groups = _title_cleanup_groups(product, target_id)
+        models['title'] = TitleCleanupCandidate
+        queries.append(title_groups[metric].order_by().annotate(
+            kind=Value('title', output_field=CharField()), category=Value(metric, output_field=CharField())
         ).values('id', 'kind', 'category'))
     references = queries[0].union(*queries[1:], all=True) if len(queries) > 1 else queries[0]
     page = Paginator(references.order_by('category', 'id'), 25).get_page(page_number)
@@ -101,12 +109,31 @@ def build_health_details(product, section, metric, page_number=None):
             candidates = row.candidates.filter(target_instance_id=target_id).order_by('id')
             media_count = candidates.count()
             media = [_media(candidate, sonarr) for candidate in candidates[:COMMAND_MEDIA_LIMIT]]
+        elif kind == 'title':
+            media_count = 1
+            media = [{'title': safe_title(row.target_title) or f'{row.external_id} (title unavailable)',
+                      'identity': f"{'TVDb' if sonarr else 'TMDb'} {row.external_id} · Entire {'television series' if sonarr else 'movie'}",
+                      'external_id': row.external_id, 'title_missing': False}]
         else:
             media_count, media = 1, [_media(row, sonarr, kind == 'cleanup')]
+        action, outcome = '', ''
+        if section == 'cleanup':
+            if kind == 'title':
+                subject = 'television series' if sonarr else 'movie'
+                action = f'Entire {subject} removed' if row.status == 'deleted' else f'Remove entire {subject}'
+                verified = row.events.filter(outcome='original_file_removal_verified').count()
+                outcome = f'{verified} associated file removal(s) verified. ' + row.last_error
+                if row.status == 'cancelled' and verified:
+                    outcome += ' Cleanup cancelled after partial removal; files are not restored.'
+            else:
+                subject = 'Episode file' if sonarr else 'Movie file'
+                action = f'{subject} removed' if row.status == 'deleted' else f'Remove {subject.lower()}'
         entries.append({
             'id': row.pk, 'kind': kind, 'category': labels.get(category, category),
             'status': row.get_status_display(), 'media': media,
             'media_count': media_count, 'media_truncated': media_count > len(media),
+            'reason': 'Blacklisted' if kind == 'title' else 'Permanent duplicate' if kind == 'cleanup' else '',
+            'action': action, 'outcome': outcome,
             **_timestamp(row, kind, category),
         })
     page.object_list = entries

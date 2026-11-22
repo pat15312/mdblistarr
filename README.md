@@ -10,6 +10,7 @@ This repository is a fork of [linaspurinis/mdblistarr](https://github.com/linasp
 - Separate Permanent/library-source, On-Demand and queue-import roles.
 - Sonarr and Radarr monitoring reconciliation, persistent search tracking and conservative duplicate-file cleanup.
 - A staff-only Arr Health dashboard based on persisted local state.
+- Configurable MDBList blacklists that suppress unwanted On-Demand titles, with separately enabled whole-title cleanup and dry-run preview.
 
 ## Quick start
 
@@ -86,6 +87,7 @@ Startup applies migrations and credential maintenance automatically. `latest` ca
 - [Product context](docs/PRODUCT_CONTEXT.md): historical rationale, scope and non-goals.
 - [Architecture](docs/ARCHITECTURE.md): modules, models and data flow.
 - [Arr behaviour](docs/ARR_BEHAVIOUR.md): monitoring, search and cleanup rules.
+- [Blacklist](docs/BLACKLIST.md): configuration, native removal safety and activation.
 - [Operations](docs/OPERATIONS.md): configuration, defaults, deployment and recovery.
 - [Security](docs/SECURITY.md): authentication, secrets and trust boundaries.
 - [Development](docs/DEVELOPMENT.md): source builds, local setup and validation.

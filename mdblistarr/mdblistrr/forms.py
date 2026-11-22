@@ -1,9 +1,30 @@
 from django.contrib.auth import get_user_model
 from django import forms
+from django.db import transaction
 from django.contrib.auth.forms import UserCreationForm
 from .models import Preferences, SonarrInstance, RadarrInstance
 
 RECONCILIATION_INTERVAL_CHOICES = [('5', 'Every 5 minutes'), ('15', 'Every 15 minutes'), ('30', 'Every 30 minutes')]
+
+
+class BlacklistSettingsForm(forms.Form):
+    enabled = forms.BooleanField(label='Enable automatic blacklist removal', required=False)
+    dry_run = forms.BooleanField(label='Dry-run blacklist cleanup', required=False, initial=True)
+    grace_hours = forms.ChoiceField(label='Blacklist grace period', initial='24',
+        choices=[('0', 'Immediately'), ('1', '1 hour'), ('6', '6 hours'), ('12', '12 hours'),
+                 ('24', '24 hours'), ('48', '48 hours'), ('168', '7 days')])
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name, field in self.fields.items():
+            field.widget.attrs['class'] = 'form-check-input' if isinstance(field.widget, forms.CheckboxInput) else 'form-select w-auto'
+            field.widget.attrs['id'] = 'blacklist_' + name
+
+    @transaction.atomic
+    def save(self):
+        Preferences.set_value('blacklist_cleanup_enabled', '1' if self.cleaned_data['enabled'] else '0')
+        Preferences.set_value('blacklist_cleanup_dry_run', '1' if self.cleaned_data['dry_run'] else '0')
+        Preferences.set_value('blacklist_cleanup_grace_hours', self.cleaned_data['grace_hours'])
 
 
 class RadarrReconciliationForm(forms.Form):
