@@ -477,6 +477,18 @@ class ClientTests(SimpleTestCase):
                  'ProviderIds': {'Tmdb': '100'}} for i in (1, 2)]
         self.assertEqual(integration.matching(rows, candidate, '/library/movies/Title'), rows)
 
+    def test_movie_collection_grouping_cannot_hide_member_movies(self):
+        movie = {'Id': 'movie', 'Type': 'Movie', 'Path': '/library/movies/Title/movie.mkv',
+                 'ProviderIds': {'Tmdb': '100'}}
+        collection = {'Id': 'collection', 'Type': 'BoxSet', 'Path': '/collections/Collection'}
+        def listing(method, resource, params):
+            items = [movie] if params.get('CollapseBoxSetItems') == 'false' else [collection]
+            return {'Items': items, 'TotalRecordCount': len(items)}
+        self.client.request = Mock(side_effect=listing)
+        rows = self.client.catalogue('radarr')
+        self.assertEqual([row['Id'] for row in integration.matching(
+            rows, Mock(product='radarr', external_id=100), '/library/movies/Title')], ['movie'])
+
     def test_full_pagination_includes_episodes_without_series_provider_collision(self):
         rows = [{'Id': str(i), 'Type': 'Episode', 'Path': f'/library/tv/Other/{i}.mkv',
                  'ProviderIds': {'Tvdb': '200'}} for i in range(5001)]

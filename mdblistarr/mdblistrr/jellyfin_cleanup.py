@@ -114,7 +114,7 @@ class Client:
                 'ParentId': self.config['library_id'], 'Recursive': 'true',
                 'IncludeItemTypes': ','.join(types), 'Fields': 'Path,ProviderIds',
                 'StartIndex': offset, 'Limit': 5000, 'EnableUserData': 'false', 'EnableImages': 'false',
-                'SortBy': 'SortName', 'SortOrder': 'Ascending'})
+                'CollapseBoxSetItems': 'false', 'SortBy': 'SortName', 'SortOrder': 'Ascending'})
             if (not isinstance(response, dict) or type(response.get('TotalRecordCount')) is not int
                     or not 0 <= response['TotalRecordCount'] <= 200000
                     or not isinstance(response.get('Items'), list)):
