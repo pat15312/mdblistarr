@@ -79,6 +79,7 @@ python mdblistarr/manage.py check
 SESSION_COOKIE_SECURE=1 CSRF_COOKIE_SECURE=1 python mdblistarr/manage.py check --deploy --fail-level ERROR
 python mdblistarr/manage.py test mdblistrr
 docker build -t mdblistarr:local .
+python tests/jellyfin_container_smoke.py mdblistarr:local
 git diff --check
 ```
 
@@ -102,6 +103,7 @@ Start with focused tests while iterating, then run the full application suite fo
 | Due-slot persistence, delay and lock contention | `test_reconciliation_schedule` |
 | Cleanup summaries and bounded output | `test_cleanup_logging` |
 | Blacklist API, identity, staged removal, mutation guards and Health | `test_blacklist` |
+| Optional Jellyfin continuation, directory safety, fair recovery and catalogue verification | `test_jellyfin_cleanup` |
 | Retained upstream compatibility | `test_upstream_sync` |
 
 For example:
@@ -122,7 +124,7 @@ Startup, persistence and secret changes need fresh-install and upgrade considera
 
 ## Implementation discipline
 
-Prefer pure decision helpers, explicit read/decision/write orchestration and small shared primitives. Preserve product-specific semantics. Do not add transparent retries to non-idempotent search actions or direct filesystem deletion as a cleanup shortcut. Keep intent durable before uncertain side effects.
+Prefer pure decision helpers, explicit read/decision/write orchestration and small shared primitives. Preserve product-specific semantics. Do not add transparent retries to non-idempotent search actions or recursive filesystem deletion as a cleanup shortcut. The optional identity-bound, directory-only blacklist continuation is documented in [Blacklist](BLACKLIST.md#optional-jellyfin-completion). Keep intent durable before uncertain side effects.
 
 Arr reconciliation uses shared due slots; preserve late-start, lock-deferral, consumed-on-failure and manual-run semantics described in [Operations](OPERATIONS.md#schedules-and-manual-runs). Traditional jobs retain separate scheduling and should not be described as already using that helper.
 

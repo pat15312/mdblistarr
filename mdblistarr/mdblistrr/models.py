@@ -120,6 +120,34 @@ class TitleCleanupEvent(models.Model):
     evidence = models.JSONField(default=dict)
 
 
+class JellyfinCleanup(models.Model):
+    """Optional continuation; historical native success retains its meaning."""
+    candidate = models.OneToOneField(TitleCleanupCandidate, on_delete=models.PROTECT,
+                                    related_name='jellyfin_cleanup')
+    status = models.CharField(max_length=32, default='native_pending', choices=[
+        ('native_pending', 'Native removal pending'),
+        ('directory_pending', 'Empty-directory cleanup pending'),
+        ('directory_submitting', 'Directory removal submitted'),
+        ('uncertain', 'Directory removal uncertain'),
+        ('directories_removed', 'Directories removed; Jellyfin verification pending'),
+        ('refresh_submitting', 'Jellyfin refresh submitted'),
+        ('refresh_pending', 'Jellyfin refresh pending'),
+        ('refresh_uncertain', 'Jellyfin refresh uncertain'),
+        ('refresh_incomplete', 'Refresh outcome unverified; title still present'),
+        ('complete', 'Jellyfin disappearance verified'),
+    ])
+    binding = models.JSONField(default=dict)
+    directories = models.JSONField(default=dict)
+    original_item_ids = models.JSONField(default=list)
+    original_series_ids = models.JSONField(default=list)
+    refresh_requested_at = models.DateTimeField(null=True, blank=True)
+    refresh_status = models.CharField(max_length=32, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
 class ArrReconciliationStatus(models.Model):
     PRODUCT_SONARR = 'sonarr'
     PRODUCT_RADARR = 'radarr'

@@ -56,6 +56,12 @@
           <h3 class="h6 border-top pt-3">Cleanup - current persistent state</h3>
           <p class="small">Blacklist cleanup: <strong>{{ product.configuration.blacklist_mode }}</strong></p>
           <p class="small text-body-secondary">File candidates: {{ product.cleanup.file_pending }} pending, {{ product.cleanup.file_ready }} ready, {{ product.cleanup.file_deleted }} deleted. Whole-title candidates: {{ product.cleanup.title_pending }} pending, {{ product.cleanup.title_ready }} ready, {{ product.cleanup.title_deleted }} deleted. Combined counts below count cleanup candidates, not individual media files.</p>
+          <p class="small text-body-secondary">Whole-title Deleted counts confirm native Arr removal. Jellyfin: {{ product.cleanup.jellyfin_complete }} verified complete, {{ product.cleanup.jellyfin_incomplete }} incomplete. Older removals without tracking have no Jellyfin completion claim.</p>
+          {% if product.cleanup.jellyfin_candidates %}
+          <div class="table-responsive"><table class="table table-sm small"><caption>Native removal complete; Jellyfin continuation (up to 100)</caption><thead><tr><th scope="col">Title</th><th scope="col">Progress</th><th scope="col">Outcome</th></tr></thead><tbody>
+          {% for stage in product.cleanup.jellyfin_candidates %}<tr><td>{{ stage.candidate.target_title }}</td><td>{{ stage.get_status_display }}{% if stage.refresh_status %}<br>Library refresh: {{ stage.refresh_status }}{% endif %}</td><td>{{ stage.last_error|default:'Awaiting verification' }}</td></tr>{% endfor %}
+          </tbody></table></div>
+          {% endif %}
           {% if product.cleanup.title_in_flight %}<p class="small">Unverified title removals: {% include "health_count.html" with count=product.cleanup.title_in_flight section="cleanup" metric="in_flight" label="Unverified title removals" %}. Original requests are reconciled without repeating deletion.</p>{% endif %}
           {% if product.cleanup.title_candidates %}
           <div class="table-responsive"><table class="table table-sm small"><caption>Active blacklisted titles (up to 100, newest ready time first)</caption><thead><tr><th scope="col">Title / identity</th><th scope="col">State</th><th scope="col">Ready at</th><th scope="col">Outcome / block reason</th></tr></thead><tbody>

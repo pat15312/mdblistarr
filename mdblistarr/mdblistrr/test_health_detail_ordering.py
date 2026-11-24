@@ -204,7 +204,7 @@ class CleanupDetailOrderingTests(TestCase):
                 self.assertEqual([r.pk for r in data['title_candidates']],
                                  [r.pk for r in reversed(rows)][:100])
                 self.assertEqual(data['title_ready'], 104)
-                selects = [q['sql'] for q in queries if 'target_title' in q['sql'] and 'titlecleanupcandidate' in q['sql']]
+                selects = [q['sql'] for q in queries if 'target_title' in q['sql'] and 'titlecleanupcandidate' in q['sql'] and 'jellyfincleanup' not in q['sql']]
                 self.assertEqual(len(selects), 1)
                 self.assertIn('LIMIT 100', selects[0])
 

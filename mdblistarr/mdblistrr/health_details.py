@@ -133,9 +133,12 @@ def build_health_details(product, section, metric, page_number=None):
         if section == 'cleanup':
             if kind == 'title':
                 subject = 'television series' if sonarr else 'movie'
-                action = f'Entire {subject} removed' if row.status == 'deleted' else f'Remove entire {subject}'
+                action = f'Entire {subject} removed from Arr' if row.status == 'deleted' else f'Remove entire {subject}'
                 verified = row.events.filter(outcome='original_file_removal_verified').count()
                 outcome = f'{verified} associated file removal(s) verified. ' + row.last_error
+                stage = getattr(row, 'jellyfin_cleanup', None)
+                outcome += (' Jellyfin: ' + stage.get_status_display() + '. ' + stage.last_error
+                            if stage else ' Jellyfin completion not tracked for this removal.')
                 if row.status == 'cancelled' and verified:
                     outcome += ' Cleanup cancelled after partial removal; files are not restored.'
             else:
