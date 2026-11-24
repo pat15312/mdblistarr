@@ -390,14 +390,14 @@ class TargetScopedMetricsAndViewTests(TestCase):
                     row = self._cleanup_candidate(product, (1000 if state == 'ready' else 2000) + index, state,
                         **{timestamp: now - timedelta(hours=index // 3)})
                     rows.append(row)
-                expected[state] = [r.pk for r in sorted(rows, key=lambda r: (getattr(r, timestamp), r.pk))][:limit]
+                expected[state] = [r.pk for r in sorted(rows, key=lambda r: (-getattr(r, timestamp).replace(microsecond=0).timestamp(), r.pk))][:limit]
             with CaptureQueriesContext(connection) as queries:
                 data = _cleanup_metrics(model, target.pk)
             selects = [q['sql'] for q in queries if 'target_title' in q['sql']]
             self.assertEqual(len(selects), 2)
             for sql, (state, timestamp) in zip(selects, (('ready', 'ready_at'), ('pending', 'first_eligible_at'))):
                 self.assertIn(f'LIMIT {limit}', sql)
-                self.assertRegex(sql, r'ORDER BY .+ ASC, .+ ASC LIMIT')
+                self.assertRegex(sql, r'ORDER BY .+ DESC NULLS LAST, .+ ASC NULLS LAST, .+ ASC LIMIT')
                 self.assertIn(f"= '{state}'", sql)
                 self.assertEqual(data[state], limit + 7)
                 self.assertEqual([x['id'] for x in data[f'{state}_candidates']], expected[state])

@@ -38,6 +38,7 @@ Paths below are relative to the repository root.
 | `mdblistarr/mdblistrr/radarr_cleanup.py` | Exact movie-file candidate lifecycle, edition checks and destructive verification |
 | `mdblistarr/mdblistrr/blacklist.py` | Authenticated complete snapshots, identity translation and union membership |
 | `mdblistarr/mdblistrr/title_cleanup.py`, `title_transport.py`, `cleanup_lock.py` | Related whole-title lifecycle, one-shot native transport and final configuration gate |
+| `mdblistarr/mdblistrr/cleanup_display_order.py` | Shared SQL ordering for paginated and bounded inline cleanup displays |
 | `mdblistarr/mdblistrr/health_details.py` | Paginated, local-only search and cleanup detail views |
 | `mdblistarr/mdblistrr/media_display.py` | Best-effort title backfill from existing snapshots and explicit catalogue title recovery, without lifecycle changes |
 | `mdblistarr/mdblistrr/arr_health.py` | Best-effort reconciliation snapshots and local health aggregation |
