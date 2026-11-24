@@ -479,11 +479,11 @@ class ClientTests(SimpleTestCase):
 
     def test_full_pagination_includes_episodes_without_series_provider_collision(self):
         rows = [{'Id': str(i), 'Type': 'Episode', 'Path': f'/library/tv/Other/{i}.mkv',
-                 'ProviderIds': {'Tvdb': '200'}} for i in range(501)]
-        self.client.request = Mock(side_effect=[{'Items': rows[:500], 'TotalRecordCount': 501},
-                                               {'Items': rows[500:], 'TotalRecordCount': 501}])
+                 'ProviderIds': {'Tvdb': '200'}} for i in range(5001)]
+        self.client.request = Mock(side_effect=[{'Items': rows[:5000], 'TotalRecordCount': 5001},
+                                               {'Items': rows[5000:], 'TotalRecordCount': 5001}])
         result = self.client.catalogue('sonarr')
-        self.assertEqual(len(result), 501)
+        self.assertEqual(len(result), 5001)
         self.assertIn('Episode', self.client.request.call_args.args[2]['IncludeItemTypes'])
         self.assertEqual(integration.matching(result, Mock(product='sonarr', external_id=200), '/library/tv/Target'), [])
 
