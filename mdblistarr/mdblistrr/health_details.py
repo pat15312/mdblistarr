@@ -1,15 +1,11 @@
 """Bounded drill-downs using the same local query predicates as health counts."""
-import json
-from datetime import timezone
-
 from django.core.paginator import Paginator
-from django.db import connection
-from django.db.models import CharField, F, Func, IntegerField, Value
-from django.db.models.functions import TruncSecond
+from django.db.models import CharField, Value
 from django.http import Http404
 
 from .arr_health import (_cleanup_groups, _title_cleanup_groups, _search_groups, _configured_instance, _safe_id,
     _episode_labels)
+from .cleanup_display_order import CLEANUP_DISPLAY_ORDER, cleanup_sort_columns
 from .media_display import safe_title
 from .models import (Preferences, SonarrInstance, RadarrInstance, SonarrCleanupCandidate,
     RadarrCleanupCandidate, SonarrEpisodeSearchCandidate, RadarrMovieSearchCandidate,
@@ -27,47 +23,6 @@ CLEANUP_LABELS = {
 }
 ATTENTION_GROUPS = ('retry_exhausted', 'active_errors', 'uncertain', 'unreconciled_terminal_failures')
 COMMAND_MEDIA_LIMIT = 100
-
-
-def _title_sort_key(value):
-    return safe_title(value).casefold() or None
-
-
-def _episode_sort_part(value, part):
-    """Earliest numeric pair, or unknown for malformed stored display metadata."""
-    try:
-        keys = json.loads(value)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(keys, list):
-        return None
-    earliest = None
-    for key in keys:
-        if (not isinstance(key, list) or len(key) != 2 or
-                any(type(number) is not int or not 0 <= number < 2**63 for number in key)):
-            return None
-        pair = tuple(key)
-        if earliest is None or pair < earliest:
-            earliest = pair
-    return earliest[part] if earliest else None
-
-
-def _cleanup_sort_columns(rows, metric, sonarr, kind):
-    # SQLite scalar functions keep display normalization and Unicode case folding
-    # identical to rendering without fetching the full history into Python.
-    def episode(part):
-        if sonarr and kind == 'cleanup':
-            return Func('linked_episode_keys', Value(part),
-                        function='health_episode_sort_part', output_field=IntegerField())
-        return Value(None, output_field=IntegerField())
-
-    return rows.annotate(
-        # The template displays seconds. UTC also preserves chronology at DST folds.
-        sort_time=TruncSecond('first_eligible_at' if metric == 'pending' else 'deleted_at',
-                             tzinfo=timezone.utc),
-        sort_title=Func('target_title', function='health_title_sort_key', output_field=CharField()),
-        sort_season=episode(0), sort_episode=episode(1),
-    )
 
 
 def _media(candidate, sonarr, cleanup=False):
@@ -122,17 +77,13 @@ def build_health_details(product, section, metric, page_number=None):
     groups = (_search_groups(candidate_model, command_model, target_id) if section == 'search'
               else _cleanup_groups(cleanup_model, target_id))
     keys = ATTENTION_GROUPS if metric == 'needs_attention' else (metric,)
-    sort_cleanup = section == 'cleanup' and metric in ('pending', 'deleted')
+    sort_cleanup = section == 'cleanup' and metric in ('pending', 'ready', 'deleted')
     fields = ['id', 'kind', 'category']
     ordering = ['category', 'id']
     if sort_cleanup:
-        connection.ensure_connection()
-        connection.connection.create_function('health_title_sort_key', 1, _title_sort_key, deterministic=True)
-        connection.connection.create_function('health_episode_sort_part', 2, _episode_sort_part, deterministic=True)
+        timestamp = {'pending': 'first_eligible_at', 'ready': 'ready_at', 'deleted': 'deleted_at'}[metric]
         fields += ['sort_time', 'sort_title', 'sort_season', 'sort_episode']
-        ordering = [F('sort_time').desc(nulls_last=True), F('sort_title').asc(nulls_last=True),
-                    F('sort_season').asc(nulls_last=True), F('sort_episode').asc(nulls_last=True),
-                    'kind', 'id']
+        ordering = [*CLEANUP_DISPLAY_ORDER, 'kind', 'id']
     queries = []
     models = {}
     for key in keys:
@@ -142,7 +93,7 @@ def build_health_details(product, section, metric, page_number=None):
         kind = 'cleanup' if section == 'cleanup' else 'command' if rows.model is command_model else 'candidate'
         models[kind] = rows.model
         if sort_cleanup:
-            rows = _cleanup_sort_columns(rows, metric, sonarr, kind)
+            rows = cleanup_sort_columns(rows, timestamp, sonarr, kind)
         queries.append(rows.order_by().annotate(
             kind=Value(kind, output_field=CharField()), category=Value(key, output_field=CharField())
         ).values(*fields))
@@ -151,7 +102,7 @@ def build_health_details(product, section, metric, page_number=None):
         models['title'] = TitleCleanupCandidate
         rows = title_groups[metric]
         if sort_cleanup:
-            rows = _cleanup_sort_columns(rows, metric, sonarr, 'title')
+            rows = cleanup_sort_columns(rows, timestamp, sonarr, 'title')
         queries.append(rows.order_by().annotate(
             kind=Value('title', output_field=CharField()), category=Value(metric, output_field=CharField())
         ).values(*fields))

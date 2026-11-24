@@ -6,6 +6,7 @@ from datetime import timedelta
 from django.db.models import Min, Count, Q
 from django.utils import timezone
 
+from .cleanup_display_order import CLEANUP_DISPLAY_ORDER, cleanup_sort_columns
 from .connect import sanitize_text
 from .models import (
     ArrReconciliationStatus, Preferences, RadarrCleanupCandidate, RadarrInstance,
@@ -163,11 +164,14 @@ def _add_title_cleanup_metrics(metrics, product, target_id):
         metrics['title_' + state] = groups[state].count()
         metrics[state] += metrics['title_' + state]
     metrics['title_in_flight'] = groups['in_flight'].count()
-    metrics['title_candidates'] = list(TitleCleanupCandidate.objects.filter(
+    title_rows = TitleCleanupCandidate.objects.filter(
         product=product, target_instance_id=target_id).exclude(
         status__in=('deleted', 'cancelled', 'already_absent')).annotate(
         verified_file_removals=Count('events', filter=Q(events__outcome='original_file_removal_verified'))
-        ).order_by('first_eligible_at', 'id')[:100])
+        )
+    metrics['title_candidates'] = list(cleanup_sort_columns(
+        title_rows, 'ready_at', product == 'sonarr', 'title'
+    ).order_by(*CLEANUP_DISPLAY_ORDER, 'id')[:CLEANUP_CANDIDATE_DISPLAY_LIMIT])
     return metrics
 
 
@@ -211,7 +215,8 @@ def _cleanup_metrics(model, target_id):
                if is_sonarr else ['tmdb_id', 'target_movie_id', 'movie_file_id'])
     for state, timestamp in (('ready', 'ready_at'), ('pending', 'first_eligible_at')):
         # Bound each status in SQL; aggregate counts still include the full backlog.
-        rows = candidates.filter(status=state).order_by(timestamp, 'id').values(*fields)[:CLEANUP_CANDIDATE_DISPLAY_LIMIT]
+        rows = cleanup_sort_columns(candidates.filter(status=state), timestamp, is_sonarr, 'cleanup')
+        rows = rows.order_by(*CLEANUP_DISPLAY_ORDER, 'id').values(*fields)[:CLEANUP_CANDIDATE_DISPLAY_LIMIT]
         metrics[f'{state}_candidates'] = [_cleanup_detail(row, is_sonarr) for row in rows]
         metrics[f'{state}_candidates_truncated'] = metrics[state] > CLEANUP_CANDIDATE_DISPLAY_LIMIT
     return metrics

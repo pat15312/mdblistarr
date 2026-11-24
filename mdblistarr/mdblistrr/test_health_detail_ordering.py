@@ -36,7 +36,7 @@ class CleanupDetailOrderingTests(TestCase):
         number = self.serial
         common = dict(status=metric, target_title=title, first_eligible_at=self.now,
                       last_confirmed_at=self.now, deleted_at=None)
-        common['first_eligible_at' if metric == 'pending' else 'deleted_at'] = timestamp
+        common[{'pending': 'first_eligible_at', 'ready': 'ready_at', 'deleted': 'deleted_at'}.get(metric, 'cancelled_at')] = timestamp
         if whole:
             return TitleCleanupCandidate.objects.create(product=product,
                 target_instance_id=self.targets[product].pk, target_fingerprint='a' * 64,
@@ -59,7 +59,7 @@ class CleanupDetailOrderingTests(TestCase):
 
     def test_dates_display_precision_titles_and_both_cleanup_kinds(self):
         for product in ('sonarr', 'radarr'):
-            for metric in ('pending', 'deleted'):
+            for metric in ('pending', 'ready', 'deleted'):
                 with self.subTest(product=product, metric=metric):
                     # Insertion order and microseconds deliberately disagree with display order.
                     old = self.candidate(product, metric, 'Aardvark', self.now - timedelta(seconds=1))
@@ -71,14 +71,14 @@ class CleanupDetailOrderingTests(TestCase):
                     whitespace = self.candidate(product, metric, ' \t\n', self.now)
                     newest = self.candidate(product, metric, 'Newest', self.now + timedelta(seconds=1), whole=True)
                     expected = [newest, alpha, upper, beta, zulu, whitespace, blank, old]
-                    if metric == 'deleted':
+                    if metric != 'pending':
                         unknown = self.candidate(product, metric, '', None)
                         known = self.candidate(product, metric, 'Known', None, whole=True)
                         expected += [known, unknown]
                     self.assertEqual(self.page_refs(product, metric), self.refs(expected))
 
     def test_numeric_episodes_multi_episode_files_and_whole_series(self):
-        for metric in ('pending', 'deleted'):
+        for metric in ('pending', 'ready', 'deleted'):
             with self.subTest(metric=metric):
                 whole = self.candidate('sonarr', metric, 'Example', self.now, whole=True)
                 s10 = self.candidate('sonarr', metric, 'Example', self.now, episodes=[[10, 1]])
@@ -98,7 +98,7 @@ class CleanupDetailOrderingTests(TestCase):
 
     def test_unicode_case_insensitive_display_titles(self):
         for product in ('sonarr', 'radarr'):
-            for metric in ('pending', 'deleted'):
+            for metric in ('pending', 'ready', 'deleted'):
                 with self.subTest(product=product, metric=metric):
                     later = self.candidate(product, metric, 'Éclair Z', self.now)
                     first = self.candidate(product, metric, 'éclair A', self.now, whole=True)
@@ -106,7 +106,7 @@ class CleanupDetailOrderingTests(TestCase):
 
     def test_complete_union_is_sorted_before_pagination(self):
         for product in ('sonarr', 'radarr'):
-            for metric in ('pending', 'deleted'):
+            for metric in ('pending', 'ready', 'deleted'):
                 with self.subTest(product=product, metric=metric):
                     rows = [self.candidate(product, metric, f'Title {number:02d}', self.now,
                                           whole=number % 2 == 0) for number in reversed(range(54))]
@@ -128,7 +128,7 @@ class CleanupDetailOrderingTests(TestCase):
                     self.assertEqual(len(set(actual)), 54)
 
     def test_numeric_episode_order_crosses_page_boundary(self):
-        for metric in ('pending', 'deleted'):
+        for metric in ('pending', 'ready', 'deleted'):
             rows = [self.candidate('sonarr', metric, 'Example', self.now, episodes=[[1, number]])
                     for number in reversed(range(1, 29))]
             self.assertEqual(self.page_refs('sonarr', metric) + self.page_refs('sonarr', metric, 2),
@@ -139,13 +139,13 @@ class CleanupDetailOrderingTests(TestCase):
         for product in ('sonarr', 'radarr'):
             old = self.candidate(product, 'deleted', 'Older', self.now - timedelta(seconds=1))
             new = self.candidate(product, 'deleted', 'Newer', self.now, whole=True)
-            # Ready is outside the requested change and retains ID ordering.
-            ready = [self.candidate(product, 'ready', title, self.now) for title in ('Zulu', 'Alpha')]
+            # Cancelled is outside the requested change and retains ID ordering.
+            cancelled = [self.candidate(product, 'cancelled', title, self.now) for title in ('Zulu', 'Alpha')]
             before = list(TitleCleanupCandidate.objects.values())
             with patch('requests.sessions.Session.request', side_effect=AssertionError('network')):
                 with CaptureQueriesContext(connection) as queries, timezone.override(ZoneInfo('Europe/London')):
                     response = self.client.get(reverse('arr_health_details_view', args=[product, 'cleanup', 'deleted']))
-                self.assertEqual(self.page_refs(product, 'ready'), self.refs(ready))
+                self.assertEqual(self.page_refs(product, 'cancelled'), self.refs(cancelled))
             self.assertEqual(response.status_code, 200)
             doc = html.fromstring(response.content)
             self.assertEqual(doc.xpath('//tbody/tr/td[2]//strong/text()'), ['Newer', 'Older'])
@@ -158,3 +158,80 @@ class CleanupDetailOrderingTests(TestCase):
                                  ('UPDATE', 'INSERT', 'DELETE', 'REPLACE') for q in queries))
             old.refresh_from_db(); new.refresh_from_db()
             self.assertEqual((old.status, new.status), ('deleted', 'deleted'))
+
+    def test_inline_file_tables_order_before_limit_and_preserve_oldest_summary(self):
+        from .arr_health import _cleanup_metrics
+        for product, model in (('sonarr', SonarrCleanupCandidate), ('radarr', RadarrCleanupCandidate)):
+            for metric in ('pending', 'ready'):
+                with self.subTest(product=product, metric=metric):
+                    oldest = self.candidate(product, metric, 'Aardvark', self.now - timedelta(days=1))
+                    rows = [self.candidate(product, metric, f'Title {number:03d}',
+                            self.now.replace(microsecond=number)) for number in reversed(range(102))]
+                    with CaptureQueriesContext(connection) as queries:
+                        data = _cleanup_metrics(model, self.targets[product].pk)
+                    self.assertEqual([r['id'] for r in data[f'{metric}_candidates']],
+                                     [r.pk for r in reversed(rows)][:100])
+                    self.assertTrue(data[f'{metric}_candidates_truncated'])
+                    self.assertEqual(data[f'oldest_{metric}_at'], self.now - timedelta(days=1))
+                    selects = [q['sql'] for q in queries if 'target_title' in q['sql']]
+                    self.assertTrue(all('LIMIT 100' in sql for sql in selects))
+
+    def test_inline_numeric_episode_ties_cross_display_limit(self):
+        from .arr_health import _cleanup_metrics
+        for metric in ('pending', 'ready'):
+            rows = [self.candidate('sonarr', metric, 'Example', self.now, episodes=[[2, number]])
+                    for number in reversed(range(1, 103))]
+            data = _cleanup_metrics(SonarrCleanupCandidate, self.targets['sonarr'].pk)
+            self.assertEqual([r['id'] for r in data[f'{metric}_candidates']],
+                             [r.pk for r in reversed(rows)][:100])
+
+    def test_inline_blacklist_uses_displayed_ready_time_before_limit(self):
+        from .arr_health import _cleanup_metrics, _add_title_cleanup_metrics
+        for product, model in (('sonarr', SonarrCleanupCandidate), ('radarr', RadarrCleanupCandidate)):
+            with self.subTest(product=product):
+                oldest = self.candidate(product, 'ready', 'Aardvark', self.now - timedelta(days=1), whole=True)
+                unknown = self.candidate(product, 'ready', 'Unknown', None, whole=True)
+                rows = [self.candidate(product, 'ready', f'Title {number:03d}',
+                        self.now.replace(microsecond=number), whole=True) for number in reversed(range(102))]
+                # First eligibility order deliberately disagrees with the displayed Ready at value.
+                oldest.first_eligible_at = self.now + timedelta(days=1)
+                oldest.save(update_fields=['first_eligible_at'])
+                rows[-1].status = 'files_removed'
+                rows[-1].save(update_fields=['status'])
+                with CaptureQueriesContext(connection) as queries:
+                    data = _cleanup_metrics(model, self.targets[product].pk)
+                    _add_title_cleanup_metrics(data, product, self.targets[product].pk)
+                self.assertEqual([r.pk for r in data['title_candidates']],
+                                 [r.pk for r in reversed(rows)][:100])
+                self.assertEqual(data['title_ready'], 104)
+                selects = [q['sql'] for q in queries if 'target_title' in q['sql'] and 'titlecleanupcandidate' in q['sql']]
+                self.assertEqual(len(selects), 1)
+                self.assertIn('LIMIT 100', selects[0])
+
+    def test_ready_and_inline_http_rendering_are_read_only(self):
+        self.client.force_login(self.staff)
+        for product in ('sonarr', 'radarr'):
+            self.candidate(product, 'ready', 'Older', self.now - timedelta(hours=1), whole=True)
+            self.candidate(product, 'ready', 'Zulu', self.now, whole=True)
+            self.candidate(product, 'ready', 'Alpha', self.now, whole=True)
+        before = list(TitleCleanupCandidate.objects.values())
+        with patch('requests.sessions.Session.request', side_effect=AssertionError('network')):
+            with CaptureQueriesContext(connection) as queries:
+                response = self.client.get('/health')
+                details = [self.client.get(reverse('arr_health_details_view', args=[p, 'cleanup', 'ready']))
+                           for p in ('sonarr', 'radarr')]
+        self.assertEqual(response.status_code, 200)
+        doc = html.fromstring(response.content)
+        tables = doc.xpath('//table[caption[contains(., "Active blacklisted titles")]]')
+        self.assertEqual(len(tables), 2)
+        for table in tables:
+            self.assertEqual([td.text.strip() for td in table.xpath('.//tbody/tr/td[1]')],
+                             ['Alpha', 'Zulu', 'Older'])
+        self.assertNotContains(response, 'oldest first')
+        for detail in details:
+            self.assertEqual(detail.status_code, 200)
+            self.assertEqual(html.fromstring(detail.content).xpath('//tbody/tr/td[2]//strong/text()'),
+                             ['Alpha', 'Zulu', 'Older'])
+        self.assertEqual(list(TitleCleanupCandidate.objects.values()), before)
+        self.assertFalse(any(q['sql'].lstrip().split()[0].upper() in
+                             ('UPDATE', 'INSERT', 'DELETE', 'REPLACE') for q in queries))
