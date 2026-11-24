@@ -2,10 +2,14 @@
 import os
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.urls import reverse
 from django.utils import timezone
 
 from . import test_blacklist
+from .arr_health import build_arr_health
+from .health_details import build_health_details
 from .models import JellyfinCleanup, Preferences, TitleCleanupCandidate, TitleCleanupEvent
 
 
@@ -83,6 +87,58 @@ class NativeCleanupRetirementTests(TestCase):
                 self.assertEqual(list(candidate.events.filter(
                     outcome='intent_persisted').values()), original_intents)
                 self.assert_legacy_unchanged(snapshot)
+                self.clear_candidates()
+
+    def test_health_exposes_pending_and_completed_retired_history_without_mutation_or_network(self):
+        admin = get_user_model().objects.create_superuser(
+            'retirement-admin', 'retirement@example.invalid', 'Synthetic-test-password-123!')
+        self.client.force_login(admin)
+        for product in ('sonarr', 'radarr'):
+            with self.subTest(product=product):
+                pending = self.setup_product(product, with_file=False)
+                pending.status = 'pending'
+                pending.target_title = 'Retained pending native removal'
+                pending.save()
+                completed = TitleCleanupCandidate.objects.create(
+                    product=product, target_instance_id=self.target.pk,
+                    target_fingerprint=pending.target_fingerprint,
+                    target_media_id=11, external_id=pending.external_id + 1,
+                    target_title='Retained completed native removal', status='deleted',
+                    first_eligible_at=pending.first_eligible_at,
+                    last_confirmed_at=pending.last_confirmed_at, deleted_at=timezone.now(),
+                )
+                snapshots = [self.legacy_evidence(pending, 'native_pending'),
+                             self.legacy_evidence(completed, 'complete')]
+                native_before = list(TitleCleanupCandidate.objects.order_by('id').values())
+                Preferences.set_value(product + '_reconciliation_enabled', '1')
+                with patch('requests.sessions.Session.request',
+                           side_effect=AssertionError('Health must not call external services')):
+                    health = next(row for row in build_arr_health()['products']
+                                  if row['product'] == product)
+                    self.assertEqual(health['cleanup']['jellyfin_incomplete'], 1)
+                    self.assertEqual(health['cleanup']['jellyfin_complete'], 1)
+                    self.assertEqual([row.pk for row in health['cleanup']['jellyfin_candidates']],
+                                     [snapshots[0][0]])
+                    self.assertTrue(any('retired Jellyfin cleanup records require operator recovery'
+                                        in issue for issue in health['issues']))
+                    response = self.client.get(reverse('arr_health_view'))
+                    self.assertContains(response, 'Retired Jellyfin integration history:')
+                    self.assertContains(response, '1 previously verified complete, 1 unresolved.')
+                    self.assertContains(response, pending.target_title)
+                    for metric, candidate, label in (
+                            ('pending', pending, 'Native removal pending'),
+                            ('deleted', completed, 'Jellyfin disappearance verified')):
+                        details = build_health_details(product, 'cleanup', metric)
+                        entry = list(details['page_obj'])[0]
+                        self.assertEqual(entry['id'], candidate.pk)
+                        self.assertIn('Retired Jellyfin record: ' + label, entry['outcome'])
+                        response = self.client.get(reverse('arr_health_details_view',
+                                                           args=[product, 'cleanup', metric]))
+                        self.assertContains(response, candidate.target_title)
+                        self.assertContains(response, 'Retired Jellyfin record: ' + label)
+                self.assertEqual(list(TitleCleanupCandidate.objects.order_by('id').values()), native_before)
+                for snapshot in snapshots:
+                    self.assert_legacy_unchanged(snapshot)
                 self.clear_candidates()
 
     def test_old_environment_cannot_enable_retired_calls_or_override_native_controls(self):
