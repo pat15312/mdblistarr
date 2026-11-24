@@ -228,3 +228,27 @@ Some legacy log paths still include external payloads; review and sanitise logs 
 ## Blacklist operations
 
 Use the fourth configuration tab to add authenticated MDBList sources. Review whole-title candidates and the unified reason/action history in the existing Arr Health Cleanup section. File and title quantities are labelled separately. See [Blacklist](BLACKLIST.md) for initial disabled/dry-run acceptance, supported list references, native storage prerequisites and recovery of uncertain requests.
+
+
+### Jellyfin deployment configuration
+
+The optional [Jellyfin completion lifecycle](BLACKLIST.md#optional-jellyfin-completion) is disabled unless `MDBLISTARR_JELLYFIN_ENABLED=1`. Configure these environment variables together:
+
+| Variable | Value |
+| --- | --- |
+| `MDBLISTARR_JELLYFIN_ENABLED` | `1` enables the integration; omitted or `0` leaves native-only behaviour |
+| `MDBLISTARR_JELLYFIN_URL` | Trusted server base URL without credentials, query or fragment |
+| `MDBLISTARR_JELLYFIN_API_KEY_FILE` | Absolute readable secret-file path; never the credential itself |
+| `MDBLISTARR_JELLYFIN_ROOTS` | JSON mapping `sonarr` and `radarr` to `root` and 32-hex-character `library_id` |
+
+Synthetic mapping example:
+
+```json
+{"sonarr":{"root":"/library/tv","library_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"radarr":{"root":"/library/movies","library_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
+```
+
+Each configured Jellyfin library must have exactly the single matching root and expected TV/movie media type. Paths must agree with the target Arr API. Mount only those local On-Demand roots read/write at the same paths, with private propagation. Do not mount permanent media, download data, remote backing objects, a broad parent storage tree or the Docker socket. File symlink targets should remain inaccessible from MDBListarr. Bind the API secret file read-only with restrictive host permissions. These mounts expand the application's authority beyond the default deployment and require the operator's explicit approval; do not add them as a routine image update.
+
+Verify the actual storage topology, image, credentials, library mapping and directory permissions using disposable representative fixtures before activation. Keep blacklist removal disabled and dry-run enabled through deployment. Both product reconciliations and read-only Jellyfin binding/catalogue checks must pass; do not perform unrelated live deletions for validation. Native Arr deletion settings remain unchanged.
+
+Migration 0015 adds a companion table without rewriting native candidates/events. Back up the database and matching runtime secrets, Jellyfin key file and deployment configuration. Rehearse the new image against a private copy and prove predecessor reopening before cutover. The predecessor can retain the extra table but cannot complete Jellyfin continuations: rollback requires blacklist cleanup OFF/dry-run ON and retention of the original stage/intent records. Do not reverse the migration or restore an older snapshot over later operation history merely to roll back code. Reverting the optional mounts/configuration also requires preserving their recorded identity for forward recovery.

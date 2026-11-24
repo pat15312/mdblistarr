@@ -67,6 +67,7 @@ MDBListarr should:
 - persist search state so uncertain external side effects can be recovered safely;
 - remove confirmed redundant duplicate files from the On-Demand target when cleanup is explicitly enabled;
 - suppress blacklisted On-Demand titles and optionally remove their managed files and catalogue entries using configured MDBList sources and a separately enabled safe lifecycle;
+- optionally verify Jellyfin disappearance after blacklist removal, with separately approved directory-only access to local On-Demand roots;
 - expose useful, bounded operational health without probing external services from the health page;
 - fail closed when required evidence is malformed, conflicting, unavailable, or uncertain;
 - remain easy to deploy without requiring unnecessary manual secret generation;

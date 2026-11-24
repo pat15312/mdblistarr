@@ -30,6 +30,7 @@ jobs:
           CSRF_COOKIE_SECURE: "1"
       - run: python mdblistarr/manage.py test mdblistrr
       - run: docker build -t mdblistarr:ci .
+      - run: python tests/jellyfin_container_smoke.py mdblistarr:ci
       - name: Fresh-volume Docker smoke test
         run: |
           set -euo pipefail

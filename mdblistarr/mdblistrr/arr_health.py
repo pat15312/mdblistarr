@@ -12,7 +12,7 @@ from .models import (
     ArrReconciliationStatus, Preferences, RadarrCleanupCandidate, RadarrInstance,
     RadarrMovieSearchCandidate, RadarrMovieSearchCommand, SonarrCleanupCandidate,
     SonarrEpisodeSearchCandidate, SonarrEpisodeSearchCommand, SonarrInstance,
-    TitleCleanupCandidate, BlacklistSource,
+    TitleCleanupCandidate, BlacklistSource, JellyfinCleanup,
 )
 
 PRODUCTS = ('sonarr', 'radarr')
@@ -172,6 +172,13 @@ def _add_title_cleanup_metrics(metrics, product, target_id):
     metrics['title_candidates'] = list(cleanup_sort_columns(
         title_rows, 'ready_at', product == 'sonarr', 'title'
     ).order_by(*CLEANUP_DISPLAY_ORDER, 'id')[:CLEANUP_CANDIDATE_DISPLAY_LIMIT])
+    continuation = JellyfinCleanup.objects.filter(candidate__product=product,
+        candidate__target_instance_id=target_id, candidate__status='deleted')
+    metrics['jellyfin_complete'] = continuation.filter(status='complete').count()
+    incomplete = continuation.exclude(status='complete')
+    metrics['jellyfin_incomplete'] = incomplete.count()
+    metrics['jellyfin_candidates'] = list(incomplete.select_related('candidate').order_by(
+        '-updated_at', 'id')[:CLEANUP_CANDIDATE_DISPLAY_LIMIT])
     return metrics
 
 
@@ -325,6 +332,8 @@ def _product_health(product, now):
     counters = (status or {}).get('last_counters') or {}
     if enabled:
         issues.extend(config_errors)
+        if cleanup['jellyfin_incomplete']:
+            issues.append(f"{cleanup['jellyfin_incomplete']} native title removals await Jellyfin completion.")
         if BlacklistSource.objects.exclude(last_error='').exists():
             issues.append('Blacklist source refresh failed; fresh membership is required for cleanup.')
         if status and not snapshot_matches_configuration and not config_errors:

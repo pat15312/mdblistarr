@@ -663,7 +663,7 @@ class BlacklistUITests(TestCase):
             details = build_health_details('sonarr', 'cleanup', 'deleted')
             self.assertEqual(details['page_obj'].paginator.count, 2)
             self.assertEqual({e['reason'] for e in details['page_obj']}, {'Permanent duplicate', 'Blacklisted'})
-            self.assertEqual({e['action'] for e in details['page_obj']}, {'Episode file removed', 'Entire television series removed'})
+            self.assertEqual({e['action'] for e in details['page_obj']}, {'Episode file removed', 'Entire television series removed from Arr'})
             response = self.client.get(reverse('arr_health_view'))
             self.assertContains(response, '1 deleted. Whole-title candidates:')
             self.assertContains(self.client.get(reverse('arr_health_details_view', args=['sonarr','cleanup','deleted'])), 'Preserved deleted title')

@@ -22,6 +22,7 @@ from .models import (Preferences, SonarrInstance, RadarrInstance, TitleCleanupCa
     SonarrCleanupCandidate, RadarrCleanupCandidate)
 from .media_display import safe_title
 from .cleanup_lock import configuration_lock, RequestNotSent
+from .jellyfin_cleanup import prepare as prepare_jellyfin, continue_cleanup as continue_jellyfin, JellyfinDeferred
 
 TERMINAL = {'deleted', 'cancelled', 'already_absent'}
 
@@ -411,6 +412,9 @@ def process_title_cleanup(*, product, target, api, membership, remaining_budget,
                     continue
                 if timezone.now() < candidate.first_eligible_at + timedelta(hours=grace):
                     raise CleanupDeferred('The current blacklist grace period has not elapsed.')
+                # Bind optional work before final native checks: preparation
+                # can perform slow network and filesystem reads.
+                prepare_jellyfin(candidate)
                 # Refresh native evidence after acquiring the lock: another
                 # configuration request may have held it during a slow refresh.
                 final = read(api, f'{resource}/{candidate.target_media_id}')
@@ -441,11 +445,16 @@ def process_title_cleanup(*, product, target, api, membership, remaining_budget,
             verify_original_request(candidate, api)
             if candidate.status not in TERMINAL and result.attempts < remaining_budget:
                 candidates.append(candidate)
-        except (CleanupDeferred, BlacklistError) as exc:
+        except (CleanupDeferred, BlacklistError, JellyfinDeferred) as exc:
             candidate.last_error = str(exc)
             if candidate.status in ('files_submitting', 'title_submitting', 'uncertain'):
                 candidate.status = 'uncertain'
                 result.stop = True
                 result.failures += 1
             candidate.save()
+    continuation = continue_jellyfin(product=product, target=target, api=api,
+        membership=membership, remaining_budget=max(0, remaining_budget - result.attempts), stop=result.stop)
+    result.attempts += continuation.attempts
+    result.failures += continuation.failures
+    result.stop = result.stop or continuation.stop
     return result
