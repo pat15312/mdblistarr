@@ -57,7 +57,7 @@ class Client:
         self.session = requests.Session()
         self.session.trust_env = False
         self.session.headers['Authorization'] = f'MediaBrowser Token="{config["key"]}"'
-        self.deadline = time.monotonic() + 60
+        self.deadline = time.monotonic() + 120
 
     def close(self):
         self.session.close()
@@ -75,10 +75,12 @@ class Client:
                 chunks, size = [], 0
                 for chunk in response.iter_content(65536):
                     size += len(chunk)
-                    if size > 4 * 1024 * 1024 or time.monotonic() >= self.deadline:
+                    if size > 8 * 1024 * 1024 or time.monotonic() >= self.deadline:
                         raise JellyfinDeferred('Jellyfin response exceeds verification limits.')
                     chunks.append(chunk)
                 return json.loads(b''.join(chunks))
+        except JellyfinDeferred:
+            raise
         except (requests.RequestException, ValueError):
             raise JellyfinDeferred('Jellyfin request failed; catalogue outcome is unverified.') from None
 
@@ -107,12 +109,12 @@ class Client:
     def catalogue(self, product):
         rows, seen, total = [], set(), None
         types = ('Series', 'Season', 'Episode') if product == 'sonarr' else ('Movie',)
-        for offset in range(0, 200000, 500):
+        for offset in range(0, 200000, 5000):
             response = self.request('GET', '/Items', {
                 'ParentId': self.config['library_id'], 'Recursive': 'true',
                 'IncludeItemTypes': ','.join(types), 'Fields': 'Path,ProviderIds',
-                'StartIndex': offset, 'Limit': 500, 'EnableUserData': 'false', 'EnableImages': 'false',
-                'SortBy': 'SortName', 'SortOrder': 'Ascending'})
+                'StartIndex': offset, 'Limit': 5000, 'EnableUserData': 'false', 'EnableImages': 'false',
+                'CollapseBoxSetItems': 'false', 'SortBy': 'SortName', 'SortOrder': 'Ascending'})
             if (not isinstance(response, dict) or type(response.get('TotalRecordCount')) is not int
                     or not 0 <= response['TotalRecordCount'] <= 200000
                     or not isinstance(response.get('Items'), list)):
@@ -138,7 +140,7 @@ class Client:
                     'LocationType': row.get('LocationType', '')})
             if len(rows) == total:
                 return sorted(rows, key=lambda row: row['Id'])
-            if not response['Items'] or len(response['Items']) != 500 or len(rows) > total:
+            if not response['Items'] or len(response['Items']) != 5000 or len(rows) > total:
                 break
         raise JellyfinDeferred('Jellyfin catalogue pagination is incomplete.')
 
