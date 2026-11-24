@@ -121,13 +121,21 @@ class Client:
                 raise JellyfinDeferred('Jellyfin catalogue changed during pagination.')
             total = response['TotalRecordCount']
             for row in response['Items']:
+                virtual_child = (isinstance(row, dict) and row.get('Type') in ('Season', 'Episode')
+                    and row.get('LocationType') == 'Virtual'
+                    and isinstance(row.get('SeriesId'), str) and bool(row['SeriesId']))
                 if (not isinstance(row, dict) or not isinstance(row.get('Id'), str)
                         or not row['Id'] or row['Id'] in seen or row.get('Type') not in types
-                        or not isinstance(row.get('Path'), str) or not row['Path']
+                        or (not virtual_child and (not isinstance(row.get('Path'), str) or not row['Path']))
+                        or (virtual_child and row.get('Path') not in (None, '')
+                            and not isinstance(row['Path'], str))
+                        or ('SeriesId' in row and not isinstance(row['SeriesId'], str))
                         or not isinstance(row.get('ProviderIds', {}), dict)):
                     raise JellyfinDeferred('Jellyfin catalogue identity or path is unavailable.')
                 seen.add(row['Id'])
-                rows.append({key: row.get(key, {}) for key in ('Id', 'Type', 'Path', 'ProviderIds')})
+                rows.append({'Id': row['Id'], 'Type': row['Type'], 'Path': row.get('Path') or '',
+                    'ProviderIds': row.get('ProviderIds', {}), 'SeriesId': row.get('SeriesId', ''),
+                    'LocationType': row.get('LocationType', '')})
             if len(rows) == total:
                 return sorted(rows, key=lambda row: row['Id'])
             if not response['Items'] or len(response['Items']) != 500 or len(rows) > total:
@@ -140,12 +148,19 @@ class Client:
             'ReplaceAllMetadata': 'false', 'ReplaceAllImages': 'false'})
 
 
-def matching(rows, candidate, path, original_ids=()):
+def matching(rows, candidate, path, original_ids=(), original_series_ids=()):
     provider = 'Tvdb' if candidate.product == 'sonarr' else 'Tmdb'
-    return [row for row in rows if row['Id'] in original_ids or row['Path'] == path
+    known_series = {row['Id'] for row in rows if row['Type'] == 'Series'} | set(original_series_ids)
+    if any(not row['Path'] and row.get('SeriesId') not in known_series for row in rows):
+        raise JellyfinDeferred('A virtual Jellyfin item has unresolved series identity.')
+    matches = [row for row in rows if row['Id'] in original_ids or row['Path'] == path
             or row['Path'].startswith(path + '/')
             or (row['Type'] == ('Series' if candidate.product == 'sonarr' else 'Movie')
                 and str(row['ProviderIds'].get(provider, '')) == str(candidate.external_id))]
+    series_ids = set(original_series_ids) | {row['Id'] for row in matches if row['Type'] == 'Series'}
+    matched_ids = {row['Id'] for row in matches}
+    return [row for row in rows if row['Id'] in matched_ids or (candidate.product == 'sonarr'
+            and row.get('SeriesId') in series_ids)]
 
 
 def save(stage, status, outcome, **evidence):
@@ -187,8 +202,12 @@ def prepare(candidate):
         rows = matching(client.catalogue(candidate.product), candidate, title)
         provider = 'Tvdb' if candidate.product == 'sonarr' else 'Tmdb'
         primary_type = 'Series' if candidate.product == 'sonarr' else 'Movie'
+        series_ids = {row['Id'] for row in rows if row['Type'] == 'Series'}
         for row in rows:
             within = row['Path'] == title or row['Path'].startswith(title + '/')
+            if (row['Type'] in ('Season', 'Episode') and not row['Path']
+                    and row.get('LocationType') == 'Virtual' and row.get('SeriesId') in series_ids):
+                within = True
             if not within or (row['Type'] == primary_type
                     and str(row['ProviderIds'].get(provider, '')) != str(candidate.external_id)):
                 raise JellyfinDeferred('Jellyfin title path and provider identities conflict.')
@@ -198,7 +217,8 @@ def prepare(candidate):
         plan = directories.snapshot(config['root'], title, candidate.product, season_paths)
         with transaction.atomic():
             stage = JellyfinCleanup.objects.create(candidate=candidate, binding=binding,
-                directories=plan, original_item_ids=[row['Id'] for row in rows])
+                directories=plan, original_item_ids=[row['Id'] for row in rows],
+                original_series_ids=sorted(series_ids))
             save(stage, 'native_pending', 'jellyfin_binding_captured_before_native_removal')
     except (OSError, directories.DirectoryDeferred):
         raise JellyfinDeferred('Local directory binding is unavailable or unsafe.') from None
@@ -298,7 +318,7 @@ def continue_cleanup(*, product, target, api, membership, remaining_budget, stop
                     raise JellyfinDeferred('Title directory disappearance remains unverified.')
                 save(stage, 'directories_removed', 'captured_directories_verified_absent')
             rows = client.catalogue(product)
-            if not matching(rows, candidate, plan['title'], stage.original_item_ids):
+            if not matching(rows, candidate, plan['title'], stage.original_item_ids, stage.original_series_ids):
                 # Detect same-count catalogue churn as well as pagination changes.
                 if client.catalogue(product) != rows:
                     raise JellyfinDeferred('Jellyfin catalogue changed during absence verification.')

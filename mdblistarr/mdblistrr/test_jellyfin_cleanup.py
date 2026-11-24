@@ -493,6 +493,31 @@ class ClientTests(SimpleTestCase):
                 self.client.request = Mock(return_value=[{'ItemId': value}])
                 self.client.library()
 
+    def test_virtual_children_are_validated_and_matched_by_original_series(self):
+        rows = [{'Id': 'series', 'Type': 'Series', 'Path': '/library/tv/Title', 'ProviderIds': {'Tvdb': '200'}},
+                {'Id': 'virtual-season', 'Type': 'Season', 'LocationType': 'Virtual', 'SeriesId': 'series'},
+                {'Id': 'virtual-episode', 'Type': 'Episode', 'LocationType': 'Virtual', 'SeriesId': 'series'},
+                {'Id': 'other-virtual', 'Type': 'Season', 'LocationType': 'Virtual', 'SeriesId': 'other'},
+                {'Id': 'other', 'Type': 'Series', 'Path': '/library/tv/Other', 'ProviderIds': {'Tvdb': '300'}}]
+        self.client.request = Mock(return_value={'Items': rows, 'TotalRecordCount': 5})
+        catalogue = self.client.catalogue('sonarr')
+        candidate = Mock(product='sonarr', external_id=200)
+        self.assertEqual({r['Id'] for r in integration.matching(catalogue, candidate, '/library/tv/Title')},
+                         {'series', 'virtual-season', 'virtual-episode'})
+        # Original series may be gone while its virtual children remain.
+        orphaned = [r for r in catalogue if r['Id'] != 'series']
+        self.assertEqual({r['Id'] for r in integration.matching(orphaned, candidate, '/library/tv/Title', ['series'], ['series'])},
+                         {'virtual-season', 'virtual-episode'})
+        with self.assertRaises(integration.JellyfinDeferred):
+            integration.matching(orphaned, candidate, '/library/tv/Title')
+        wrong_parent = [dict(r, SeriesId='virtual-episode') if r['Id']=='virtual-season' else r for r in catalogue]
+        with self.assertRaises(integration.JellyfinDeferred):
+            integration.matching(wrong_parent, candidate, '/library/tv/Title')
+        for invalid in ({'SeriesId': ''}, {'SeriesId': None}, {'LocationType': 'FileSystem'}, {'Path': 12}):
+            with self.subTest(invalid=invalid), self.assertRaises(integration.JellyfinDeferred):
+                self.client.request = Mock(return_value={'Items': [dict(rows[1], **invalid)], 'TotalRecordCount': 1})
+                self.client.catalogue('sonarr')
+
     def test_authentication_redirect_and_network_failures_are_sanitised(self):
         import requests
         for status in (401, 403, 302, 500):

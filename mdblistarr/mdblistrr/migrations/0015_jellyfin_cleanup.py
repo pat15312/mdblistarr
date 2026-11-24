@@ -19,6 +19,7 @@ class Migration(migrations.Migration):
                 ('binding', models.JSONField(default=dict)),
                 ('directories', models.JSONField(default=dict)),
                 ('original_item_ids', models.JSONField(default=list)),
+                ('original_series_ids', models.JSONField(default=list)),
                 ('refresh_requested_at', models.DateTimeField(blank=True, null=True)),
                 ('refresh_status', models.CharField(blank=True, max_length=32)),
                 ('completed_at', models.DateTimeField(blank=True, null=True)),

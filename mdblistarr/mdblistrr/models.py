@@ -139,6 +139,7 @@ class JellyfinCleanup(models.Model):
     binding = models.JSONField(default=dict)
     directories = models.JSONField(default=dict)
     original_item_ids = models.JSONField(default=list)
+    original_series_ids = models.JSONField(default=list)
     refresh_requested_at = models.DateTimeField(null=True, blank=True)
     refresh_status = models.CharField(max_length=32, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
