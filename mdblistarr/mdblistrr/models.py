@@ -121,7 +121,7 @@ class TitleCleanupEvent(models.Model):
 
 
 class JellyfinCleanup(models.Model):
-    """Optional continuation; historical native success retains its meaning."""
+    """Retired continuation evidence, retained unchanged for history and recovery."""
     candidate = models.OneToOneField(TitleCleanupCandidate, on_delete=models.PROTECT,
                                     related_name='jellyfin_cleanup')
     status = models.CharField(max_length=32, default='native_pending', choices=[

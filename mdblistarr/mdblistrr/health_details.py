@@ -137,8 +137,8 @@ def build_health_details(product, section, metric, page_number=None):
                 verified = row.events.filter(outcome='original_file_removal_verified').count()
                 outcome = f'{verified} associated file removal(s) verified. ' + row.last_error
                 stage = getattr(row, 'jellyfin_cleanup', None)
-                outcome += (' Jellyfin: ' + stage.get_status_display() + '. ' + stage.last_error
-                            if stage else ' Jellyfin completion not tracked for this removal.')
+                outcome += (' Retired Jellyfin record: ' + stage.get_status_display() + '. ' + stage.last_error
+                            if stage else '')
                 if row.status == 'cancelled' and verified:
                     outcome += ' Cleanup cancelled after partial removal; files are not restored.'
             else:

@@ -10,7 +10,7 @@ This repository is a fork of [linaspurinis/mdblistarr](https://github.com/linasp
 - Separate Permanent/library-source, On-Demand and queue-import roles.
 - Sonarr and Radarr monitoring reconciliation, persistent search tracking and conservative duplicate-file cleanup.
 - A staff-only Arr Health dashboard based on persisted local state.
-- Configurable MDBList blacklists that suppress unwanted On-Demand titles, with separately enabled whole-title cleanup, dry-run preview and optional verified Jellyfin completion.
+- Configurable MDBList blacklists that suppress unwanted On-Demand titles, with separately enabled whole-title cleanup, dry-run preview and native Sonarr/Radarr file and empty-folder handling.
 
 ## Quick start
 

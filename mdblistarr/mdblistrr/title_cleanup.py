@@ -1,7 +1,7 @@
 """Blacklist title candidates in the existing reconciliation cleanup lifecycle.
 
-File DELETEs are synchronous native operations. Catalogue DELETE deliberately
-uses deleteFiles=false: recursive folder deletion is unsafe for directory links.
+Exact file DELETEs precede catalogue DELETE with deleteFiles=false.
+Sonarr/Radarr own file handling, empty folders and media-server notifications.
 Every uncertain request has durable original intent and is only reconciled by
 reads; it is never automatically retried.
 """
@@ -19,10 +19,9 @@ from django.utils.dateparse import parse_datetime
 from .blacklist import BlacklistError, digest, positive_id, refresh_blacklists
 from .models import (Preferences, SonarrInstance, RadarrInstance, TitleCleanupCandidate,
     TitleCleanupEvent, SonarrEpisodeSearchCommand, RadarrMovieSearchCommand,
-    SonarrCleanupCandidate, RadarrCleanupCandidate)
+    SonarrCleanupCandidate, RadarrCleanupCandidate, JellyfinCleanup)
 from .media_display import safe_title
 from .cleanup_lock import configuration_lock, RequestNotSent
-from .jellyfin_cleanup import prepare as prepare_jellyfin, continue_cleanup as continue_jellyfin, JellyfinDeferred
 
 TERMINAL = {'deleted', 'cancelled', 'already_absent'}
 
@@ -335,7 +334,11 @@ def verify_original_request(candidate, api):
 
 
 def process_title_cleanup(*, product, target, api, membership, remaining_budget, stop=False):
-    result = TitleCleanupResult(stop=stop)
+    # Retired integrations cannot silently release unfinished operation evidence.
+    # Preserve native read-only recovery, but refuse new blacklist submissions.
+    legacy_pending = JellyfinCleanup.objects.filter(candidate__product=product,
+        candidate__target_instance_id=target.pk).exclude(status='complete').exists()
+    result = TitleCleanupResult(stop=stop or legacy_pending)
     candidates = deque(TitleCleanupCandidate.objects.filter(product=product, target_instance_id=target.pk).exclude(status__in=TERMINAL).order_by('first_eligible_at', 'id'))
     while candidates:
         candidate = candidates.popleft()
@@ -382,14 +385,16 @@ def process_title_cleanup(*, product, target, api, membership, remaining_budget,
             activity_safe(product, api, target, candidate.target_media_id)
             if files:
                 config = read(api, 'config/mediamanagement')
-                if not isinstance(config, dict) or config.get('deleteEmptyFolders') is not False or config.get('recycleBin') != '':
-                    raise CleanupDeferred('File removal requires empty-folder deletion off and no recycle bin in Arr.')
+                if not isinstance(config, dict) or config.get('recycleBin') != '':
+                    raise CleanupDeferred('File removal requires no recycle bin in Arr.')
             candidate.last_error = ''
             candidate.save()
             if Preferences.get_value('blacklist_cleanup_dry_run', '1') != '0':
                 continue
             if Preferences.get_value('blacklist_cleanup_enabled', '0') != '1':
                 continue
+            if legacy_pending:
+                raise CleanupDeferred('Retired Jellyfin cleanup has unfinished evidence; operator recovery is required.')
             if result.stop or result.attempts >= remaining_budget:
                 raise CleanupDeferred('Shared cleanup deletion budget exhausted or further deletion stopped.')
             # Only destructive work performs this second fresh list read. All
@@ -412,9 +417,6 @@ def process_title_cleanup(*, product, target, api, membership, remaining_budget,
                     continue
                 if timezone.now() < candidate.first_eligible_at + timedelta(hours=grace):
                     raise CleanupDeferred('The current blacklist grace period has not elapsed.')
-                # Bind optional work before final native checks: preparation
-                # can perform slow network and filesystem reads.
-                prepare_jellyfin(candidate)
                 # Refresh native evidence after acquiring the lock: another
                 # configuration request may have held it during a slow refresh.
                 final = read(api, f'{resource}/{candidate.target_media_id}')
@@ -426,7 +428,7 @@ def process_title_cleanup(*, product, target, api, membership, remaining_budget,
                 activity_safe(product, api, target, candidate.target_media_id)
                 if files:
                     config = read(api, 'config/mediamanagement')
-                    if not isinstance(config, dict) or config.get('deleteEmptyFolders') is not False or config.get('recycleBin') != '':
+                    if not isinstance(config, dict) or config.get('recycleBin') != '':
                         raise CleanupDeferred('Arr file-deletion settings changed.')
                 if not fresh.fresh():
                     raise CleanupDeferred('Blacklist verification expired during native validation.')
@@ -445,16 +447,11 @@ def process_title_cleanup(*, product, target, api, membership, remaining_budget,
             verify_original_request(candidate, api)
             if candidate.status not in TERMINAL and result.attempts < remaining_budget:
                 candidates.append(candidate)
-        except (CleanupDeferred, BlacklistError, JellyfinDeferred) as exc:
+        except (CleanupDeferred, BlacklistError) as exc:
             candidate.last_error = str(exc)
             if candidate.status in ('files_submitting', 'title_submitting', 'uncertain'):
                 candidate.status = 'uncertain'
                 result.stop = True
                 result.failures += 1
             candidate.save()
-    continuation = continue_jellyfin(product=product, target=target, api=api,
-        membership=membership, remaining_budget=max(0, remaining_budget - result.attempts), stop=result.stop)
-    result.attempts += continuation.attempts
-    result.failures += continuation.failures
-    result.stop = result.stop or continuation.stop
     return result
