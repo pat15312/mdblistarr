@@ -29,7 +29,7 @@
   <form method="post" action="{% url 'configure_blacklist' %}" class="mb-4">
     {% csrf_token %}<input type="hidden" name="action" value="settings">
     {% for field in blacklist_form %}<div class="mb-3">{{ field }} {{ field.label_tag }}{{ field.errors }}</div>{% endfor %}
-    <p class="form-text">Whole-title cleanup removes associated media files through Arr, then removes the movie or series catalogue entry. It shares each product's existing deletion-attempt cap with duplicate cleanup. When the optional Jellyfin integration is configured, verified-empty title and season folders are removed and Jellyfin disappearance is checked separately. Remaining files are left in place and block folder cleanup. Unsafe activity or Arr deletion settings defer removal; see Arr Health for the reason.</p>
+    <p class="form-text">Whole-title cleanup removes associated media files through Arr, then removes the movie or series catalogue entry. It shares each product's existing deletion-attempt cap with duplicate cleanup. Sonarr/Radarr own file and empty-folder handling through their native settings. Existing Arr notifications update the media server. MDBListarr does not access library filesystems or connect to Jellyfin. Unsafe activity or Arr deletion settings defer removal; see Arr Health for the reason.</p>
     <button type="submit" class="btn btn-success">Save Blacklist Configuration</button>
   </form>
   <p>Use <a href="{% url 'arr_health_view' %}">Arr Health</a> to inspect pending titles, blocked removals and deletion history. Removing a title from all configured lists cancels pending removal and allows normal reconciliation to resume. Previously deleted titles are not restored automatically.</p>

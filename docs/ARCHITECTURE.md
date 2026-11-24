@@ -36,7 +36,6 @@ Paths below are relative to the repository root.
 | `mdblistarr/mdblistrr/radarr_search.py` | MoviesSearch candidates, durable command submission and recovery/retry lifecycle |
 | `mdblistarr/mdblistrr/sonarr_cleanup.py` | Exact episode-file candidate lifecycle and destructive verification |
 | `mdblistarr/mdblistrr/radarr_cleanup.py` | Exact movie-file candidate lifecycle, edition checks and destructive verification |
-| `mdblistarr/mdblistrr/jellyfin_cleanup.py`, `empty_directories.py` | Optional existing-scheduler continuation, persisted directory-only intent and Jellyfin verification |
 | `mdblistarr/mdblistrr/blacklist.py` | Authenticated complete snapshots, identity translation and union membership |
 | `mdblistarr/mdblistrr/title_cleanup.py`, `title_transport.py`, `cleanup_lock.py` | Related whole-title lifecycle, one-shot native transport and final configuration gate |
 | `mdblistarr/mdblistrr/cleanup_display_order.py` | Shared SQL ordering for paginated and bounded inline cleanup displays |
@@ -80,7 +79,7 @@ Sonarr works per target series, applying episode changes before dependent season
 
 Reconciliation searches separate candidate eligibility from Arr command execution. A database transaction records a submitting command, candidate associations and current-command links before the external one-shot POST. Later runs validate command identity/status or independent evidence to reconcile uncertainty. Candidate and command state definitions belong in [Arr behaviour](ARR_BEHAVIOUR.md#search-lifecycle).
 
-Cleanup candidates preserve exact target Arr file identity, eligibility timing and associated evidence. Duplicate-file deletion uses the Arr API, immediate revalidation and post-delete verification. The optional blacklist Jellyfin continuation has the separate directory-only boundary documented in [Blacklist](BLACKLIST.md#optional-jellyfin-completion). See [cleanup behaviour](ARR_BEHAVIOUR.md#sonarr-duplicate-file-cleanup).
+Cleanup candidates preserve exact target Arr file identity, eligibility timing and associated evidence. Duplicate-file deletion uses the Arr API, immediate revalidation and post-delete verification. Sonarr/Radarr own file and empty-folder handling; existing Arr notifications update media servers. MDBListarr has no filesystem cleanup or Jellyfin executor. See [cleanup behaviour](ARR_BEHAVIOUR.md#sonarr-duplicate-file-cleanup).
 
 ## Persistence and models
 
@@ -97,7 +96,7 @@ The database path is fixed at `/usr/src/db/db.sqlite3` in [settings](../mdblista
 | `SonarrEpisodeSearchCommandCandidate`, `RadarrMovieSearchCommandCandidate` | Explicit command/candidate relationships with submitted item IDs |
 | `SonarrCleanupCandidate` | Unique target instance/episode-file ID, series/TVDB identity, linked episode keys, timestamps and status |
 | `RadarrCleanupCandidate` | Unique target instance/movie-file ID, source/target movie and source file identity, TMDB ID, editions, timestamps and status |
-| `JellyfinCleanup` | Protected one-to-one title continuation with root/directory identities, original Jellyfin IDs, refresh intent and separate completion |
+| `JellyfinCleanup` | Retired protected one-to-one evidence: original directory/Jellyfin identities and intents remain unchanged for history and recovery |
 | `BlacklistSource` | Encrypted list reference and last complete successful membership, counts and refresh errors |
 | `TitleCleanupCandidate`, `TitleCleanupEvent` | Blacklist reason; product/target/native title identity, staged intent and immutable event history without fabricated permanent evidence |
 | `ArrReconciliationStatus` | One latest snapshot per product, including source/target IDs, nullable validation evidence, counters and latest start/completion/success |
@@ -123,7 +122,7 @@ The current application migration sequence is in [migrations](../mdblistarr/mdbl
 | `0011` | Reconciliation health snapshots |
 | `0012` | Cleanup candidate title/year display metadata for both products |
 | `0013` | Search candidate title display metadata for both products |
-| `0015` | Optional Jellyfin continuation; additive, no historical enrollment |
+| `0015` | Retained former Jellyfin continuation table; never reversed or dropped |
 | `0014` | Blacklist sources, related whole-title candidates and protected event history |
 
 Role migrations default library-source membership on and queue-import/On-Demand flags off where introduced. Existing Radarr queue-import values survive `0008`. Startup credential conversion is handled by `encrypt_secrets`, not solely by schema migrations. Due-slot state is stored in `Preferences` and did not require a separate migration.

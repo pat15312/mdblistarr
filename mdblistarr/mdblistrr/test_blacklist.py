@@ -518,6 +518,23 @@ class TitleLifecycleTests(TestCase):
                 TitleCleanupEvent.objects.all().delete()
                 TitleCleanupCandidate.objects.all().delete()
 
+    def test_native_empty_folder_management_allows_exact_files_then_catalogue(self):
+        for product in ('sonarr', 'radarr'):
+            with self.subTest(product=product):
+                candidate = self.setup_product(product)
+                self.api.config['deleteEmptyFolders'] = True
+                self.process()  # establish unchanged file evidence/grace
+                self.process()
+                candidate.refresh_from_db()
+                self.assertEqual(candidate.status, 'deleted')
+                self.assertEqual(self.api.deleted, [
+                    (self.api.file_resource + '/20', None),
+                    (self.api.resource + '/10', {'deleteFiles': 'false', 'addImportExclusion': 'false'})])
+                TitleCleanupEvent.objects.all().delete()
+                TitleCleanupCandidate.objects.all().delete()
+                SonarrInstance.objects.all().delete()
+                RadarrInstance.objects.all().delete()
+
     def test_disabled_dry_run_grace_and_shared_budget(self):
         candidate = self.setup_product(grace=24)
         self.assertEqual(self.process().attempts, 0)
@@ -577,7 +594,7 @@ class TitleLifecycleTests(TestCase):
 
     def test_network_and_activity_and_identity_changes_block_every_destructive_stage(self):
         for product in ('sonarr', 'radarr'):
-            for condition in ('network', 'queue', 'command', 'path', 'file', 'monitor', 'empty_folders', 'recycle_bin', 'permanent'):
+            for condition in ('network', 'queue', 'command', 'path', 'file', 'monitor', 'recycle_bin', 'permanent'):
                 with self.subTest(product=product, condition=condition):
                     candidate = self.setup_product(product)
                     if condition == 'network': self.api.fail_reads = True
@@ -586,7 +603,6 @@ class TitleLifecycleTests(TestCase):
                     if condition == 'path': self.api.row['path'] = '/media/replaced'
                     if condition == 'file': self.api.files[0]['movieId'] = self.api.files[0]['seriesId'] = 999
                     if condition == 'monitor': self.api.row['monitored'] = True
-                    if condition == 'empty_folders': self.api.config['deleteEmptyFolders'] = True
                     if condition == 'recycle_bin': self.api.config['recycleBin'] = '/recycle'
                     if condition == 'permanent':
                         self.target.is_library_source = True
